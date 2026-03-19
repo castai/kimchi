@@ -191,10 +191,11 @@ func (w *wizard) collectStepResult() {
 		w.config.SelectedTools = s.SelectedTools()
 		if w.hasClaudeCode() {
 			w.pendingTelemetry = steps.NewTelemetryStep()
-		} else {
-			w.pendingGSD = steps.NewGSDStep(w.config.SelectedTools, w.config.Scope)
-			w.pendingConfigure = steps.NewConfigureStep(w.config.SelectedTools, w.config.Scope, false)
 		}
+	case *steps.ScopeStep:
+		w.config.Scope = s.SelectedScope()
+		w.pendingGSD = steps.NewGSDStep(w.config.SelectedTools, w.config.Scope)
+		w.pendingConfigure = steps.NewConfigureStep(w.config.SelectedTools, w.config.Scope, w.config.TelemetryOptIn)
 	case *steps.TelemetryStep:
 		w.config.TelemetryOptIn = s.OptIn()
 		w.pendingGSD = steps.NewGSDStep(w.config.SelectedTools, w.config.Scope)
