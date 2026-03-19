@@ -52,9 +52,21 @@ else
 	mv "$TEMP_DIR/kimchi" ~/.local/bin/kimchi
 	INSTALL_PATH="$HOME/.local/bin/kimchi"
 	echo ""
-	echo -e "${BLUE}Note: Add ~/.local/bin to your PATH:${NC}"
-	echo "  echo 'export PATH=\"\$HOME/.local/bin:\$PATH\"' >> ~/.bashrc"
-	echo "  source ~/.bashrc"
+	echo -e "${BLUE}Note: ~/.local/bin is not in your PATH.${NC}"
+	case "${SHELL}" in
+	*/fish*)
+		echo "  Run: fish_add_path ~/.local/bin"
+		;;
+	*/zsh*)
+		echo "  Run: echo 'export PATH=\"\$HOME/.local/bin:\$PATH\"' >> ~/.zshrc && source ~/.zshrc"
+		;;
+	*/bash*)
+		echo "  Run: echo 'export PATH=\"\$HOME/.local/bin:\$PATH\"' >> ~/.bashrc && source ~/.bashrc"
+		;;
+	*)
+		echo "  Add ~/.local/bin to your PATH in your shell's config file."
+		;;
+	esac
 fi
 
 echo ""
