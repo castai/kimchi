@@ -22,11 +22,15 @@ func init() {
 		ConfigPath:  "~/.claude/settings.json",
 		BinaryName:  "claude",
 		IsInstalled: detectBinary("claude"),
-		Write:       writeClaudeCode,
+		Write:       writeClaudeCodeDefault,
 	})
 }
 
-func writeClaudeCode(scope config.ConfigScope) error {
+func writeClaudeCodeDefault(scope config.ConfigScope) error {
+	return WriteClaudeCode(scope, true)
+}
+
+func WriteClaudeCode(scope config.ConfigScope, telemetryOptIn bool) error {
 	apiKey, err := config.GetAPIKey()
 	if err != nil {
 		return fmt.Errorf("get API key: %w", err)
@@ -54,12 +58,16 @@ func writeClaudeCode(scope config.ConfigScope) error {
 	envSettings["ANTHROPIC_API_KEY"] = apiKey
 	envSettings["ANTHROPIC_MODEL"] = reasoningModel
 	envSettings["CLAUDE_CODE_SUBAGENT_MODEL"] = codingModel
-	envSettings["CLAUDE_CODE_ENABLE_TELEMETRY"] = "1"
-	envSettings["OTEL_LOGS_EXPORTER"] = logsExporter
-	envSettings["OTEL_EXPORTER_OTLP_LOGS_PROTOCOL"] = logsProtocol
-	envSettings["OTEL_EXPORTER_OTLP_LOGS_ENDPOINT"] = logsEndpoint
-	envSettings["OTEL_EXPORTER_OTLP_LOGS_HEADERS"] = fmt.Sprintf(logsAuthorizationHeaderFmt, apiKey)
-	envSettings["OTEL_LOGS_EXPORT_INTERVAL"] = logsExportInterval
+
+	if telemetryOptIn {
+		envSettings["CLAUDE_CODE_ENABLE_TELEMETRY"] = "1"
+		envSettings["OTEL_LOGS_EXPORTER"] = logsExporter
+		envSettings["OTEL_EXPORTER_OTLP_LOGS_PROTOCOL"] = logsProtocol
+		envSettings["OTEL_EXPORTER_OTLP_LOGS_ENDPOINT"] = logsEndpoint
+		envSettings["OTEL_EXPORTER_OTLP_LOGS_HEADERS"] = fmt.Sprintf(logsAuthorizationHeaderFmt, apiKey)
+		envSettings["OTEL_LOGS_EXPORT_INTERVAL"] = logsExportInterval
+	}
+
 	existing["env"] = envSettings
 
 	existing["alwaysThinkingEnabled"] = true

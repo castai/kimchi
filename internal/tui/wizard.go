@@ -17,6 +17,7 @@ type WizardConfig struct {
 	APIKey         string
 	SelectedTools  []tools.ToolID
 	Scope          config.ConfigScope
+	TelemetryOptIn bool
 	GSDMigrateFrom []gsd.Installation
 	GSDInstallFor  []gsd.InstallationType
 }
@@ -28,6 +29,7 @@ type wizard struct {
 	finished         bool
 	aborted          bool
 	pendingGSD       *steps.GSDStep
+	pendingTelemetry *steps.TelemetryStep
 	pendingConfigure *steps.ConfigureStep
 	pendingDone      *steps.DoneStep
 	viewport         viewport.Model
@@ -66,6 +68,11 @@ func (w *wizard) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case steps.NextStepMsg:
 		w.collectStepResult()
+
+		if w.pendingTelemetry != nil {
+			w.stepList = append(w.stepList, w.pendingTelemetry)
+			w.pendingTelemetry = nil
+		}
 
 		if w.pendingGSD != nil {
 			w.stepList = append(w.stepList, w.pendingGSD)
@@ -182,16 +189,31 @@ func (w *wizard) collectStepResult() {
 		}
 	case *steps.ToolsStep:
 		w.config.SelectedTools = s.SelectedTools()
-	case *steps.ScopeStep:
-		w.config.Scope = s.SelectedScope()
+		if w.hasClaudeCode() {
+			w.pendingTelemetry = steps.NewTelemetryStep()
+		} else {
+			w.pendingGSD = steps.NewGSDStep(w.config.SelectedTools, w.config.Scope)
+			w.pendingConfigure = steps.NewConfigureStep(w.config.SelectedTools, w.config.Scope, false)
+		}
+	case *steps.TelemetryStep:
+		w.config.TelemetryOptIn = s.OptIn()
 		w.pendingGSD = steps.NewGSDStep(w.config.SelectedTools, w.config.Scope)
-		w.pendingConfigure = steps.NewConfigureStep(w.config.SelectedTools, w.config.Scope)
+		w.pendingConfigure = steps.NewConfigureStep(w.config.SelectedTools, w.config.Scope, w.config.TelemetryOptIn)
 	case *steps.GSDStep:
 		w.config.GSDMigrateFrom = s.GetMigrateInstallations()
 		w.config.GSDInstallFor = s.GetInstallTypes()
 	case *steps.ConfigureStep:
 		w.pendingDone = steps.NewDoneStep(context.Background(), w.config.APIKey, w.config.SelectedTools)
 	}
+}
+
+func (w *wizard) hasClaudeCode() bool {
+	for _, toolID := range w.config.SelectedTools {
+		if toolID == tools.ToolClaudeCode {
+			return true
+		}
+	}
+	return false
 }
 
 func RunWizard() (*WizardConfig, error) {

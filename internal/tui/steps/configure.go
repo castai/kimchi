@@ -20,11 +20,12 @@ type toolStatus struct {
 }
 
 type ConfigureStep struct {
-	toolIDs   []tools.ToolID
-	scope     config.ConfigScope
-	statuses  []toolStatus
-	done      bool
-	startOnce sync.Once
+	toolIDs        []tools.ToolID
+	scope          config.ConfigScope
+	telemetryOptIn bool
+	statuses       []toolStatus
+	done           bool
+	startOnce      sync.Once
 }
 
 type writeCompleteMsg struct {
@@ -35,11 +36,12 @@ type writeCompleteMsg struct {
 
 type startWriteMsg struct{}
 
-func NewConfigureStep(toolIDs []tools.ToolID, scope config.ConfigScope) *ConfigureStep {
+func NewConfigureStep(toolIDs []tools.ToolID, scope config.ConfigScope, telemetryOptIn bool) *ConfigureStep {
 	return &ConfigureStep{
-		toolIDs:  toolIDs,
-		scope:    scope,
-		statuses: make([]toolStatus, len(toolIDs)),
+		toolIDs:        toolIDs,
+		scope:          scope,
+		telemetryOptIn: telemetryOptIn,
+		statuses:       make([]toolStatus, len(toolIDs)),
 	}
 }
 
@@ -104,7 +106,12 @@ func (s *ConfigureStep) writeToolConfig(index int) tea.Cmd {
 			return writeCompleteMsg{index: index, status: "skipped", err: fmt.Errorf("no writer for tool")}
 		}
 
-		err := tool.Write(s.scope)
+		var err error
+		if tool.ID == tools.ToolClaudeCode {
+			err = tools.WriteClaudeCode(s.scope, s.telemetryOptIn)
+		} else {
+			err = tool.Write(s.scope)
+		}
 		if err != nil {
 			return writeCompleteMsg{index: index, status: "failed", err: err}
 		}
