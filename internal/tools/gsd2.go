@@ -56,33 +56,39 @@ func writeGSD2(scope config.ConfigScope) error {
 		"providers": map[string]any{
 			"castai": map[string]any{
 				"name":         "Cast AI",
-				"type":         "openai-compatible",
-				"baseURL":      baseURL,
-				"apiKeyEnv":    "KIMCHI_API_KEY",
+				"baseUrl":      baseURL,
+				"apiKey":       apiKey,
+				"api":          "openai",
 				"defaultModel": reasoningModel,
-			},
-		},
-		"models": map[string]any{
-			reasoningModel: map[string]any{
-				"provider":      "castai",
-				"name":          reasoningModel,
-				"contextWindow": reasoningContext,
-				"maxOutput":     reasoningOutput,
-				"capabilities": map[string]any{
-					"reasoning": true,
-					"toolCall":  true,
-					"vision":    false,
-				},
-			},
-			codingModel: map[string]any{
-				"provider":      "castai",
-				"name":          codingModel,
-				"contextWindow": codingContext,
-				"maxOutput":     codingOutput,
-				"capabilities": map[string]any{
-					"reasoning": false,
-					"toolCall":  true,
-					"vision":    false,
+				"models": []map[string]any{
+					{
+						"id":            reasoningModel,
+						"name":          "GLM-5 FP8",
+						"contextWindow": reasoningContext,
+						"maxTokens":     reasoningOutput,
+						"reasoning":     true,
+						"input":         []string{"text"},
+						"cost": map[string]any{
+							"input":      0,
+							"output":     0,
+							"cacheRead":  0,
+							"cacheWrite": 0,
+						},
+					},
+					{
+						"id":            codingModel,
+						"name":          "MiniMax M2.5",
+						"contextWindow": codingContext,
+						"maxTokens":     codingOutput,
+						"reasoning":     false,
+						"input":         []string{"text"},
+						"cost": map[string]any{
+							"input":      0,
+							"output":     0,
+							"cacheRead":  0,
+							"cacheWrite": 0,
+						},
+					},
 				},
 			},
 		},
@@ -90,14 +96,6 @@ func writeGSD2(scope config.ConfigScope) error {
 
 	if err := config.WriteJSON(modelsPath, modelsContent); err != nil {
 		return fmt.Errorf("write models.json: %w", err)
-	}
-
-	authPath := filepath.Join(agentDir, "auth.json")
-	authContent := map[string]any{
-		"KIMCHI_API_KEY": apiKey,
-	}
-	if err := config.WriteJSON(authPath, authContent); err != nil {
-		return fmt.Errorf("write auth.json: %w", err)
 	}
 
 	prefsPath := filepath.Join(gsdDir, "preferences.md")
