@@ -210,7 +210,7 @@ func (s *DoneStep) runStreamBackground() {
 }
 
 func (s *DoneStep) sendDefaultMessage() {
-	streamCh <- "Welcome to AI Enabler by Cast AI!\n\n"
+	streamCh <- "Welcome to Cast AI!\\n\\n"
 	streamCh <- "You've just unlocked access to powerful open-source models!\n\n"
 	streamCh <- "glm-5-fp8 is your reasoning companion for planning,\n"
 	streamCh <- "analysis, and solving complex problems.\n\n"
@@ -227,7 +227,7 @@ func getToolTip(toolID tools.ToolID) string {
 	case tools.ToolOpenCode:
 		return "Run 'opencode' in any project directory to start. Use Ctrl+K for quick actions."
 	case tools.ToolClaudeCode:
-		return "Run 'claude' to start. Default model is AI Enabler's glm-5-fp8. Use /models to switch to Opus/Haiku (actual Claude) if needed."
+		return "Run 'claude' to start. Default model is Cast AI's glm-5-fp8. Use /models to switch to Opus/Haiku (actual Claude) if needed."
 	case tools.ToolZed:
 		return "Open Zed and use Cmd+Enter to send prompts to the AI assistant."
 	case tools.ToolCodex:

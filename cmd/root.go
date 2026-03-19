@@ -21,7 +21,7 @@ func NewRootCommand() *cobra.Command {
 	root := &cobra.Command{
 		Use:   "kimchi",
 		Short: "Configure AI coding tools to use Cast AI open-source models",
-		Long: `Kimchi - AI Enabler by Cast AI
+		Long: `Kimchi by Cast AI
 Connect your AI tools to powerful open-source models
 
 This tool configures AI coding assistants (OpenCode, Claude Code, Cursor, etc.)

@@ -81,7 +81,7 @@ model = "%s"
 	}
 
 	instructionsPath := filepath.Join(basePath, "AGENTS.md")
-	instructions := `# AI Enabler Configuration
+	instructions := `# Cast AI Configuration
 
 This project is configured to use Cast AI's open-source models:
 - glm-5-fp8 for reasoning/planning

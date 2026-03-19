@@ -7,7 +7,7 @@ RED='\033[0;31m'
 BLUE='\033[0;34m'
 NC='\033[0m'
 
-echo -e "${BLUE}Installing Kimchi - AI Enabler Setup...${NC}"
+echo -e "${BLUE}Installing Kimchi...${NC}"
 
 OS=$(uname -s | tr '[:upper:]' '[:lower:]')
 case "$OS" in
@@ -60,6 +60,6 @@ fi
 echo ""
 echo -e "${GREEN}✓ Installed kimchi to ${INSTALL_PATH}${NC}"
 echo ""
-echo -e "${BLUE}Launching AI Enabler Setup...${NC}"
+echo -e "${BLUE}Launching Kimchi...${NC}"
 echo ""
 exec "$INSTALL_PATH"
