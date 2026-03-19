@@ -89,11 +89,22 @@ func (s *ConfigureStep) Update(msg tea.Msg) (Step, tea.Cmd) {
 		}
 		if s.allComplete() {
 			s.done = true
+			if s.hasErrors() {
+				return s, nil
+			}
 			return s, tea.Tick(500*time.Millisecond, func(t time.Time) tea.Msg {
 				return NextStepMsg{}
 			})
 		}
 		return s, nil
+
+	case tea.KeyMsg:
+		if s.done && s.hasErrors() {
+			switch msg.(tea.KeyMsg).String() {
+			case "enter", "ctrl+c", "q":
+				return s, func() tea.Msg { return NextStepMsg{} }
+			}
+		}
 	}
 
 	return s, nil
@@ -126,6 +137,15 @@ func (s *ConfigureStep) allComplete() bool {
 		}
 	}
 	return true
+}
+
+func (s *ConfigureStep) hasErrors() bool {
+	for _, status := range s.statuses {
+		if status.err != nil {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *ConfigureStep) View() string {
@@ -164,7 +184,13 @@ func (s *ConfigureStep) View() string {
 
 	if s.done {
 		b.WriteString("\n")
-		b.WriteString(Styles.Success.Render("Configuration complete!"))
+		if s.hasErrors() {
+			b.WriteString(Styles.Warning.Render("Configuration completed with errors."))
+			b.WriteString("\n")
+			b.WriteString(Styles.Help.Render("Press enter to continue"))
+		} else {
+			b.WriteString(Styles.Success.Render("Configuration complete!"))
+		}
 	}
 
 	return b.String()
@@ -175,8 +201,12 @@ func (s *ConfigureStep) Name() string {
 }
 
 func (s *ConfigureStep) Info() StepInfo {
+	bindings := []KeyBinding{}
+	if s.done && s.hasErrors() {
+		bindings = append(bindings, BindingsConfirm)
+	}
 	return StepInfo{
 		Name:        "Configure",
-		KeyBindings: []KeyBinding{}, // Auto-advances, no user interaction
+		KeyBindings: bindings,
 	}
 }
