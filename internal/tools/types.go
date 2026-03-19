@@ -10,6 +10,7 @@ const (
 	ToolZed        ToolID = "zed"
 	ToolCodex      ToolID = "codex"
 	ToolCline      ToolID = "cline"
+	ToolGSD2       ToolID = "gsd2"
 	ToolGeneric    ToolID = "generic"
 )
 
