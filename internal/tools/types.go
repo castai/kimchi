@@ -1,0 +1,31 @@
+package tools
+
+import "github.com/castai/kimchi/internal/config"
+
+type ToolID string
+
+const (
+	ToolOpenCode   ToolID = "opencode"
+	ToolClaudeCode ToolID = "claude-code"
+	ToolZed        ToolID = "zed"
+	ToolCodex      ToolID = "codex"
+	ToolCline      ToolID = "cline"
+	ToolGeneric    ToolID = "generic"
+)
+
+type Tool struct {
+	ID          ToolID
+	Name        string
+	Description string
+	ConfigPath  string
+	BinaryName  string
+	IsInstalled func() bool
+	Write       func(scope config.ConfigScope) error
+}
+
+func (t Tool) DetectInstalled() bool {
+	if t.IsInstalled == nil {
+		return false
+	}
+	return t.IsInstalled()
+}
