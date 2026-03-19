@@ -29,7 +29,7 @@ func (s *TelemetryStep) Update(msg tea.Msg) (Step, tea.Cmd) {
 			return s, func() tea.Msg { return AbortMsg{} }
 		case "esc":
 			return s, func() tea.Msg { return PrevStepMsg{} }
-		case "left", "h", "right", "l":
+		case "up", "k", "down", "j":
 			if s.choice == 0 {
 				s.choice = 1
 			} else {
@@ -102,7 +102,7 @@ func (s *TelemetryStep) Info() StepInfo {
 	return StepInfo{
 		Name: "Telemetry",
 		KeyBindings: []KeyBinding{
-			{Key: "←/→", Text: "toggle"},
+			BindingsNavigate,
 			BindingsConfirm,
 			BindingsBack,
 			BindingsQuit,
