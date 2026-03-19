@@ -187,7 +187,7 @@ func (s *GSDStep) View() string {
 	b.WriteString(Styles.Title.Render("GSD Agent Setup"))
 	b.WriteString("\n\n")
 
-	b.WriteString("GSD (Goal-Driven Development) agents help automate complex\n")
+	b.WriteString("GSD (Get Shit Done) agents help automate complex\n")
 	b.WriteString("software engineering tasks with planning and execution.\n\n")
 
 	for i, status := range s.toolStatuses {
