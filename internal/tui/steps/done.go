@@ -10,6 +10,7 @@ import (
 	"strings"
 	"sync"
 	"text/template"
+	"time"
 
 	"github.com/charmbracelet/bubbles/spinner"
 	"github.com/charmbracelet/bubbletea"
@@ -31,18 +32,23 @@ type streamDoneMsg struct{}
 
 type streamStartMsg struct{}
 
+type streamTimeoutMsg struct{}
+
 var (
 	streamMu      sync.Mutex
 	streamCh      chan string
 	streamStarted bool
+	streamCancel  context.CancelFunc
+	streamClose   sync.Once
 )
 
 type DoneStep struct {
-	apiKey      string
-	toolIDs     []tools.ToolID
-	streamedMsg strings.Builder
-	streamDone  bool
-	spin        spinner.Model
+	apiKey             string
+	toolIDs            []tools.ToolID
+	streamedMsg        strings.Builder
+	streamDone         bool
+	hasReceivedContent bool
+	spin               spinner.Model
 }
 
 func NewDoneStep(ctx context.Context, apiKey string, toolIDs []tools.ToolID) *DoneStep {
@@ -61,6 +67,7 @@ func (s *DoneStep) Init() tea.Cmd {
 	return tea.Batch(
 		func() tea.Msg { return streamStartMsg{} },
 		s.spin.Tick,
+		tea.Tick(15*time.Second, func(time.Time) tea.Msg { return streamTimeoutMsg{} }),
 	)
 }
 
@@ -71,17 +78,40 @@ func (s *DoneStep) Update(msg tea.Msg) (Step, tea.Cmd) {
 		if !streamStarted {
 			streamStarted = true
 			streamCh = make(chan string, 100)
-			go s.runStreamBackground()
+			ctx, cancel := context.WithCancel(context.Background())
+			streamCancel = cancel
+			go s.runStreamBackground(ctx)
 		}
 		streamMu.Unlock()
 		return s, s.waitForChunk()
 
 	case streamChunkMsg:
+		s.hasReceivedContent = true
 		s.streamedMsg.WriteString(msg.content)
 		return s, s.waitForChunk()
 
 	case streamDoneMsg:
 		s.streamDone = true
+		return s, nil
+
+	case streamTimeoutMsg:
+		if !s.hasReceivedContent {
+			// No content received within 15s — cancel the stream goroutine
+			// and fall back to the default message.
+			streamMu.Lock()
+			if streamCancel != nil {
+				streamCancel()
+			}
+			ch := streamCh
+			streamMu.Unlock()
+			if ch != nil {
+				go func() {
+					defer func() { recover() }()
+					s.sendDefaultMessageTo(ch)
+					closeStream()
+				}()
+			}
+		}
 		return s, nil
 
 	case spinner.TickMsg:
@@ -96,9 +126,7 @@ func (s *DoneStep) Update(msg tea.Msg) (Step, tea.Cmd) {
 		case "ctrl+c", "q":
 			return s, tea.Quit
 		case "enter":
-			if s.streamDone {
-				return s, tea.Quit
-			}
+			return s, tea.Quit
 		}
 	}
 
@@ -123,11 +151,18 @@ func (s *DoneStep) waitForChunk() tea.Cmd {
 	}
 }
 
-func (s *DoneStep) runStreamBackground() {
-	defer close(streamCh)
+func closeStream() {
+	streamClose.Do(func() { close(streamCh) })
+}
+
+func (s *DoneStep) runStreamBackground(ctx context.Context) {
+	// Recover from any send-on-closed-channel panic that may occur if the
+	// timeout handler closes the channel while we are still sending to it.
+	defer func() { recover() }()
 
 	if s.apiKey == "" {
 		s.sendDefaultMessage()
+		closeStream()
 		return
 	}
 
@@ -146,7 +181,10 @@ func (s *DoneStep) runStreamBackground() {
 
 	prompt, err := s.buildPrompt(toolsSection)
 	if err != nil {
-		s.sendDefaultMessage()
+		if ctx.Err() == nil {
+			s.sendDefaultMessage()
+		}
+		closeStream()
 		return
 	}
 
@@ -161,13 +199,19 @@ func (s *DoneStep) runStreamBackground() {
 
 	jsonBody, err := json.Marshal(reqBody)
 	if err != nil {
-		s.sendDefaultMessage()
+		if ctx.Err() == nil {
+			s.sendDefaultMessage()
+		}
+		closeStream()
 		return
 	}
 
-	req, err := http.NewRequestWithContext(context.Background(), "POST", "https://llm.cast.ai/openai/v1/chat/completions", strings.NewReader(string(jsonBody)))
+	req, err := http.NewRequestWithContext(ctx, "POST", "https://llm.cast.ai/openai/v1/chat/completions", strings.NewReader(string(jsonBody)))
 	if err != nil {
-		s.sendDefaultMessage()
+		if ctx.Err() == nil {
+			s.sendDefaultMessage()
+		}
+		closeStream()
 		return
 	}
 
@@ -176,19 +220,26 @@ func (s *DoneStep) runStreamBackground() {
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
-		s.sendDefaultMessage()
+		if ctx.Err() == nil {
+			s.sendDefaultMessage()
+		}
+		closeStream()
 		return
 	}
 	defer resp.Body.Close()
 
 	scanner := bufio.NewScanner(resp.Body)
 	for scanner.Scan() {
+		if ctx.Err() != nil {
+			return
+		}
 		line := scanner.Text()
 		if !strings.HasPrefix(line, "data: ") {
 			continue
 		}
 		data := strings.TrimPrefix(line, "data: ")
 		if data == "[DONE]" {
+			closeStream()
 			return
 		}
 
@@ -207,19 +258,24 @@ func (s *DoneStep) runStreamBackground() {
 			streamCh <- content
 		}
 	}
+	closeStream()
 }
 
 func (s *DoneStep) sendDefaultMessage() {
-	streamCh <- "Welcome to Cast AI!\\n\\n"
-	streamCh <- "You've just unlocked access to powerful open-source models!\n\n"
-	streamCh <- "glm-5-fp8 is your reasoning companion for planning,\n"
-	streamCh <- "analysis, and solving complex problems.\n\n"
-	streamCh <- "minimax-m2.5 is your coding partner for writing,\n"
-	streamCh <- "refactoring, and debugging code.\n\n"
-	streamCh <- "Don't be shy - experiment boldly! Ask tough questions,\n"
-	streamCh <- "request detailed explanations, generate entire features.\n"
-	streamCh <- "These models are here to help you build amazing things.\n\n"
-	streamCh <- "Enjoy the journey!"
+	s.sendDefaultMessageTo(streamCh)
+}
+
+func (s *DoneStep) sendDefaultMessageTo(ch chan string) {
+	ch <- "Welcome to Cast AI!\n\n"
+	ch <- "You've just unlocked access to powerful open-source models!\n\n"
+	ch <- "glm-5-fp8 is your reasoning companion for planning,\n"
+	ch <- "analysis, and solving complex problems.\n\n"
+	ch <- "minimax-m2.5 is your coding partner for writing,\n"
+	ch <- "refactoring, and debugging code.\n\n"
+	ch <- "Don't be shy - experiment boldly! Ask tough questions,\n"
+	ch <- "request detailed explanations, generate entire features.\n"
+	ch <- "These models are here to help you build amazing things.\n\n"
+	ch <- "Enjoy the journey!"
 }
 
 func getToolTip(toolID tools.ToolID) string {
@@ -263,12 +319,11 @@ func (s *DoneStep) View() string {
 	msg = wordWrap(msg, 60)
 	b.WriteString(doneStreamStyle.Render(msg))
 
+	b.WriteString("\n\n")
 	if s.streamDone {
-		b.WriteString("\n\n")
 		b.WriteString(Styles.Help.Render("Press Enter to exit"))
 	} else {
-		b.WriteString("\n\n")
-		b.WriteString(fmt.Sprintf("%s Generating welcome message...", s.spin.View()))
+		b.WriteString(fmt.Sprintf("%s Generating welcome message...  %s", s.spin.View(), Styles.Help.Render("(Enter to skip)")))
 	}
 
 	return b.String()
