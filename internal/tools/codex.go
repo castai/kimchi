@@ -4,18 +4,19 @@ import (
 	"bytes"
 	"fmt"
 	"os"
-	"path/filepath"
 	"strings"
 
 	"github.com/castai/kimchi/internal/config"
 )
+
+const codexConfigPath = "~/.codex/config.toml"
 
 func init() {
 	register(Tool{
 		ID:          ToolCodex,
 		Name:        "Codex",
 		Description: "OpenAI coding CLI",
-		ConfigPath:  "~/.codex/",
+		ConfigPath:  codexConfigPath,
 		BinaryName:  "codex",
 		IsInstalled: detectBinary("codex"),
 		Write:       writeCodex,
@@ -31,26 +32,10 @@ func writeCodex(scope config.ConfigScope) error {
 		return fmt.Errorf("API key not configured")
 	}
 
-	var basePath string
-	if scope == config.ScopeProject {
-		cwd, err := os.Getwd()
-		if err != nil {
-			return fmt.Errorf("get working directory: %w", err)
-		}
-		basePath = filepath.Join(cwd, ".codex")
-	} else {
-		homeDir, err := os.UserHomeDir()
-		if err != nil {
-			return fmt.Errorf("get home directory: %w", err)
-		}
-		basePath = filepath.Join(homeDir, ".codex")
+	envPath, err := config.ScopePaths(scope, "~/.codex/.env")
+	if err != nil {
+		return fmt.Errorf("get .env path: %w", err)
 	}
-
-	if err := os.MkdirAll(basePath, 0755); err != nil {
-		return fmt.Errorf("create directory: %w", err)
-	}
-
-	envPath := filepath.Join(basePath, ".env")
 
 	existingEnv, err := os.ReadFile(envPath)
 	if err != nil && !os.IsNotExist(err) {
@@ -67,7 +52,10 @@ func writeCodex(scope config.ConfigScope) error {
 		return fmt.Errorf("write .env: %w", err)
 	}
 
-	configPath := filepath.Join(basePath, "config.toml")
+	configPath, err := config.ScopePaths(scope, codexConfigPath)
+	if err != nil {
+		return fmt.Errorf("get config.toml path: %w", err)
+	}
 	configContent := fmt.Sprintf(`[openai]
 base_url = "%s/v1"
 api_key = "%s"
@@ -80,7 +68,10 @@ model = "%s"
 		return fmt.Errorf("write config.toml: %w", err)
 	}
 
-	instructionsPath := filepath.Join(basePath, "AGENTS.md")
+	instructionsPath, err := config.ScopePaths(scope, "~/.codex/AGENTS.md")
+	if err != nil {
+		return fmt.Errorf("get AGENTS.md path: %w", err)
+	}
 	instructions := `# Cast AI Configuration
 
 This project is configured to use Cast AI's open-source models:

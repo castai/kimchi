@@ -4,17 +4,18 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
-	"path/filepath"
 
 	"github.com/castai/kimchi/internal/config"
 )
+
+const cursorConfigPath = "~/.cursor/config.json"
 
 func init() {
 	register(Tool{
 		ID:          ToolCursor,
 		Name:        "Cursor",
 		Description: "AI-powered code editor",
-		ConfigPath:  "~/.cursor/config.json",
+		ConfigPath:  cursorConfigPath,
 		BinaryName:  "cursor",
 		IsInstalled: detectCursor,
 		Write:       writeCursor,
@@ -22,13 +23,11 @@ func init() {
 }
 
 func detectCursor() bool {
-	homeDir, err := os.UserHomeDir()
-	if err != nil {
-		return false
-	}
-	configPath := filepath.Join(homeDir, ".cursor", "config.json")
-	if _, err := os.Stat(configPath); err == nil {
-		return true
+	globalPath, err := config.ScopePaths(config.ScopeGlobal, cursorConfigPath)
+	if err == nil {
+		if _, err := os.Stat(globalPath); err == nil {
+			return true
+		}
 	}
 	if _, err := exec.LookPath("cursor"); err == nil {
 		return true
@@ -45,19 +44,12 @@ func writeCursor(scope config.ConfigScope) error {
 		return fmt.Errorf("API key not configured")
 	}
 
-	homeDir, err := os.UserHomeDir()
+	path, err := config.ScopePaths(scope, cursorConfigPath)
 	if err != nil {
-		return fmt.Errorf("get home directory: %w", err)
+		return fmt.Errorf("get config path: %w", err)
 	}
 
-	cursorDir := filepath.Join(homeDir, ".cursor")
-	if err := os.MkdirAll(cursorDir, 0755); err != nil {
-		return fmt.Errorf("create cursor directory: %w", err)
-	}
-
-	configPath := filepath.Join(cursorDir, "config.json")
-
-	existing, err := config.ReadJSON(configPath)
+	existing, err := config.ReadJSON(path)
 	if err != nil {
 		return fmt.Errorf("read existing config: %w", err)
 	}
@@ -71,7 +63,7 @@ func writeCursor(scope config.ConfigScope) error {
 	openAIConfig["baseURL"] = baseURL
 	existing["openAICompatible"] = openAIConfig
 
-	if err := config.WriteJSON(configPath, existing); err != nil {
+	if err := config.WriteJSON(path, existing); err != nil {
 		return fmt.Errorf("write config: %w", err)
 	}
 

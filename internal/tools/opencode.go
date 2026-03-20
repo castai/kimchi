@@ -67,6 +67,15 @@ func writeOpenCode(scope config.ConfigScope) error {
 					"output":  codingOutput,
 				},
 			},
+			imageModel: map[string]any{
+				"name":      imageModel,
+				"tool_call": true,
+				"reasoning": false,
+				"limit": map[string]any{
+					"context": imageContext,
+					"output":  imageOutput,
+				},
+			},
 		},
 	}
 

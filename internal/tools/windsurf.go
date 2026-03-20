@@ -31,20 +31,12 @@ func getWindsurfConfigPath() string {
 }
 
 func detectWindsurf() bool {
-	homeDir, err := os.UserHomeDir()
-	if err != nil {
-		return false
-	}
-
-	var appSupportPath string
-	if runtime.GOOS == "darwin" {
-		appSupportPath = filepath.Join(homeDir, "Library", "Application Support", "Windsurf")
-	} else {
-		appSupportPath = filepath.Join(homeDir, ".config", "windsurf")
-	}
-
-	if _, err := os.Stat(appSupportPath); err == nil {
-		return true
+	globalPath, err := config.ScopePaths(config.ScopeGlobal, getWindsurfConfigPath())
+	if err == nil {
+		appSupportPath := filepath.Dir(filepath.Dir(filepath.Dir(globalPath))) // trim /User/globalStorage/storage.json
+		if _, err := os.Stat(appSupportPath); err == nil {
+			return true
+		}
 	}
 
 	if _, err := exec.LookPath("windsurf"); err == nil {
@@ -62,16 +54,9 @@ func writeWindsurf(scope config.ConfigScope) error {
 		return fmt.Errorf("API key not configured")
 	}
 
-	homeDir, err := os.UserHomeDir()
+	storagePath, err := config.ScopePaths(scope, getWindsurfConfigPath())
 	if err != nil {
-		return fmt.Errorf("get home directory: %w", err)
-	}
-
-	var storagePath string
-	if runtime.GOOS == "darwin" {
-		storagePath = filepath.Join(homeDir, "Library", "Application Support", "Windsurf", "User", "globalStorage", "storage.json")
-	} else {
-		storagePath = filepath.Join(homeDir, ".config", "windsurf", "User", "globalStorage", "storage.json")
+		return fmt.Errorf("get config path: %w", err)
 	}
 
 	storageDir := filepath.Dir(storagePath)
@@ -130,8 +115,22 @@ func writeWindsurf(scope config.ConfigScope) error {
 		},
 	}
 
+	imageConfig := map[string]any{
+		"apiProvider": "openai-native",
+		"apiKey":      apiKey,
+		"baseUrl":     baseURL,
+		"modelId":     imageModel,
+		"modelInfo": map[string]any{
+			"maxTokens":           imageOutput,
+			"contextWindow":       imageContext,
+			"supportsImages":      true,
+			"supportsPromptCache": false,
+		},
+	}
+
 	apiConfigs["castai-coding"] = castaiConfig
 	apiConfigs["castai-reasoning"] = reasoningConfig
+	apiConfigs["castai-image"] = imageConfig
 	state["apiConfigs"] = apiConfigs
 	state["currentApiConfigName"] = "castai-coding"
 	storage[stateKey] = state

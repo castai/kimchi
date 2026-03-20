@@ -2,9 +2,7 @@ package tools
 
 import (
 	"fmt"
-	"os"
 	"os/exec"
-	"path/filepath"
 
 	"github.com/castai/kimchi/internal/config"
 )
@@ -39,19 +37,10 @@ func writeGSD2(scope config.ConfigScope) error {
 		return fmt.Errorf("API key not configured")
 	}
 
-	homeDir, err := os.UserHomeDir()
+	modelsPath, err := config.ScopePaths(scope, "~/.gsd/agent/models.json")
 	if err != nil {
-		return fmt.Errorf("get home directory: %w", err)
+		return fmt.Errorf("get models config path: %w", err)
 	}
-
-	gsdDir := filepath.Join(homeDir, ".gsd")
-	agentDir := filepath.Join(gsdDir, "agent")
-
-	if err := os.MkdirAll(agentDir, 0755); err != nil {
-		return fmt.Errorf("create GSD directories: %w", err)
-	}
-
-	modelsPath := filepath.Join(agentDir, "models.json")
 	modelsContent := map[string]any{
 		"providers": map[string]any{
 			"castai": map[string]any{
@@ -89,6 +78,20 @@ func writeGSD2(scope config.ConfigScope) error {
 							"cacheWrite": 0,
 						},
 					},
+					{
+						"id":            imageModel,
+						"name":          "Kimi K2.5",
+						"contextWindow": imageContext,
+						"maxTokens":     imageOutput,
+						"reasoning":     false,
+						"input":         []string{"text", "image"},
+						"cost": map[string]any{
+							"input":      0,
+							"output":     0,
+							"cacheRead":  0,
+							"cacheWrite": 0,
+						},
+					},
 				},
 			},
 		},
@@ -98,7 +101,10 @@ func writeGSD2(scope config.ConfigScope) error {
 		return fmt.Errorf("write models.json: %w", err)
 	}
 
-	prefsPath := filepath.Join(gsdDir, "preferences.md")
+	prefsPath, err := config.ScopePaths(scope, "~/.gsd/preferences.md")
+	if err != nil {
+		return fmt.Errorf("get preferences config path: %w", err)
+	}
 	prefsContent := fmt.Sprintf(`---
 version: 1
 models:
@@ -114,7 +120,7 @@ git:
 ---
 `, codingModel, reasoningModel, codingModel, codingModel)
 
-	if err := os.WriteFile(prefsPath, []byte(prefsContent), 0644); err != nil {
+	if err := config.WriteFile(prefsPath, []byte(prefsContent)); err != nil {
 		return fmt.Errorf("write preferences.md: %w", err)
 	}
 

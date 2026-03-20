@@ -34,14 +34,6 @@ type streamStartMsg struct{}
 
 type streamTimeoutMsg struct{}
 
-var (
-	streamMu      sync.Mutex
-	streamCh      chan string
-	streamStarted bool
-	streamCancel  context.CancelFunc
-	streamClose   sync.Once
-)
-
 type DoneStep struct {
 	apiKey             string
 	toolIDs            []tools.ToolID
@@ -49,6 +41,11 @@ type DoneStep struct {
 	streamDone         bool
 	hasReceivedContent bool
 	spin               spinner.Model
+
+	streamMu     sync.Mutex
+	streamCh     chan string
+	streamCancel context.CancelFunc
+	streamClose  sync.Once
 }
 
 func NewDoneStep(ctx context.Context, apiKey string, toolIDs []tools.ToolID) *DoneStep {
@@ -74,15 +71,14 @@ func (s *DoneStep) Init() tea.Cmd {
 func (s *DoneStep) Update(msg tea.Msg) (Step, tea.Cmd) {
 	switch msg := msg.(type) {
 	case streamStartMsg:
-		streamMu.Lock()
-		if !streamStarted {
-			streamStarted = true
-			streamCh = make(chan string, 100)
+		s.streamMu.Lock()
+		if s.streamCh == nil {
+			s.streamCh = make(chan string, 100)
 			ctx, cancel := context.WithCancel(context.Background())
-			streamCancel = cancel
+			s.streamCancel = cancel
 			go s.runStreamBackground(ctx)
 		}
-		streamMu.Unlock()
+		s.streamMu.Unlock()
 		return s, s.waitForChunk()
 
 	case streamChunkMsg:
@@ -98,17 +94,17 @@ func (s *DoneStep) Update(msg tea.Msg) (Step, tea.Cmd) {
 		if !s.hasReceivedContent {
 			// No content received within 15s — cancel the stream goroutine
 			// and fall back to the default message.
-			streamMu.Lock()
-			if streamCancel != nil {
-				streamCancel()
+			s.streamMu.Lock()
+			if s.streamCancel != nil {
+				s.streamCancel()
 			}
-			ch := streamCh
-			streamMu.Unlock()
+			ch := s.streamCh
+			s.streamMu.Unlock()
 			if ch != nil {
 				go func() {
 					defer func() { recover() }()
 					s.sendDefaultMessageTo(ch)
-					closeStream()
+					s.closeStream()
 				}()
 			}
 		}
@@ -135,9 +131,9 @@ func (s *DoneStep) Update(msg tea.Msg) (Step, tea.Cmd) {
 
 func (s *DoneStep) waitForChunk() tea.Cmd {
 	return func() tea.Msg {
-		streamMu.Lock()
-		ch := streamCh
-		streamMu.Unlock()
+		s.streamMu.Lock()
+		ch := s.streamCh
+		s.streamMu.Unlock()
 
 		if ch == nil {
 			return streamDoneMsg{}
@@ -151,8 +147,8 @@ func (s *DoneStep) waitForChunk() tea.Cmd {
 	}
 }
 
-func closeStream() {
-	streamClose.Do(func() { close(streamCh) })
+func (s *DoneStep) closeStream() {
+	s.streamClose.Do(func() { close(s.streamCh) })
 }
 
 func (s *DoneStep) runStreamBackground(ctx context.Context) {
@@ -162,7 +158,7 @@ func (s *DoneStep) runStreamBackground(ctx context.Context) {
 
 	if s.apiKey == "" {
 		s.sendDefaultMessage()
-		closeStream()
+		s.closeStream()
 		return
 	}
 
@@ -184,7 +180,7 @@ func (s *DoneStep) runStreamBackground(ctx context.Context) {
 		if ctx.Err() == nil {
 			s.sendDefaultMessage()
 		}
-		closeStream()
+		s.closeStream()
 		return
 	}
 
@@ -202,7 +198,7 @@ func (s *DoneStep) runStreamBackground(ctx context.Context) {
 		if ctx.Err() == nil {
 			s.sendDefaultMessage()
 		}
-		closeStream()
+		s.closeStream()
 		return
 	}
 
@@ -211,7 +207,7 @@ func (s *DoneStep) runStreamBackground(ctx context.Context) {
 		if ctx.Err() == nil {
 			s.sendDefaultMessage()
 		}
-		closeStream()
+		s.closeStream()
 		return
 	}
 
@@ -223,10 +219,18 @@ func (s *DoneStep) runStreamBackground(ctx context.Context) {
 		if ctx.Err() == nil {
 			s.sendDefaultMessage()
 		}
-		closeStream()
+		s.closeStream()
 		return
 	}
 	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		if ctx.Err() == nil {
+			s.sendDefaultMessage()
+		}
+		s.closeStream()
+		return
+	}
 
 	scanner := bufio.NewScanner(resp.Body)
 	for scanner.Scan() {
@@ -239,7 +243,7 @@ func (s *DoneStep) runStreamBackground(ctx context.Context) {
 		}
 		data := strings.TrimPrefix(line, "data: ")
 		if data == "[DONE]" {
-			closeStream()
+			s.closeStream()
 			return
 		}
 
@@ -255,23 +259,26 @@ func (s *DoneStep) runStreamBackground(ctx context.Context) {
 		}
 		if len(chunk.Choices) > 0 && chunk.Choices[0].Delta.Content != "" {
 			content := chunk.Choices[0].Delta.Content
-			streamCh <- content
+			s.streamCh <- content
 		}
 	}
-	closeStream()
+	s.closeStream()
 }
 
 func (s *DoneStep) sendDefaultMessage() {
-	s.sendDefaultMessageTo(streamCh)
+	s.sendDefaultMessageTo(s.streamCh)
 }
 
 func (s *DoneStep) sendDefaultMessageTo(ch chan string) {
-	ch <- "Welcome to Cast AI!\n\n"
-	ch <- "You've just unlocked access to powerful open-source models!\n\n"
+	ch <- "Welcome to Kimchi by Cast AI!\n\n"
+	ch <- "You've just unlocked access to powerful open-source models\n"
+	ch <- "via Cast AI's infrastructure!\n\n"
 	ch <- "glm-5-fp8 is your reasoning companion for planning,\n"
 	ch <- "analysis, and solving complex problems.\n\n"
 	ch <- "minimax-m2.5 is your coding partner for writing,\n"
 	ch <- "refactoring, and debugging code.\n\n"
+	ch <- "kimi-k2.5 is your fast, affordable model for\n"
+	ch <- "image processing tasks.\n\n"
 	ch <- "Don't be shy - experiment boldly! Ask tough questions,\n"
 	ch <- "request detailed explanations, generate entire features.\n"
 	ch <- "These models are here to help you build amazing things.\n\n"
@@ -283,7 +290,7 @@ func getToolTip(toolID tools.ToolID) string {
 	case tools.ToolOpenCode:
 		return "Run 'opencode' in any project directory to start. Use Ctrl+K for quick actions."
 	case tools.ToolClaudeCode:
-		return "Run 'claude' to start. Default model is Cast AI's glm-5-fp8. Use /models to switch to Opus/Haiku (actual Claude) if needed."
+		return "Run 'claude' to start. Default model is Kimchi's glm-5-fp8. Use /models to switch to Opus/Haiku (actual Claude) if needed."
 	case tools.ToolZed:
 		return "Open Zed and use Cmd+Enter to send prompts to the AI assistant."
 	case tools.ToolCodex:

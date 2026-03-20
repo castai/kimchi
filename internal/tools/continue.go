@@ -3,17 +3,18 @@ package tools
 import (
 	"fmt"
 	"os"
-	"path/filepath"
 
 	"github.com/castai/kimchi/internal/config"
 )
+
+const continueConfigPath = "~/.continue/config.json"
 
 func init() {
 	register(Tool{
 		ID:          ToolContinue,
 		Name:        "Continue",
 		Description: "AI code assistant extension",
-		ConfigPath:  "~/.continue/config.json",
+		ConfigPath:  continueConfigPath,
 		BinaryName:  "continue",
 		IsInstalled: detectContinue,
 		Write:       writeContinue,
@@ -21,12 +22,11 @@ func init() {
 }
 
 func detectContinue() bool {
-	homeDir, err := os.UserHomeDir()
+	globalPath, err := config.ScopePaths(config.ScopeGlobal, continueConfigPath)
 	if err != nil {
 		return false
 	}
-	configPath := filepath.Join(homeDir, ".continue", "config.json")
-	if _, err := os.Stat(configPath); err == nil {
+	if _, err := os.Stat(globalPath); err == nil {
 		return true
 	}
 	return false
@@ -41,19 +41,12 @@ func writeContinue(scope config.ConfigScope) error {
 		return fmt.Errorf("API key not configured")
 	}
 
-	homeDir, err := os.UserHomeDir()
+	path, err := config.ScopePaths(scope, continueConfigPath)
 	if err != nil {
-		return fmt.Errorf("get home directory: %w", err)
+		return fmt.Errorf("get config path: %w", err)
 	}
 
-	continueDir := filepath.Join(homeDir, ".continue")
-	if err := os.MkdirAll(continueDir, 0755); err != nil {
-		return fmt.Errorf("create continue directory: %w", err)
-	}
-
-	configPath := filepath.Join(continueDir, "config.json")
-
-	existing, err := config.ReadJSON(configPath)
+	existing, err := config.ReadJSON(path)
 	if err != nil {
 		return fmt.Errorf("read existing config: %w", err)
 	}
@@ -61,6 +54,7 @@ func writeContinue(scope config.ConfigScope) error {
 	models, _ := existing["models"].([]any)
 	hasReasoningModel := false
 	hasCodingModel := false
+	hasImageModel := false
 
 	for _, m := range models {
 		modelMap, ok := m.(map[string]any)
@@ -73,6 +67,9 @@ func writeContinue(scope config.ConfigScope) error {
 		}
 		if title == "MiniMax-M2.5 (Cast AI)" {
 			hasCodingModel = true
+		}
+		if title == "Kimi-K2.5 (Cast AI)" {
+			hasImageModel = true
 		}
 	}
 
@@ -104,6 +101,20 @@ func writeContinue(scope config.ConfigScope) error {
 		})
 	}
 
+	if !hasImageModel {
+		models = append(models, map[string]any{
+			"title":         "Kimi-K2.5 (Cast AI)",
+			"provider":      "openai",
+			"model":         imageModel,
+			"apiBase":       baseURL,
+			"apiKey":        apiKey,
+			"contextLength": imageContext,
+			"completionOptions": map[string]any{
+				"maxTokens": imageOutput,
+			},
+		})
+	}
+
 	existing["models"] = models
 
 	if existing["tabAutocompleteModel"] == nil {
@@ -125,7 +136,7 @@ func writeContinue(scope config.ConfigScope) error {
 		}
 	}
 
-	if err := config.WriteJSON(configPath, existing); err != nil {
+	if err := config.WriteJSON(path, existing); err != nil {
 		return fmt.Errorf("write config: %w", err)
 	}
 
