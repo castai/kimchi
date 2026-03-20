@@ -102,7 +102,7 @@ func (s *DoneStep) Update(msg tea.Msg) (Step, tea.Cmd) {
 			s.streamMu.Unlock()
 			if ch != nil {
 				go func() {
-					defer func() { recover() }()
+					defer func() { _ = recover() }()
 					s.sendDefaultMessageTo(ch)
 					s.closeStream()
 				}()
@@ -154,7 +154,7 @@ func (s *DoneStep) closeStream() {
 func (s *DoneStep) runStreamBackground(ctx context.Context) {
 	// Recover from any send-on-closed-channel panic that may occur if the
 	// timeout handler closes the channel while we are still sending to it.
-	defer func() { recover() }()
+	defer func() { _ = recover() }()
 
 	if s.apiKey == "" {
 		s.sendDefaultMessage()
