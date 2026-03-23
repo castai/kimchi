@@ -12,10 +12,11 @@
 
 Kimchi is a CLI tool that configures your favorite AI coding assistants to use open-source models hosted by Cast AI:
 
-| Model | Best For | Context | Output |
-|-------|----------|---------|--------|
-| **glm-5-fp8** | Reasoning, planning, analysis | 160K tokens | 32K tokens |
-| **minimax-m2.5** | Code generation, debugging | 160K tokens | 16K tokens |
+| Model            | Best For                                                                    | Context | Output |
+|------------------|-----------------------------------------------------------------------------|---------|--------|
+| **glm-5-fp8**    | Reasoning, planning, analysis                                               | 202.8K tokens | 32K tokens |
+| **minimax-m2.5** | Code generation, debugging                                                  | 196.6K tokens | 32K tokens |
+| **kimi-k2.5**    | Reasoning, planning, analysis, code generation, debugging, image processing | 202.8K tokens | 32K tokens |
 
 No API keys from Anthropic or OpenAI needed — just your Cast AI API key.
 
