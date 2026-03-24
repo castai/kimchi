@@ -148,9 +148,6 @@ func (s *AuthStep) validate(apiKey string) tea.Cmd {
 func (s *AuthStep) View() string {
 	var b strings.Builder
 
-	b.WriteString(Styles.Title.Render("Cast AI API Key"))
-	b.WriteString("\n\n")
-
 	b.WriteString("You need an API key to use Cast AI's open-source models.\n")
 	b.WriteString("To create one:\n\n")
 
@@ -188,7 +185,7 @@ func (s *AuthStep) Name() string {
 
 func (s *AuthStep) Info() StepInfo {
 	return StepInfo{
-		Name: "Auth",
+		Name: "Kimchi API Key",
 		KeyBindings: []KeyBinding{
 			BindingsConfirm,
 			BindingsBack,

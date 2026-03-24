@@ -28,10 +28,11 @@ type toolGSDStatus struct {
 }
 
 type GSDStep struct {
-	scope        config.ConfigScope
-	toolStatuses []toolGSDStatus
-	selected     int
-	skipReason   string
+	selectedTools []tools.ToolID
+	scope         config.ConfigScope
+	toolStatuses  []toolGSDStatus
+	selected      int
+	skipReason    string
 }
 
 type gsdCheckCompleteMsg struct {
@@ -42,8 +43,9 @@ type gsdCheckCompleteMsg struct {
 
 func NewGSDStep(selectedTools []tools.ToolID, scope config.ConfigScope) *GSDStep {
 	return &GSDStep{
-		scope:        scope,
-		toolStatuses: nil,
+		selectedTools: selectedTools,
+		scope:         scope,
+		toolStatuses:  nil,
 	}
 }
 
@@ -64,15 +66,20 @@ func (s *GSDStep) checkGSDStatus() tea.Cmd {
 			tools.ToolCodex:      gsd.InstallationCodex,
 		}
 
-		for toolID, installType := range toolToGSDType {
-			tool, ok := tools.ByID(toolID)
+		for _, selectedID := range s.selectedTools {
+			installType, ok := toolToGSDType[selectedID]
+			if !ok {
+				continue
+			}
+
+			tool, ok := tools.ByID(selectedID)
 			if !ok {
 				continue
 			}
 
 			installed := installer.IsInstalledFor(installType, scopeStr)
 			statuses = append(statuses, toolGSDStatus{
-				toolID:      toolID,
+				toolID:      selectedID,
 				toolName:    tool.Name,
 				installType: installType,
 				installed:   installed,
@@ -184,16 +191,16 @@ func (s *GSDStep) Update(msg tea.Msg) (Step, tea.Cmd) {
 func (s *GSDStep) View() string {
 	var b strings.Builder
 
-	b.WriteString(Styles.Title.Render("GSD Agent Setup"))
-	b.WriteString("\n\n")
-
-	b.WriteString("GSD (Get Shit Done) agents help automate complex\n")
-	b.WriteString("software engineering tasks with planning and execution.\n\n")
+	b.WriteString("We recommend installing " + Styles.Selected.Render("GSD (Get Shit Done)") + " multi-agent framework.\n")
+	b.WriteString("It orchestrates multiple AI agents — planner, researcher, executor, verifier —\n")
+	b.WriteString("each using the model best suited to the task.\n\n")
+	b.WriteString("Both work seamlessly with Cast AI models you just configured.\n")
+	b.WriteString("Skip if you prefer to keep things simple for now!\n\n")
 
 	for i, status := range s.toolStatuses {
 		cursor := "  "
 		if s.selected == i {
-			cursor = Styles.Cursor.Render("►")
+			cursor = Styles.Cursor.Render("► ")
 		}
 
 		checkbox := "[ ]"
@@ -224,12 +231,12 @@ func (s *GSDStep) View() string {
 }
 
 func (s *GSDStep) Name() string {
-	return "GSD Setup"
+	return "GSD multi-agent setup"
 }
 
 func (s *GSDStep) Info() StepInfo {
 	return StepInfo{
-		Name: "GSD Setup",
+		Name: "GSD multi-agent setup",
 		KeyBindings: []KeyBinding{
 			BindingsNavigate,
 			BindingsSelect,

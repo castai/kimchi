@@ -37,12 +37,13 @@ type wizard struct {
 }
 
 func newWizard(ctx context.Context) *wizard {
+	welcomeStep := steps.NewWelcomeStep()
 	authStep := steps.NewAuthStep()
 	installStep := steps.NewInstallStep()
 	toolsStep := steps.NewToolsStep()
 	scopeStep := steps.NewScopeStep()
 
-	stepList := []steps.Step{authStep, installStep, toolsStep, scopeStep}
+	stepList := []steps.Step{welcomeStep, authStep, installStep, toolsStep, scopeStep}
 
 	return &wizard{
 		stepList: stepList,

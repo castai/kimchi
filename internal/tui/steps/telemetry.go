@@ -46,9 +46,6 @@ func (s *TelemetryStep) Update(msg tea.Msg) (Step, tea.Cmd) {
 func (s *TelemetryStep) View() string {
 	var b strings.Builder
 
-	b.WriteString(Styles.Title.Render("Usage Telemetry"))
-	b.WriteString("\n\n")
-
 	b.WriteString("Help us improve your experience by sharing anonymous usage metrics.\n")
 	b.WriteString("This data enhances your ")
 	b.WriteString(Styles.Success.Render("Coding Report"))
@@ -69,27 +66,20 @@ func (s *TelemetryStep) View() string {
 	b.WriteString(Styles.Desc.Render("───────────────────────────────────────"))
 	b.WriteString("\n\n")
 
-	optInStyle := Styles.Item
-	optOutStyle := Styles.Item
+	optInText := "  [ ] Yes, share anonymous usage data"
+	optOutText := "  [ ] No, keep my usage private"
 
 	if s.choice == 0 {
-		optInStyle = Styles.Selected
+		optInText = Styles.Cursor.Render("► ") + Styles.Selected.Render("[✓] Yes, share anonymous usage data")
+		b.WriteString(optInText)
+		b.WriteString("\n")
+		b.WriteString(optOutText)
 	} else {
-		optOutStyle = Styles.Selected
+		b.WriteString(optInText)
+		b.WriteString("\n")
+		optOutText = Styles.Cursor.Render("► ") + Styles.Selected.Render("[✓] No, keep my usage private")
+		b.WriteString(optOutText)
 	}
-
-	optInText := "  Yes, share anonymous usage data  "
-	optOutText := "  No, keep my usage private  "
-
-	if s.choice == 0 {
-		optInText = "► [✓] Yes, share anonymous usage data  "
-	} else {
-		optOutText = "► [✓] No, keep my usage private  "
-	}
-
-	b.WriteString(optInStyle.Render(optInText))
-	b.WriteString("\n")
-	b.WriteString(optOutStyle.Render(optOutText))
 
 	return b.String()
 }
@@ -100,7 +90,7 @@ func (s *TelemetryStep) Name() string {
 
 func (s *TelemetryStep) Info() StepInfo {
 	return StepInfo{
-		Name: "Telemetry",
+		Name: "Usage Telemetry",
 		KeyBindings: []KeyBinding{
 			BindingsNavigate,
 			BindingsConfirm,

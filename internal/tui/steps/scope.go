@@ -70,7 +70,7 @@ func (s *ScopeStep) View() string {
 	for i, opt := range scopeOptions {
 		cursor := "  "
 		if s.selected == i {
-			cursor = Styles.Cursor.Render("►")
+			cursor = Styles.Cursor.Render("► ")
 		}
 
 		radio := "○"
