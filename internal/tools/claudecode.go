@@ -55,9 +55,10 @@ func WriteClaudeCode(scope config.ConfigScope, telemetryOptIn bool) error {
 	}
 
 	envSettings["ANTHROPIC_BASE_URL"] = anthropicBaseURL
-	envSettings["ANTHROPIC_API_KEY"] = apiKey
+	envSettings["ANTHROPIC_AUTH_TOKEN"] = apiKey
 	envSettings["ANTHROPIC_MODEL"] = reasoningModel
 	envSettings["CLAUDE_CODE_SUBAGENT_MODEL"] = codingModel
+	envSettings["CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS"] = "1"
 
 	if telemetryOptIn {
 		envSettings["CLAUDE_CODE_ENABLE_TELEMETRY"] = "1"
