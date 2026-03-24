@@ -75,9 +75,6 @@ func (s *ConfigureStep) Update(msg tea.Msg) (Step, tea.Cmd) {
 		}
 		if s.allComplete() {
 			s.done = true
-			return s, tea.Tick(500*time.Millisecond, func(t time.Time) tea.Msg {
-				return NextStepMsg{}
-			})
 		}
 		return s, nil
 
@@ -89,17 +86,11 @@ func (s *ConfigureStep) Update(msg tea.Msg) (Step, tea.Cmd) {
 		}
 		if s.allComplete() {
 			s.done = true
-			if s.hasErrors() {
-				return s, nil
-			}
-			return s, tea.Tick(500*time.Millisecond, func(t time.Time) tea.Msg {
-				return NextStepMsg{}
-			})
 		}
 		return s, nil
 
 	case tea.KeyMsg:
-		if s.done && s.hasErrors() {
+		if s.done {
 			switch msg.(tea.KeyMsg).String() {
 			case "enter", "ctrl+c", "q":
 				return s, func() tea.Msg { return NextStepMsg{} }
@@ -151,9 +142,6 @@ func (s *ConfigureStep) hasErrors() bool {
 func (s *ConfigureStep) View() string {
 	var b strings.Builder
 
-	b.WriteString(Styles.Title.Render("Configuring tools with Kimchi models"))
-	b.WriteString("\n\n")
-
 	spinChars := []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"}
 	spinIdx := 0
 
@@ -202,11 +190,13 @@ func (s *ConfigureStep) View() string {
 			b.WriteString("\n\n")
 			b.WriteString("Each tool has been configured with optimal models for its use case:")
 			b.WriteString("\n")
-			b.WriteString(Styles.Desc.Render("• Reasoning tasks → glm-5-fp8"))
+			b.WriteString("• Reasoning tasks → glm-5-fp8")
 			b.WriteString("\n")
-			b.WriteString(Styles.Desc.Render("• Code generation → minimax-m2.5"))
+			b.WriteString("• Code generation → minimax-m2.5")
 			b.WriteString("\n")
-			b.WriteString(Styles.Desc.Render("• Multi-modal tasks → kimi-k2.5"))
+			b.WriteString("• Multi-modal tasks → kimi-k2.5")
+			b.WriteString("\n\n")
+			b.WriteString(Styles.Help.Render("Press enter to continue"))
 		}
 	}
 
@@ -239,16 +229,16 @@ func (s *ConfigureStep) getModelInfoForTool(toolID tools.ToolID) string {
 }
 
 func (s *ConfigureStep) Name() string {
-	return "Configure"
+	return "Configuring tools"
 }
 
 func (s *ConfigureStep) Info() StepInfo {
 	bindings := []KeyBinding{}
-	if s.done && s.hasErrors() {
+	if s.done {
 		bindings = append(bindings, BindingsConfirm)
 	}
 	return StepInfo{
-		Name:        "Configure",
+		Name:        "Configuring tools",
 		KeyBindings: bindings,
 	}
 }
