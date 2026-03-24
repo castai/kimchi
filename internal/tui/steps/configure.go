@@ -151,7 +151,7 @@ func (s *ConfigureStep) hasErrors() bool {
 func (s *ConfigureStep) View() string {
 	var b strings.Builder
 
-	b.WriteString(Styles.Title.Render("Configuring tools"))
+	b.WriteString(Styles.Title.Render("Configuring tools with Kimchi models"))
 	b.WriteString("\n\n")
 
 	spinChars := []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"}
@@ -177,7 +177,13 @@ func (s *ConfigureStep) View() string {
 			msg = " waiting"
 		}
 
+		// Add model information for each tool
+		modelInfo := s.getModelInfoForTool(status.tool.ID)
 		line := fmt.Sprintf("  %s %s%s", icon, status.tool.Name, msg)
+		if modelInfo != "" {
+			line += fmt.Sprintf("\n    %s", Styles.Desc.Render(modelInfo))
+		}
+
 		b.WriteString(line)
 		b.WriteString("\n")
 	}
@@ -190,10 +196,46 @@ func (s *ConfigureStep) View() string {
 			b.WriteString(Styles.Help.Render("Press enter to continue"))
 		} else {
 			b.WriteString(Styles.Success.Render("Configuration complete!"))
+			b.WriteString("\n\n")
+			b.WriteString("Your tools are now connected to Cast AI's inference endpoint:\n")
+			b.WriteString(Styles.Success.Render("https://llm.cast.ai"))
+			b.WriteString("\n\n")
+			b.WriteString("Each tool has been configured with optimal models for its use case:")
+			b.WriteString("\n")
+			b.WriteString(Styles.Desc.Render("• Reasoning tasks → glm-5-fp8"))
+			b.WriteString("\n")
+			b.WriteString(Styles.Desc.Render("• Code generation → minimax-m2.5"))
+			b.WriteString("\n")
+			b.WriteString(Styles.Desc.Render("• Multi-modal tasks → kimi-k2.5"))
 		}
 	}
 
 	return b.String()
+}
+
+func (s *ConfigureStep) getModelInfoForTool(toolID tools.ToolID) string {
+	switch toolID {
+	case tools.ToolClaudeCode:
+		return "→ glm-5-fp8 (main) + minimax-m2.5 (subagents)"
+	case tools.ToolOpenCode:
+		return "→ glm-5-fp8 (reasoning) + minimax-m2.5 (coding) + kimi-k2.5 (vision)"
+	case tools.ToolCursor, tools.ToolContinue:
+		return "→ glm-5-fp8 (reasoning) + minimax-m2.5 (coding) + kimi-k2.5 (vision)"
+	case tools.ToolWindsurf:
+		return "→ minimax-m2.5 (coding) + glm-5-fp8 (reasoning) + kimi-k2.5 (vision)"
+	case tools.ToolZed:
+		return "→ minimax-m2.5 (primary coding model)"
+	case tools.ToolCodex:
+		return "→ minimax-m2.5 (code generation and debugging)"
+	case tools.ToolCline:
+		return "→ minimax-m2.5 (action) + glm-5-fp8 (planning)"
+	case tools.ToolGSD2:
+		return "→ glm-5-fp8 (default) + minimax-m2.5 (coding) + kimi-k2.5 (vision)"
+	case tools.ToolGeneric:
+		return "→ Environment variables for Cast AI endpoint"
+	default:
+		return ""
+	}
 }
 
 func (s *ConfigureStep) Name() string {

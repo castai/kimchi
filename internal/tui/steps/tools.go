@@ -1,7 +1,6 @@
 package steps
 
 import (
-	"fmt"
 	"strings"
 
 	"github.com/charmbracelet/bubbletea"
@@ -83,13 +82,14 @@ func (s *ToolsStep) Update(msg tea.Msg) (Step, tea.Cmd) {
 func (s *ToolsStep) View() string {
 	var b strings.Builder
 
-	b.WriteString(Styles.Title.Render("Select AI tools to configure"))
+	b.WriteString("Selected tools will be reconfigured to use Cast AI models.\n")
+	b.WriteString("You can always switch back to your regular models at any time.")
 	b.WriteString("\n\n")
 
 	for i, tool := range s.toolList {
 		cursor := "  "
 		if s.cursor == i {
-			cursor = Styles.Cursor.Render("►")
+			cursor = Styles.Cursor.Render("► ")
 		}
 
 		checkbox := "[ ]"
@@ -102,20 +102,20 @@ func (s *ToolsStep) View() string {
 			installed = Styles.Success.Render(" ✓ installed")
 		}
 
-		desc := Styles.Desc.Render(tool.Description)
-		line := fmt.Sprintf("%s %s %-12s %s%s", cursor, checkbox, tool.Name, desc, installed)
+		firstLine := cursor + checkbox + " " + tool.Name + installed
 
 		if s.cursor == i {
-			b.WriteString(Styles.Selected.Render(line))
+			b.WriteString(Styles.Selected.Render(firstLine))
 		} else {
-			b.WriteString(Styles.Item.Render(line))
+			b.WriteString(firstLine)
 		}
+		b.WriteString("\n")
+		b.WriteString("      " + Styles.Desc.Render(tool.Description))
 		b.WriteString("\n")
 	}
 
-	b.WriteString("\n")
-
 	if s.showError {
+		b.WriteString("\n")
 		b.WriteString(Styles.Error.Render("✗ Please select at least one tool"))
 		b.WriteString("\n")
 	}
@@ -129,7 +129,7 @@ func (s *ToolsStep) Name() string {
 
 func (s *ToolsStep) Info() StepInfo {
 	return StepInfo{
-		Name: "Select Tools",
+		Name: "Select AI tools to configure",
 		KeyBindings: []KeyBinding{
 			BindingsNavigate,
 			BindingsSelect,

@@ -25,9 +25,18 @@ func NewRootCommand() *cobra.Command {
 Connect your AI tools to powerful open-source models
 
 This tool configures AI coding assistants (OpenCode, Claude Code, Cursor, etc.)
-to use Cast AI's serverless inference endpoints with models like:
-  - glm-5-fp8 (reasoning/planning)
-  - minimax-m2.5 (code generation)
+to use Cast AI's serverless inference endpoints with optimal model selection:
+
+Model Selection Strategy:
+  • glm-5-fp8     - Reasoning, planning, and complex analysis
+                    202K context • 32K output • Strategic thinking
+  • minimax-m2.5  - Code generation and debugging
+                    196K context • 32K output • Optimized for coding
+  • kimi-k2.5     - Multi-modal tasks including images
+                    262K context • 32K output • Vision + reasoning
+
+Each tool is automatically configured with the best model for its use case,
+removing the complexity of manual model selection while ensuring peak performance.
 
 Get your API key at: https://kimchi.console.cast.ai`,
 		SilenceUsage:  true,
