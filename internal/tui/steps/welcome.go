@@ -29,7 +29,7 @@ func (s *WelcomeStep) Update(msg tea.Msg) (Step, tea.Cmd) {
 }
 
 func (s *WelcomeStep) View() string {
-	return "Start coding with Kimchi's open-source LLMs now!\n\n" +
+	return "Start coding with open-source LLMs now!\n\n" +
 		"Kimchi gives you instant access to production-ready open-source\n" +
 		"LLMs — " + Styles.Selected.Render("GLM 5") + ", " + Styles.Selected.Render("Kimi K2.5") + ", " + Styles.Selected.Render("MiniMax M2.5") + " — via an " + Styles.Selected.Render("OpenAI-compatible") + "\n" +
 		"API. No GPUs to provision, no clusters to manage.\n\n" +
