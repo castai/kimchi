@@ -206,7 +206,7 @@ func (s *ConfigureStep) View() string {
 func (s *ConfigureStep) getModelInfoForTool(toolID tools.ToolID) string {
 	switch toolID {
 	case tools.ToolClaudeCode:
-		return "→ glm-5-fp8 (main) + minimax-m2.5 (subagents)"
+		return "→ glm-5-fp8 (plan mode) + minimax-m2.5 (execution mode)"
 	case tools.ToolOpenCode:
 		return "→ glm-5-fp8 (reasoning) + minimax-m2.5 (coding) + kimi-k2.5 (vision)"
 	case tools.ToolCursor, tools.ToolContinue:
