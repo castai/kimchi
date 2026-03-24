@@ -155,9 +155,9 @@ func (s *AuthStep) View() string {
 	b.WriteString("To create one:\n\n")
 
 	b.WriteString("  1. Open ")
-	b.WriteString(Hyperlink("https://console.cast.ai/user/api-access", "https://console.cast.ai/user/api-access"))
+	b.WriteString(Hyperlink("https://kimchi.console.cast.ai/settings", "https://kimchi.console.cast.ai/settings"))
 	b.WriteString("\n")
-	b.WriteString("  2. Click \"Create access key\"\n")
+	b.WriteString("  2. Click \"Create API Key\"\n")
 	b.WriteString("  3. Paste the key below\n\n")
 
 	b.WriteString("You'll be prompted to log in if you don't have an account.\n\n")

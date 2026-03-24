@@ -29,7 +29,7 @@ to use Cast AI's serverless inference endpoints with models like:
   - glm-5-fp8 (reasoning/planning)
   - minimax-m2.5 (code generation)
 
-Get your API key at: https://console.cast.ai`,
+Get your API key at: https://kimchi.console.cast.ai`,
 		SilenceUsage:  true,
 		SilenceErrors: true,
 		Version:       version.String(),

@@ -58,8 +58,8 @@ sudo mv kimchi /usr/local/bin/
 
 ### 1. Get Your API Key
 
-1. Go to [console.cast.ai/user/api-access](https://console.cast.ai/user/api-access)
-2. Create or copy your API key
+1. Go to [kimchi.console.cast.ai/settings](https://kimchi.console.cast.ai/settings)
+2. Create and copy your API key
 
 ### 2. Run Kimchi
 
