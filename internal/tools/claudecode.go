@@ -54,9 +54,13 @@ func WriteClaudeCode(scope config.ConfigScope, telemetryOptIn bool) error {
 		envSettings = make(map[string]any)
 	}
 
+	delete(envSettings, "ANTHROPIC_MODEL")
+
 	envSettings["ANTHROPIC_BASE_URL"] = anthropicBaseURL
 	envSettings["ANTHROPIC_AUTH_TOKEN"] = apiKey
-	envSettings["ANTHROPIC_MODEL"] = reasoningModel
+	envSettings["ANTHROPIC_DEFAULT_OPUS_MODEL"] = reasoningModel
+	envSettings["ANTHROPIC_DEFAULT_SONNET_MODEL"] = codingModel
+	envSettings["ANTHROPIC_DEFAULT_HAIKU_MODEL"] = codingModel
 	envSettings["CLAUDE_CODE_SUBAGENT_MODEL"] = codingModel
 	envSettings["CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS"] = "1"
 
@@ -70,6 +74,7 @@ func WriteClaudeCode(scope config.ConfigScope, telemetryOptIn bool) error {
 	}
 
 	existing["env"] = envSettings
+	existing["model"] = "opusplan"
 
 	existing["alwaysThinkingEnabled"] = true
 	existing["autoCompactEnabled"] = true
