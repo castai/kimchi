@@ -25,7 +25,7 @@ func (s *State) IsStale(now time.Time) bool {
 }
 
 func statePath() (string, error) {
-	dir, err := configDir()
+	dir, err := cacheDir()
 	if err != nil {
 		return "", err
 	}
@@ -41,15 +41,15 @@ func LoadState() (*State, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return &State{}, nil
+			return nil, nil
 		}
-		return &State{}, fmt.Errorf("read state file: %w", err)
+		return nil, fmt.Errorf("read state file: %w", err)
 	}
 
 	var s State
 	if err := json.Unmarshal(data, &s); err != nil {
-		// Treat corrupt file as empty state (will trigger re-check).
-		return &State{}, nil
+		// Treat corrupt file as missing state (will trigger re-check).
+		return nil, nil
 	}
 
 	return &s, nil

@@ -33,16 +33,16 @@ func TestState_IsStale(t *testing.T) {
 }
 
 func TestLoadState_MissingFile(t *testing.T) {
-	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	t.Setenv("XDG_CACHE_HOME", t.TempDir())
 
 	got, err := LoadState()
 	require.NoError(t, err)
-	assert.Empty(t, cmp.Diff(&State{}, got))
+	assert.Nil(t, got)
 }
 
 func TestLoadState_CorruptFile(t *testing.T) {
 	dir := t.TempDir()
-	t.Setenv("XDG_CONFIG_HOME", dir)
+	t.Setenv("XDG_CACHE_HOME", dir)
 
 	stateDir := filepath.Join(dir, appDir)
 	require.NoError(t, os.MkdirAll(stateDir, 0700))
@@ -50,11 +50,11 @@ func TestLoadState_CorruptFile(t *testing.T) {
 
 	got, err := LoadState()
 	require.NoError(t, err)
-	assert.Empty(t, cmp.Diff(&State{}, got))
+	assert.Nil(t, got)
 }
 
 func TestSaveAndLoadState_RoundTrip(t *testing.T) {
-	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	t.Setenv("XDG_CACHE_HOME", t.TempDir())
 
 	want := &State{
 		CheckedAt:     time.Now().Truncate(time.Second),
@@ -69,7 +69,7 @@ func TestSaveAndLoadState_RoundTrip(t *testing.T) {
 
 func TestSaveState_FilePermissions(t *testing.T) {
 	dir := t.TempDir()
-	t.Setenv("XDG_CONFIG_HOME", dir)
+	t.Setenv("XDG_CACHE_HOME", dir)
 
 	require.NoError(t, SaveState(&State{LatestVersion: "v1.0.0"}))
 

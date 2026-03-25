@@ -82,7 +82,6 @@ func Apply(ctx context.Context, client GitHubClient, version string, opts ...App
 	if err := suOpts.CheckPermissions(); err != nil {
 		return fmt.Errorf("permission denied: %w", err)
 	}
-
 	if err := selfupdate.Apply(f, suOpts); err != nil {
 		if rerr := selfupdate.RollbackError(err); rerr != nil {
 			return fmt.Errorf("update failed and rollback failed: %w (rollback: %v)", err, rerr)
@@ -204,7 +203,7 @@ func extractBinary(r io.Reader) (string, error) {
 			return "", err
 		}
 
-		if hdr.Typeflag != tar.TypeReg || hdr.Name != "kimchi" {
+		if hdr.Typeflag != tar.TypeReg || filepath.Base(hdr.Name) != "kimchi" {
 			continue
 		}
 

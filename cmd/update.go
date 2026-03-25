@@ -78,6 +78,7 @@ func NewUpdateCommand() *cobra.Command {
 				return err
 			}
 
+			// Fail fast before downloading if we can't write to the executable.
 			if err := update.CheckPermissions(execPath); err != nil {
 				return err
 			}

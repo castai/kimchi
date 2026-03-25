@@ -13,7 +13,7 @@ import (
 )
 
 func TestCheck_FetchesFromAPI_WhenNoCache(t *testing.T) {
-	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	t.Setenv("XDG_CACHE_HOME", t.TempDir())
 
 	client := &mockGitHubClient{
 		latestRelease: &ReleaseInfo{
@@ -31,7 +31,7 @@ func TestCheck_FetchesFromAPI_WhenNoCache(t *testing.T) {
 
 func TestCheck_UsesCache_WhenFresh(t *testing.T) {
 	dir := t.TempDir()
-	t.Setenv("XDG_CONFIG_HOME", dir)
+	t.Setenv("XDG_CACHE_HOME", dir)
 
 	// Write a fresh cached state.
 	state := &State{
@@ -58,7 +58,7 @@ func TestCheck_UsesCache_WhenFresh(t *testing.T) {
 
 func TestCheck_FetchesFromAPI_WhenCacheStale(t *testing.T) {
 	dir := t.TempDir()
-	t.Setenv("XDG_CONFIG_HOME", dir)
+	t.Setenv("XDG_CACHE_HOME", dir)
 
 	// Write a stale cached state.
 	state := &State{
@@ -87,7 +87,7 @@ func TestCheck_FetchesFromAPI_WhenCacheStale(t *testing.T) {
 
 func TestCheck_SavesStateAfterAPICall(t *testing.T) {
 	dir := t.TempDir()
-	t.Setenv("XDG_CONFIG_HOME", dir)
+	t.Setenv("XDG_CACHE_HOME", dir)
 
 	client := &mockGitHubClient{
 		latestRelease: &ReleaseInfo{
@@ -107,7 +107,7 @@ func TestCheck_SavesStateAfterAPICall(t *testing.T) {
 }
 
 func TestCheck_ReturnsError_WhenAPIFails(t *testing.T) {
-	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	t.Setenv("XDG_CACHE_HOME", t.TempDir())
 
 	client := &mockGitHubClient{
 		latestReleaseErr: assert.AnError,
@@ -118,7 +118,7 @@ func TestCheck_ReturnsError_WhenAPIFails(t *testing.T) {
 }
 
 func TestCheck_ReturnsError_WhenLatestTagInvalid(t *testing.T) {
-	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	t.Setenv("XDG_CACHE_HOME", t.TempDir())
 
 	client := &mockGitHubClient{
 		latestRelease: &ReleaseInfo{
