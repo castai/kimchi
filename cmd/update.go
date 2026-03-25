@@ -47,14 +47,14 @@ func NewUpdateCommand() *cobra.Command {
 				return fmt.Errorf("resolve symlinks for %s: %w", execPath, err)
 			}
 
-			if dryRun {
-				_, _ = fmt.Fprintf(cmd.OutOrStdout(), "Update available: %s → %s\n", res.CurrentVersion.String(), res.LatestVersion.String())
-				return nil
-			}
-
 			permCheck := selfupdate.Options{TargetPath: execPath}
 			if err := permCheck.CheckPermissions(); err != nil {
 				return fmt.Errorf("cannot update %s: permission denied (try running with sudo)", execPath)
+			}
+
+			if dryRun {
+				_, _ = fmt.Fprintf(cmd.OutOrStdout(), "Update available: %s → %s\n", res.CurrentVersion.String(), res.LatestVersion.String())
+				return nil
 			}
 
 			if !force {
