@@ -63,7 +63,7 @@ func NewUpdateCommand() *cobra.Command {
 			ctx := cmd.Context()
 			client := update.NewGitHubClient()
 
-			res, err := update.Check(ctx, client, version.Version)
+			res, err := update.Check(ctx, client, version.Version, update.WithSkipCache())
 			if err != nil {
 				return fmt.Errorf("check for updates: %w", err)
 			}

@@ -19,6 +19,15 @@ func cacheDir() (string, error) {
 	return filepath.Join(home, ".cache"), nil
 }
 
+// backupDir returns the directory used to store pre-update binary backups.
+func backupDir() (string, error) {
+	dir, err := cacheDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(dir, appDir, "backups"), nil
+}
+
 // ResolveExecutablePath returns the real path of the current executable, resolving symlinks.
 func ResolveExecutablePath() (string, error) {
 	execPath, err := os.Executable()

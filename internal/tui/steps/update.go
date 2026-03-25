@@ -138,11 +138,14 @@ func (s *UpdateStep) View() string {
 func (s *UpdateStep) Name() string { return "Update" }
 
 func (s *UpdateStep) Info() StepInfo {
-	bindings := []KeyBinding{BindingsNavigate, BindingsConfirm, BindingsQuit}
-	if s.state == updateStateApplying {
+	var bindings []KeyBinding
+	switch s.state {
+	case updateStateApplying:
 		bindings = []KeyBinding{BindingsQuit}
-	} else if s.state == updateStateDone {
+	case updateStateDone:
 		bindings = []KeyBinding{BindingsConfirm}
+	default:
+		bindings = []KeyBinding{BindingsNavigate, BindingsConfirm, BindingsQuit}
 	}
 	return StepInfo{Name: "Update", KeyBindings: bindings}
 }

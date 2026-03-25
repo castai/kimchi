@@ -15,14 +15,6 @@ import (
 	"github.com/minio/selfupdate"
 )
 
-func backupDir() (string, error) {
-	dir, err := cacheDir()
-	if err != nil {
-		return "", err
-	}
-	return filepath.Join(dir, appDir, "backups"), nil
-}
-
 // ApplyOption configures the behavior of Apply.
 type ApplyOption func(*applyOptions)
 

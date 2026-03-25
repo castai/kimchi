@@ -1,6 +1,7 @@
 package update
 
 import (
+	"bufio"
 	"context"
 	"encoding/hex"
 	"encoding/json"
@@ -109,14 +110,10 @@ func (g *githubClient) FetchChecksum(ctx context.Context, version string) ([]byt
 		return nil, fmt.Errorf("checksums download returned %d", resp.StatusCode)
 	}
 
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, fmt.Errorf("read checksums: %w", err)
-	}
-
 	target := assetName()
-	for _, line := range strings.Split(string(body), "\n") {
-		parts := strings.Fields(line)
+	scanner := bufio.NewScanner(resp.Body)
+	for scanner.Scan() {
+		parts := strings.Fields(scanner.Text())
 		if len(parts) == 2 && parts[1] == target {
 			hash, err := hex.DecodeString(parts[0])
 			if err != nil {
@@ -124,6 +121,9 @@ func (g *githubClient) FetchChecksum(ctx context.Context, version string) ([]byt
 			}
 			return hash, nil
 		}
+	}
+	if err := scanner.Err(); err != nil {
+		return nil, fmt.Errorf("read checksums: %w", err)
 	}
 
 	return nil, fmt.Errorf("checksum not found for %s", target)
