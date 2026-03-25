@@ -3,6 +3,7 @@ package tui
 import (
 	"context"
 	"fmt"
+	"slices"
 
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
@@ -73,7 +74,7 @@ func (w *wizard) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		w.collectStepResult()
 
 		if w.pendingUpdate != nil {
-			w.stepList = append(w.stepList[:w.current+1], append([]steps.Step{w.pendingUpdate}, w.stepList[w.current+1:]...)...)
+			w.stepList = slices.Insert(w.stepList, w.current+1, steps.Step(w.pendingUpdate))
 			w.pendingUpdate = nil
 		}
 
@@ -189,7 +190,7 @@ func (w *wizard) collectStepResult() {
 	switch s := step.(type) {
 	case *steps.WelcomeStep:
 		if s.HasUpdate() {
-			w.pendingUpdate = steps.NewUpdateStep(version.Version, s.LatestVersion())
+			w.pendingUpdate = steps.NewUpdateStep(version.Version, s.LatestVersion(), s.LatestTag())
 		}
 	case *steps.AuthStep:
 		w.config.APIKey = s.APIKey()

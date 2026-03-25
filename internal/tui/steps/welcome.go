@@ -11,6 +11,7 @@ import (
 
 type updateCheckMsg struct {
 	latestVersion string
+	latestTag     string
 	hasUpdate     bool
 }
 
@@ -18,6 +19,7 @@ type updateCheckMsg struct {
 type WelcomeStep struct {
 	currentVersion string
 	latestVersion  string
+	latestTag      string
 	hasUpdate      bool
 }
 
@@ -28,6 +30,9 @@ func NewWelcomeStep(currentVersion string) *WelcomeStep {
 }
 
 func (s *WelcomeStep) Init() tea.Cmd {
+	if update.IsUpdateCheckDisabled() {
+		return nil
+	}
 	currentVersion := s.currentVersion
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -39,6 +44,7 @@ func (s *WelcomeStep) Init() tea.Cmd {
 		hasUpdate := res.LatestVersion.GreaterThan(&res.CurrentVersion)
 		return updateCheckMsg{
 			latestVersion: res.LatestVersion.String(),
+			latestTag:     res.LatestTag,
 			hasUpdate:     hasUpdate,
 		}
 	}
@@ -50,6 +56,7 @@ func (s *WelcomeStep) Update(msg tea.Msg) (Step, tea.Cmd) {
 		if msg.hasUpdate {
 			s.hasUpdate = true
 			s.latestVersion = msg.latestVersion
+			s.latestTag = msg.latestTag
 		}
 		return s, nil
 
@@ -77,8 +84,9 @@ func (s *WelcomeStep) View() string {
 	return view
 }
 
-func (s *WelcomeStep) HasUpdate() bool     { return s.hasUpdate }
+func (s *WelcomeStep) HasUpdate() bool      { return s.hasUpdate }
 func (s *WelcomeStep) LatestVersion() string { return s.latestVersion }
+func (s *WelcomeStep) LatestTag() string     { return s.latestTag }
 
 func (s *WelcomeStep) Name() string {
 	return "Welcome"

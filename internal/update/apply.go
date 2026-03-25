@@ -41,6 +41,15 @@ func WithProgressWriter(w io.Writer) ApplyOption {
 	return func(o *applyOptions) { o.progressWriter = w }
 }
 
+// CheckPermissions verifies the current process can write to the given executable path.
+func CheckPermissions(executablePath string) error {
+	opts := selfupdate.Options{TargetPath: executablePath}
+	if err := opts.CheckPermissions(); err != nil {
+		return fmt.Errorf("cannot update %s: permission denied (try running with sudo)", executablePath)
+	}
+	return nil
+}
+
 // Apply downloads the release for the given version, verifies the archive checksum,
 // extracts the binary, and atomically replaces the current executable.
 // It backs up the current binary and verifies the new one runs successfully.

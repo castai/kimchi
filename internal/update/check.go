@@ -10,6 +10,7 @@ import (
 type CheckResult struct {
 	CurrentVersion semver.Version
 	LatestVersion  semver.Version
+	LatestTag      string
 	ReleaseURL     string
 }
 
@@ -55,6 +56,7 @@ func Check(ctx context.Context, client GitHubClient, currentVersion string) (*Ch
 	return &CheckResult{
 		CurrentVersion: *cur,
 		LatestVersion:  *lat,
+		LatestTag:      latestTag,
 		ReleaseURL:     releaseURL,
 	}, nil
 }

@@ -4,10 +4,8 @@ import (
 	"bufio"
 	"fmt"
 	"os"
-	"path/filepath"
 	"strings"
 
-	"github.com/minio/selfupdate"
 	"github.com/spf13/cobra"
 
 	"github.com/castai/kimchi/internal/update"
@@ -37,19 +35,13 @@ func NewUpdateCommand() *cobra.Command {
 				return nil
 			}
 
-			execPath, err := os.Executable()
+			execPath, err := update.ResolveExecutablePath()
 			if err != nil {
-				return fmt.Errorf("resolve executable path: %w", err)
-			}
-			if resolved, err := filepath.EvalSymlinks(execPath); err == nil {
-				execPath = resolved
-			} else {
-				return fmt.Errorf("resolve symlinks for %s: %w", execPath, err)
+				return err
 			}
 
-			permCheck := selfupdate.Options{TargetPath: execPath}
-			if err := permCheck.CheckPermissions(); err != nil {
-				return fmt.Errorf("cannot update %s: permission denied (try running with sudo)", execPath)
+			if err := update.CheckPermissions(execPath); err != nil {
+				return err
 			}
 
 			if dryRun {
@@ -68,9 +60,8 @@ func NewUpdateCommand() *cobra.Command {
 				}
 			}
 
-			versionTag := "v" + res.LatestVersion.String()
 			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "Updating kimchi %s → %s...\n", res.CurrentVersion.String(), res.LatestVersion.String())
-			if err := update.Apply(ctx, client, versionTag, update.WithExecutablePath(execPath), update.WithProgressWriter(os.Stderr)); err != nil {
+			if err := update.Apply(ctx, client, res.LatestTag, update.WithExecutablePath(execPath), update.WithProgressWriter(os.Stderr)); err != nil {
 				return err
 			}
 

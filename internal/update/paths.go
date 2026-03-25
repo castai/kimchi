@@ -31,3 +31,16 @@ func cacheDir() (string, error) {
 	}
 	return filepath.Join(home, ".cache"), nil
 }
+
+// ResolveExecutablePath returns the real path of the current executable, resolving symlinks.
+func ResolveExecutablePath() (string, error) {
+	execPath, err := os.Executable()
+	if err != nil {
+		return "", fmt.Errorf("resolve executable path: %w", err)
+	}
+	resolved, err := filepath.EvalSymlinks(execPath)
+	if err != nil {
+		return "", fmt.Errorf("resolve symlinks for %s: %w", execPath, err)
+	}
+	return resolved, nil
+}

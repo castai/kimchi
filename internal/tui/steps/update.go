@@ -2,8 +2,6 @@ package steps
 
 import (
 	"context"
-	"os"
-	"path/filepath"
 
 	"github.com/charmbracelet/bubbles/spinner"
 	tea "github.com/charmbracelet/bubbletea"
@@ -24,19 +22,21 @@ const (
 type UpdateStep struct {
 	currentVersion string
 	latestVersion  string
+	latestTag      string
 	state          updateState
 	choice         int
 	err            error
 	spinner        spinner.Model
 }
 
-func NewUpdateStep(currentVersion, latestVersion string) *UpdateStep {
+func NewUpdateStep(currentVersion, latestVersion, latestTag string) *UpdateStep {
 	s := spinner.New()
 	s.Spinner = spinner.Dot
 	s.Style = Styles.Spinner
 	return &UpdateStep{
 		currentVersion: currentVersion,
 		latestVersion:  latestVersion,
+		latestTag:      latestTag,
 		spinner:        s,
 	}
 }
@@ -92,15 +92,13 @@ func (s *UpdateStep) Update(msg tea.Msg) (Step, tea.Cmd) {
 }
 
 func (s *UpdateStep) applyUpdate() tea.Cmd {
-	latest := s.latestVersion
+	tag := s.latestTag
 	return func() tea.Msg {
-		var opts []update.ApplyOption
-		if execPath, err := os.Executable(); err == nil {
-			if resolved, err := filepath.EvalSymlinks(execPath); err == nil {
-				opts = append(opts, update.WithExecutablePath(resolved))
-			}
+		execPath, err := update.ResolveExecutablePath()
+		if err != nil {
+			return updateApplyMsg{err: err}
 		}
-		err := update.Apply(context.Background(), update.NewGitHubClient(), "v"+latest, opts...)
+		err = update.Apply(context.Background(), update.NewGitHubClient(), tag, update.WithExecutablePath(execPath))
 		return updateApplyMsg{err: err}
 	}
 }
