@@ -5,7 +5,6 @@ import (
 	"bytes"
 	"compress/gzip"
 	"context"
-	"io"
 	"os"
 	"path/filepath"
 	"testing"
@@ -21,12 +20,12 @@ func TestDownloadAndVerify_Success(t *testing.T) {
 	checksum := sha256sum(archive)
 
 	client := &mockGitHubClient{
-		downloadFn: func(_ context.Context, _, dest string, _ io.Writer) error {
+		downloadFn: func(_ context.Context, _, dest string) error {
 			return os.WriteFile(dest, archive, 0644)
 		},
 	}
 
-	binaryPath, err := downloadAndVerify(context.Background(), client, "v1.0.0", checksum, nil)
+	binaryPath, err := downloadAndVerify(context.Background(), client, "v1.0.0", checksum)
 	require.NoError(t, err)
 	defer func() { _ = os.RemoveAll(filepath.Dir(binaryPath)) }()
 
@@ -40,23 +39,23 @@ func TestDownloadAndVerify_ChecksumMismatch(t *testing.T) {
 	badChecksum := make([]byte, 32) // all zeros
 
 	client := &mockGitHubClient{
-		downloadFn: func(_ context.Context, _, dest string, _ io.Writer) error {
+		downloadFn: func(_ context.Context, _, dest string) error {
 			return os.WriteFile(dest, archive, 0644)
 		},
 	}
 
-	_, err := downloadAndVerify(context.Background(), client, "v1.0.0", badChecksum, nil)
+	_, err := downloadAndVerify(context.Background(), client, "v1.0.0", badChecksum)
 	assert.ErrorContains(t, err, "checksum mismatch")
 }
 
 func TestDownloadAndVerify_DownloadError(t *testing.T) {
 	client := &mockGitHubClient{
-		downloadFn: func(_ context.Context, _, _ string, _ io.Writer) error {
+		downloadFn: func(_ context.Context, _, _ string) error {
 			return assert.AnError
 		},
 	}
 
-	_, err := downloadAndVerify(context.Background(), client, "v1.0.0", make([]byte, 32), nil)
+	_, err := downloadAndVerify(context.Background(), client, "v1.0.0", make([]byte, 32))
 	assert.ErrorContains(t, err, "download archive")
 }
 
@@ -70,7 +69,7 @@ func TestApply_Success(t *testing.T) {
 
 	client := &mockGitHubClient{
 		checksum: checksum,
-		downloadFn: func(_ context.Context, _, dest string, _ io.Writer) error {
+		downloadFn: func(_ context.Context, _, dest string) error {
 			return os.WriteFile(dest, archive, 0644)
 		},
 	}
@@ -108,7 +107,7 @@ func TestApply_RollsBack_WhenVerificationFails(t *testing.T) {
 
 	client := &mockGitHubClient{
 		checksum: checksum,
-		downloadFn: func(_ context.Context, _, dest string, _ io.Writer) error {
+		downloadFn: func(_ context.Context, _, dest string) error {
 			return os.WriteFile(dest, archive, 0644)
 		},
 	}

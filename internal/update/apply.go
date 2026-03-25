@@ -28,17 +28,11 @@ type ApplyOption func(*applyOptions)
 
 type applyOptions struct {
 	executablePath string
-	progressWriter io.Writer
 }
 
 // WithExecutablePath sets the path of the executable to replace. If not set, os.Executable() is used.
 func WithExecutablePath(path string) ApplyOption {
 	return func(o *applyOptions) { o.executablePath = path }
-}
-
-// WithProgressWriter sets the writer where download progress is rendered.
-func WithProgressWriter(w io.Writer) ApplyOption {
-	return func(o *applyOptions) { o.progressWriter = w }
 }
 
 // CheckPermissions verifies the current process can write to the given executable path.
@@ -64,7 +58,7 @@ func Apply(ctx context.Context, client GitHubClient, version string, opts ...App
 		return fmt.Errorf("fetch checksum: %w", err)
 	}
 
-	binaryPath, err := downloadAndVerify(ctx, client, version, expectedChecksum, o.progressWriter)
+	binaryPath, err := downloadAndVerify(ctx, client, version, expectedChecksum)
 	if err != nil {
 		return err
 	}
@@ -124,14 +118,14 @@ func Apply(ctx context.Context, client GitHubClient, version string, opts ...App
 
 // downloadAndVerify downloads the archive, verifies its SHA256 checksum,
 // then extracts the binary. Returns the path to the extracted binary.
-func downloadAndVerify(ctx context.Context, client GitHubClient, version string, expectedChecksum []byte, progressWriter io.Writer) (string, error) {
+func downloadAndVerify(ctx context.Context, client GitHubClient, version string, expectedChecksum []byte) (string, error) {
 	tmpDir, err := os.MkdirTemp("", "kimchi-update-*")
 	if err != nil {
 		return "", fmt.Errorf("create temp dir: %w", err)
 	}
 
 	archivePath := filepath.Join(tmpDir, assetName())
-	if err := client.DownloadArchive(ctx, version, archivePath, progressWriter); err != nil {
+	if err := client.DownloadArchive(ctx, version, archivePath); err != nil {
 		_ = os.RemoveAll(tmpDir)
 		return "", fmt.Errorf("download archive: %w", err)
 	}

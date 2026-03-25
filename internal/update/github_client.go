@@ -27,7 +27,7 @@ type ReleaseInfo struct {
 type GitHubClient interface {
 	LatestRelease(ctx context.Context) (*ReleaseInfo, error)
 	FetchChecksum(ctx context.Context, version string) ([]byte, error)
-	DownloadArchive(ctx context.Context, version, dest string, progress io.Writer) error
+	DownloadArchive(ctx context.Context, version, dest string) error
 }
 
 type githubClient struct {
@@ -130,8 +130,7 @@ func (g *githubClient) FetchChecksum(ctx context.Context, version string) ([]byt
 }
 
 // DownloadArchive downloads the release archive to the given dest path.
-// If progress is non-nil and the server provides Content-Length, a progress bar is rendered to it.
-func (g *githubClient) DownloadArchive(ctx context.Context, version, dest string, progress io.Writer) error {
+func (g *githubClient) DownloadArchive(ctx context.Context, version, dest string) error {
 	url := fmt.Sprintf("%s/%s/%s", g.downloadURL, version, assetName())
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
@@ -153,13 +152,6 @@ func (g *githubClient) DownloadArchive(ctx context.Context, version, dest string
 	}
 	defer func() { _ = f.Close() }()
 
-	var dst io.Writer = f
-	if progress != nil && resp.ContentLength > 0 {
-		pw := newProgressWriter(progress, resp.ContentLength)
-		defer pw.finish()
-		dst = io.MultiWriter(f, pw)
-	}
-
-	_, err = io.Copy(dst, resp.Body)
+	_, err = io.Copy(f, resp.Body)
 	return err
 }

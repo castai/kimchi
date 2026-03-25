@@ -6,11 +6,49 @@ import (
 	"os"
 	"strings"
 
+	"github.com/charmbracelet/bubbles/spinner"
+	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 	"github.com/spf13/cobra"
 
 	"github.com/castai/kimchi/internal/update"
 	"github.com/castai/kimchi/internal/version"
 )
+
+type updateDoneMsg struct{ err error }
+
+type updateModel struct {
+	spinner spinner.Model
+	version string
+	applyFn tea.Cmd
+	err     error
+	done    bool
+}
+
+func (m updateModel) Init() tea.Cmd {
+	return tea.Batch(m.spinner.Tick, m.applyFn)
+}
+
+func (m updateModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	switch msg := msg.(type) {
+	case updateDoneMsg:
+		m.done = true
+		m.err = msg.err
+		return m, tea.Quit
+	case spinner.TickMsg:
+		var cmd tea.Cmd
+		m.spinner, cmd = m.spinner.Update(msg)
+		return m, cmd
+	}
+	return m, nil
+}
+
+func (m updateModel) View() string {
+	if m.done {
+		return ""
+	}
+	return m.spinner.View() + " Updating to v" + m.version + "...\n"
+}
 
 func NewUpdateCommand() *cobra.Command {
 	var (
@@ -60,9 +98,22 @@ func NewUpdateCommand() *cobra.Command {
 				}
 			}
 
-			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "Updating kimchi %s → %s...\n", res.CurrentVersion.String(), res.LatestVersion.String())
-			if err := update.Apply(ctx, client, res.LatestTag, update.WithExecutablePath(execPath), update.WithProgressWriter(os.Stderr)); err != nil {
-				return err
+			s := spinner.New()
+			s.Spinner = spinner.Dot
+			s.Style = lipgloss.NewStyle().Foreground(lipgloss.Color("12"))
+			m := updateModel{
+				spinner: s,
+				version: res.LatestVersion.String(),
+				applyFn: func() tea.Msg {
+					return updateDoneMsg{err: update.Apply(ctx, client, res.LatestTag, update.WithExecutablePath(execPath))}
+				},
+			}
+			finalModel, err := tea.NewProgram(m).Run()
+			if err != nil {
+				return fmt.Errorf("run update: %w", err)
+			}
+			if fm, ok := finalModel.(updateModel); ok && fm.err != nil {
+				return fm.err
 			}
 
 			_, _ = fmt.Fprintln(cmd.OutOrStdout(), "✓ Successfully updated to", res.LatestVersion.String())

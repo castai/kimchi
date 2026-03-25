@@ -80,7 +80,7 @@ func TestGitHubClient_DownloadArchive(t *testing.T) {
 
 	client := NewGitHubClient(WithDownloadURL(srv.URL))
 	dest := filepath.Join(t.TempDir(), "download.tar.gz")
-	require.NoError(t, client.DownloadArchive(context.Background(), "v1.0.0", dest, nil))
+	require.NoError(t, client.DownloadArchive(context.Background(), "v1.0.0", dest))
 
 	got, err := os.ReadFile(dest)
 	require.NoError(t, err)

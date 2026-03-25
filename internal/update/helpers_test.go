@@ -6,7 +6,6 @@ import (
 	"compress/gzip"
 	"context"
 	"crypto/sha256"
-	"io"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -17,7 +16,7 @@ type mockGitHubClient struct {
 	latestReleaseErr error
 	checksum         []byte
 	checksumErr      error
-	downloadFn       func(ctx context.Context, version, dest string, progress io.Writer) error
+	downloadFn       func(ctx context.Context, version, dest string) error
 }
 
 func (m *mockGitHubClient) LatestRelease(ctx context.Context) (*ReleaseInfo, error) {
@@ -28,9 +27,9 @@ func (m *mockGitHubClient) FetchChecksum(ctx context.Context, version string) ([
 	return m.checksum, m.checksumErr
 }
 
-func (m *mockGitHubClient) DownloadArchive(ctx context.Context, version, dest string, progress io.Writer) error {
+func (m *mockGitHubClient) DownloadArchive(ctx context.Context, version, dest string) error {
 	if m.downloadFn != nil {
-		return m.downloadFn(ctx, version, dest, progress)
+		return m.downloadFn(ctx, version, dest)
 	}
 	return nil
 }
