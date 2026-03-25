@@ -11,7 +11,6 @@ import (
 	"github.com/castai/kimchi/internal/gsd"
 	"github.com/castai/kimchi/internal/tools"
 	"github.com/castai/kimchi/internal/tui/steps"
-	"github.com/castai/kimchi/internal/update"
 	"github.com/castai/kimchi/internal/version"
 )
 
@@ -34,13 +33,12 @@ type wizard struct {
 	pendingTelemetry *steps.TelemetryStep
 	pendingConfigure *steps.ConfigureStep
 	pendingDone      *steps.DoneStep
-	pendingUpdate    *steps.UpdateStep
 	viewport         viewport.Model
 	ready            bool
 }
 
 func newWizard(ctx context.Context) *wizard {
-	welcomeStep := steps.NewWelcomeStep()
+	welcomeStep := steps.NewWelcomeStep(version.Version)
 	authStep := steps.NewAuthStep()
 	installStep := steps.NewInstallStep()
 	toolsStep := steps.NewToolsStep()
@@ -91,11 +89,6 @@ func (w *wizard) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if w.pendingDone != nil {
 			w.stepList = append(w.stepList, w.pendingDone)
 			w.pendingDone = nil
-		}
-
-		if w.pendingUpdate != nil {
-			w.stepList = append(w.stepList, w.pendingUpdate)
-			w.pendingUpdate = nil
 		}
 
 		if w.current >= len(w.stepList)-1 {
@@ -216,10 +209,6 @@ func (w *wizard) collectStepResult() {
 		w.config.GSDInstallFor = s.GetInstallTypes()
 	case *steps.ConfigureStep:
 		w.pendingDone = steps.NewDoneStep(context.Background(), w.config.APIKey, w.config.SelectedTools)
-	case *steps.DoneStep:
-		if !update.IsUpdateCheckDisabled() && !update.IsCI() {
-			w.pendingUpdate = steps.NewUpdateStep(version.Version)
-		}
 	}
 }
 

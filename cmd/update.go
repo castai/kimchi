@@ -56,7 +56,7 @@ func NewUpdateCommand() *cobra.Command {
 			execPath, _ = filepath.EvalSymlinks(execPath)
 
 			if dryRun {
-				_, _ = fmt.Fprintf(cmd.OutOrStdout(), "Current version: %s\nLatest version:  %s\n", current, latest)
+				_, _ = fmt.Fprintf(cmd.OutOrStdout(), "Update available: %s → %s\n", current, latest)
 				return nil
 			}
 
@@ -66,7 +66,7 @@ func NewUpdateCommand() *cobra.Command {
 			}
 
 			if !force {
-				_, _ = fmt.Fprintf(cmd.OutOrStdout(), "Current version: %s\nLatest version:  %s\n\nThis will replace %s\n\nContinue? [Y/n]: ", current, latest, execPath)
+				_, _ = fmt.Fprintf(cmd.OutOrStdout(), "Update available: %s → %s\nContinue? [Y/n]: ", current, latest)
 				reader := bufio.NewReader(os.Stdin)
 				answer, _ := reader.ReadString('\n')
 				answer = strings.TrimSpace(strings.ToLower(answer))
@@ -76,11 +76,12 @@ func NewUpdateCommand() *cobra.Command {
 				}
 			}
 
+			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "Updating kimchi %s → %s...\n", current, latest)
 			if err := update.Apply(ctx, client, info.TagName, update.WithExecutablePath(execPath), update.WithProgressWriter(os.Stderr)); err != nil {
 				return err
 			}
 
-			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "Successfully updated from %s to %s\n", current, latest)
+			_, _ = fmt.Fprintln(cmd.OutOrStdout(), "✓ Successfully updated to", latest)
 			return nil
 		},
 	}
