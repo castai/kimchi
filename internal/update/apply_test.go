@@ -128,6 +128,24 @@ func TestApply_RollsBack_WhenVerificationFails(t *testing.T) {
 	assert.Equal(t, originalContent, got)
 }
 
+func TestCleanOldBackups(t *testing.T) {
+	dir := t.TempDir()
+
+	keep := filepath.Join(dir, "kimchi-v2.0.0")
+	old1 := filepath.Join(dir, "kimchi-v1.0.0")
+	old2 := filepath.Join(dir, "kimchi-v1.5.0")
+
+	for _, p := range []string{keep, old1, old2} {
+		require.NoError(t, os.WriteFile(p, []byte("bin"), 0755))
+	}
+
+	cleanOldBackups(keep)
+
+	assert.FileExists(t, keep)
+	assert.NoFileExists(t, old1)
+	assert.NoFileExists(t, old2)
+}
+
 func TestExtractBinary_NoBinaryInArchive(t *testing.T) {
 	var buf bytes.Buffer
 	gw := gzip.NewWriter(&buf)

@@ -43,7 +43,7 @@ func LoadState() (*State, error) {
 		if os.IsNotExist(err) {
 			return &State{}, nil
 		}
-		return nil, fmt.Errorf("read state file: %w", err)
+		return &State{}, fmt.Errorf("read state file: %w", err)
 	}
 
 	var s State

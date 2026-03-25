@@ -29,6 +29,7 @@ type wizard struct {
 	config           WizardConfig
 	finished         bool
 	aborted          bool
+	pendingUpdate    *steps.UpdateStep
 	pendingGSD       *steps.GSDStep
 	pendingTelemetry *steps.TelemetryStep
 	pendingConfigure *steps.ConfigureStep
@@ -70,6 +71,11 @@ func (w *wizard) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case steps.NextStepMsg:
 		w.collectStepResult()
+
+		if w.pendingUpdate != nil {
+			w.stepList = append(w.stepList[:w.current+1], append([]steps.Step{w.pendingUpdate}, w.stepList[w.current+1:]...)...)
+			w.pendingUpdate = nil
+		}
 
 		if w.pendingTelemetry != nil {
 			w.stepList = append(w.stepList, w.pendingTelemetry)
@@ -181,6 +187,10 @@ func (w *wizard) collectStepResult() {
 	}
 	step := w.stepList[w.current]
 	switch s := step.(type) {
+	case *steps.WelcomeStep:
+		if s.HasUpdate() {
+			w.pendingUpdate = steps.NewUpdateStep(version.Version, s.LatestVersion())
+		}
 	case *steps.AuthStep:
 		w.config.APIKey = s.APIKey()
 	case *steps.InstallStep:

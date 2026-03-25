@@ -7,7 +7,6 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/Masterminds/semver/v3"
 	"github.com/minio/selfupdate"
 	"github.com/spf13/cobra"
 
@@ -28,23 +27,13 @@ func NewUpdateCommand() *cobra.Command {
 			ctx := cmd.Context()
 			client := update.NewGitHubClient()
 
-			current, err := semver.NewVersion(version.Version)
-			if err != nil {
-				return fmt.Errorf("parse current version: %w", err)
-			}
-
-			info, err := client.LatestRelease(ctx)
+			res, err := update.Check(ctx, client, version.Version)
 			if err != nil {
 				return fmt.Errorf("check for updates: %w", err)
 			}
 
-			latest, err := semver.NewVersion(info.TagName)
-			if err != nil {
-				return fmt.Errorf("parse latest version: %w", err)
-			}
-
-			if !latest.GreaterThan(current) {
-				_, _ = fmt.Fprintf(cmd.OutOrStdout(), "Already up to date (%s)\n", current)
+			if !res.LatestVersion.GreaterThan(&res.CurrentVersion) {
+				_, _ = fmt.Fprintf(cmd.OutOrStdout(), "Already up to date (%s)\n", res.CurrentVersion.String())
 				return nil
 			}
 
@@ -52,11 +41,14 @@ func NewUpdateCommand() *cobra.Command {
 			if err != nil {
 				return fmt.Errorf("resolve executable path: %w", err)
 			}
-			// Best-effort symlink resolution; the original path is usable if this fails.
-			execPath, _ = filepath.EvalSymlinks(execPath)
+			if resolved, err := filepath.EvalSymlinks(execPath); err == nil {
+				execPath = resolved
+			} else {
+				return fmt.Errorf("resolve symlinks for %s: %w", execPath, err)
+			}
 
 			if dryRun {
-				_, _ = fmt.Fprintf(cmd.OutOrStdout(), "Update available: %s → %s\n", current, latest)
+				_, _ = fmt.Fprintf(cmd.OutOrStdout(), "Update available: %s → %s\n", res.CurrentVersion.String(), res.LatestVersion.String())
 				return nil
 			}
 
@@ -66,7 +58,7 @@ func NewUpdateCommand() *cobra.Command {
 			}
 
 			if !force {
-				_, _ = fmt.Fprintf(cmd.OutOrStdout(), "Update available: %s → %s\nContinue? [Y/n]: ", current, latest)
+				_, _ = fmt.Fprintf(cmd.OutOrStdout(), "Update available: %s → %s\nContinue? [Y/n]: ", res.CurrentVersion.String(), res.LatestVersion.String())
 				reader := bufio.NewReader(os.Stdin)
 				answer, _ := reader.ReadString('\n')
 				answer = strings.TrimSpace(strings.ToLower(answer))
@@ -76,12 +68,13 @@ func NewUpdateCommand() *cobra.Command {
 				}
 			}
 
-			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "Updating kimchi %s → %s...\n", current, latest)
-			if err := update.Apply(ctx, client, info.TagName, update.WithExecutablePath(execPath), update.WithProgressWriter(os.Stderr)); err != nil {
+			versionTag := "v" + res.LatestVersion.String()
+			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "Updating kimchi %s → %s...\n", res.CurrentVersion.String(), res.LatestVersion.String())
+			if err := update.Apply(ctx, client, versionTag, update.WithExecutablePath(execPath), update.WithProgressWriter(os.Stderr)); err != nil {
 				return err
 			}
 
-			_, _ = fmt.Fprintln(cmd.OutOrStdout(), "✓ Successfully updated to", latest)
+			_, _ = fmt.Fprintln(cmd.OutOrStdout(), "✓ Successfully updated to", res.LatestVersion.String())
 			return nil
 		},
 	}

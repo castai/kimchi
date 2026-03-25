@@ -137,15 +137,16 @@ func downloadAndVerify(ctx context.Context, client GitHubClient, version string,
 		_ = os.RemoveAll(tmpDir)
 		return "", err
 	}
-	defer func() { _ = archiveFile.Close() }()
 
+	// extractBinary creates its own temp directory for the output binary,
+	// so binaryPath is independent of tmpDir and survives the cleanup below.
 	binaryPath, err := extractBinary(archiveFile)
+	_ = archiveFile.Close()
 	if err != nil {
 		_ = os.RemoveAll(tmpDir)
 		return "", fmt.Errorf("extract binary: %w", err)
 	}
 
-	// Clean up the archive, keep only the extracted binary's temp dir.
 	_ = os.RemoveAll(tmpDir)
 	return binaryPath, nil
 }
