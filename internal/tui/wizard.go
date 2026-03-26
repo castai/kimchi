@@ -16,12 +16,13 @@ import (
 )
 
 type WizardConfig struct {
-	APIKey         string
-	SelectedTools  []tools.ToolID
-	Scope          config.ConfigScope
-	TelemetryOptIn bool
-	GSDMigrateFrom []gsd.Installation
-	GSDInstallFor  []gsd.InstallationType
+	APIKey            string
+	SelectedTools     []tools.ToolID
+	Scope             config.ConfigScope
+	TelemetryOptIn    bool
+	SetAsDefaultProvider bool
+	GSDMigrateFrom    []gsd.Installation
+	GSDInstallFor     []gsd.InstallationType
 }
 
 type wizard struct {
@@ -33,6 +34,7 @@ type wizard struct {
 	pendingUpdate    *steps.UpdateStep
 	pendingGSD       *steps.GSDStep
 	pendingTelemetry *steps.TelemetryStep
+	pendingCodexStep     *steps.CodexStep
 	pendingConfigure *steps.ConfigureStep
 	pendingDone      *steps.DoneStep
 	viewport         viewport.Model
@@ -81,6 +83,11 @@ func (w *wizard) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if w.pendingTelemetry != nil {
 			w.stepList = append(w.stepList, w.pendingTelemetry)
 			w.pendingTelemetry = nil
+		}
+
+		if w.pendingCodexStep != nil {
+			w.stepList = append(w.stepList, w.pendingCodexStep)
+			w.pendingCodexStep = nil
 		}
 
 		if w.pendingGSD != nil {
@@ -205,16 +212,18 @@ func (w *wizard) collectStepResult() {
 		if w.hasClaudeCode() {
 			w.pendingTelemetry = steps.NewTelemetryStep()
 		}
+		if w.hasCodex() {
+			w.pendingCodexStep = steps.NewCodexStep()
+		}
 	case *steps.ScopeStep:
 		w.config.Scope = s.SelectedScope()
-		if !w.hasClaudeCode() {
-			w.pendingGSD = steps.NewGSDStep(w.config.SelectedTools, w.config.Scope)
-			w.pendingConfigure = steps.NewConfigureStep(w.config.SelectedTools, w.config.Scope, w.config.TelemetryOptIn)
-		}
+		w.scheduleConfigureIfReady()
 	case *steps.TelemetryStep:
 		w.config.TelemetryOptIn = s.OptIn()
-		w.pendingGSD = steps.NewGSDStep(w.config.SelectedTools, w.config.Scope)
-		w.pendingConfigure = steps.NewConfigureStep(w.config.SelectedTools, w.config.Scope, w.config.TelemetryOptIn)
+		w.scheduleConfigureIfReady()
+	case *steps.CodexStep:
+		w.config.SetAsDefaultProvider = s.SetAsDefault()
+		w.scheduleConfigureIfReady()
 	case *steps.GSDStep:
 		w.config.GSDMigrateFrom = s.GetMigrateInstallations()
 		w.config.GSDInstallFor = s.GetInstallTypes()
@@ -223,13 +232,25 @@ func (w *wizard) collectStepResult() {
 	}
 }
 
-func (w *wizard) hasClaudeCode() bool {
-	for _, toolID := range w.config.SelectedTools {
-		if toolID == tools.ToolClaudeCode {
-			return true
+// scheduleConfigureIfReady creates the GSD and configure steps once all
+// tool-specific question steps (telemetry, codex) have been answered.
+func (w *wizard) scheduleConfigureIfReady() {
+	for _, step := range w.stepList[w.current+1:] {
+		switch step.(type) {
+		case *steps.TelemetryStep, *steps.CodexStep:
+			return // still have question steps to answer
 		}
 	}
-	return false
+	w.pendingGSD = steps.NewGSDStep(w.config.SelectedTools, w.config.Scope)
+	w.pendingConfigure = steps.NewConfigureStep(w.config.SelectedTools, w.config.Scope, w.config.TelemetryOptIn, w.config.SetAsDefaultProvider)
+}
+
+func (w *wizard) hasClaudeCode() bool {
+	return slices.Contains(w.config.SelectedTools, tools.ToolClaudeCode)
+}
+
+func (w *wizard) hasCodex() bool {
+	return slices.Contains(w.config.SelectedTools, tools.ToolCodex)
 }
 
 func RunWizard() (*WizardConfig, error) {

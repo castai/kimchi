@@ -13,7 +13,7 @@ import (
 	"time"
 
 	"github.com/charmbracelet/bubbles/spinner"
-	"github.com/charmbracelet/bubbletea"
+	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
 	"github.com/castai/kimchi/internal/tools"
@@ -294,7 +294,7 @@ func getToolTip(toolID tools.ToolID) string {
 	case tools.ToolZed:
 		return "Open Zed and use Cmd+Enter to send prompts to the AI assistant."
 	case tools.ToolCodex:
-		return "Run 'codex' with a prompt to generate or modify code directly."
+		return fmt.Sprintf("Run 'codex' with a prompt. Ensure %s is set in your environment.", tools.APIKeyEnv)
 	case tools.ToolCline:
 		return "Open VS Code with Cline extension installed and start a new task."
 	case tools.ToolGeneric:

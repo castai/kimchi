@@ -6,10 +6,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/charmbracelet/bubbletea"
-
 	"github.com/castai/kimchi/internal/config"
 	"github.com/castai/kimchi/internal/tools"
+	tea "github.com/charmbracelet/bubbletea"
 )
 
 type toolStatus struct {
@@ -20,12 +19,13 @@ type toolStatus struct {
 }
 
 type ConfigureStep struct {
-	toolIDs        []tools.ToolID
-	scope          config.ConfigScope
-	telemetryOptIn bool
-	statuses       []toolStatus
-	done           bool
-	startOnce      sync.Once
+	toolIDs               []tools.ToolID
+	scope                 config.ConfigScope
+	telemetryOptIn        bool
+	changeDefaultProvider bool
+	statuses              []toolStatus
+	done                  bool
+	startOnce             sync.Once
 }
 
 type writeCompleteMsg struct {
@@ -36,12 +36,13 @@ type writeCompleteMsg struct {
 
 type startWriteMsg struct{}
 
-func NewConfigureStep(toolIDs []tools.ToolID, scope config.ConfigScope, telemetryOptIn bool) *ConfigureStep {
+func NewConfigureStep(toolIDs []tools.ToolID, scope config.ConfigScope, telemetryOptIn bool, changeDefaultProvider bool) *ConfigureStep {
 	return &ConfigureStep{
-		toolIDs:        toolIDs,
-		scope:          scope,
-		telemetryOptIn: telemetryOptIn,
-		statuses:       make([]toolStatus, len(toolIDs)),
+		toolIDs:               toolIDs,
+		scope:                 scope,
+		telemetryOptIn:        telemetryOptIn,
+		changeDefaultProvider: changeDefaultProvider,
+		statuses:              make([]toolStatus, len(toolIDs)),
 	}
 }
 
@@ -111,6 +112,8 @@ func (s *ConfigureStep) writeToolConfig(index int) tea.Cmd {
 		var err error
 		if tool.ID == tools.ToolClaudeCode {
 			err = tools.WriteClaudeCode(s.scope, s.telemetryOptIn)
+		} else if tool.ID == tools.ToolCodex {
+			err = tools.WriteCodex(s.scope, s.changeDefaultProvider)
 		} else {
 			err = tool.Write(s.scope)
 		}
