@@ -62,55 +62,55 @@ func writeContinue(scope config.ConfigScope) error {
 			continue
 		}
 		title, _ := modelMap["title"].(string)
-		if title == "GLM-5-FP8 (Cast AI)" {
+		if title == reasoningModel.displayName {
 			hasReasoningModel = true
 		}
-		if title == "MiniMax-M2.5 (Cast AI)" {
+		if title == codingModel.displayName {
 			hasCodingModel = true
 		}
-		if title == "Kimi-K2.5 (Cast AI)" {
+		if title == imageModel.displayName {
 			hasImageModel = true
 		}
 	}
 
 	if !hasReasoningModel {
 		models = append(models, map[string]any{
-			"title":         "GLM-5-FP8 (Cast AI)",
+			"title":         reasoningModel.displayName,
 			"provider":      "openai",
-			"model":         reasoningModel,
+			"model":         reasoningModel.slug,
 			"apiBase":       baseURL,
 			"apiKey":        apiKey,
-			"contextLength": reasoningContext,
+			"contextLength": reasoningModel.limits.contextWindow,
 			"completionOptions": map[string]any{
-				"maxTokens": reasoningOutput,
+				"maxTokens": reasoningModel.limits.maxOutputTokens,
 			},
 		})
 	}
 
 	if !hasCodingModel {
 		models = append(models, map[string]any{
-			"title":         "MiniMax-M2.5 (Cast AI)",
+			"title":         codingModel.displayName,
 			"provider":      "openai",
-			"model":         codingModel,
+			"model":         codingModel.slug,
 			"apiBase":       baseURL,
 			"apiKey":        apiKey,
-			"contextLength": codingContext,
+			"contextLength": codingModel.limits.contextWindow,
 			"completionOptions": map[string]any{
-				"maxTokens": codingOutput,
+				"maxTokens": codingModel.limits.maxOutputTokens,
 			},
 		})
 	}
 
 	if !hasImageModel {
 		models = append(models, map[string]any{
-			"title":         "Kimi-K2.5 (Cast AI)",
+			"title":         imageModel.displayName,
 			"provider":      "openai",
-			"model":         imageModel,
+			"model":         imageModel.slug,
 			"apiBase":       baseURL,
 			"apiKey":        apiKey,
-			"contextLength": imageContext,
+			"contextLength": imageModel.limits.contextWindow,
 			"completionOptions": map[string]any{
-				"maxTokens": imageOutput,
+				"maxTokens": imageModel.limits.maxOutputTokens,
 			},
 		})
 	}
@@ -119,9 +119,9 @@ func writeContinue(scope config.ConfigScope) error {
 
 	if existing["tabAutocompleteModel"] == nil {
 		existing["tabAutocompleteModel"] = map[string]any{
-			"title":    "MiniMax-M2.5 (Cast AI)",
+			"title":    codingModel.displayName,
 			"provider": "openai",
-			"model":    codingModel,
+			"model":    codingModel.slug,
 			"apiBase":  baseURL,
 			"apiKey":   apiKey,
 		}

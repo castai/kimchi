@@ -39,10 +39,10 @@ func writeCline(scope config.ConfigScope) error {
 
 	existing["ollamaBaseUrl"] = baseURL
 	existing["actModeApiProvider"] = "ollama"
-	existing["actModeOllamaModelId"] = codingModel
+	existing["actModeOllamaModelId"] = codingModel.slug
 	existing["actModeOllamaBaseUrl"] = baseURL
 	existing["planModeApiProvider"] = "ollama"
-	existing["planModeOllamaModelId"] = reasoningModel
+	existing["planModeOllamaModelId"] = reasoningModel.slug
 	existing["planModeOllamaBaseUrl"] = baseURL
 	existing["welcomeViewCompleted"] = true
 

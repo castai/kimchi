@@ -34,9 +34,16 @@ type streamStartMsg struct{}
 
 type streamTimeoutMsg struct{}
 
+type DoneParams struct {
+	APIKey           string
+	ToolIDs          []tools.ToolID
+	ShellProfilePath string
+}
+
 type DoneStep struct {
-	apiKey             string
-	toolIDs            []tools.ToolID
+	apiKey           string
+	toolIDs          []tools.ToolID
+	shellProfilePath string
 	streamedMsg        strings.Builder
 	streamDone         bool
 	hasReceivedContent bool
@@ -48,15 +55,16 @@ type DoneStep struct {
 	streamClose  sync.Once
 }
 
-func NewDoneStep(ctx context.Context, apiKey string, toolIDs []tools.ToolID) *DoneStep {
+func NewDoneStep(ctx context.Context, params DoneParams) *DoneStep {
 	sp := spinner.New()
 	sp.Spinner = spinner.Dot
 	sp.Style = lipgloss.NewStyle().Foreground(lipgloss.Color("12"))
 
 	return &DoneStep{
-		apiKey:  apiKey,
-		toolIDs: toolIDs,
-		spin:    sp,
+		apiKey:           params.APIKey,
+		toolIDs:          params.ToolIDs,
+		shellProfilePath: params.ShellProfilePath,
+		spin:             sp,
 	}
 }
 
@@ -165,7 +173,7 @@ func (s *DoneStep) runStreamBackground(ctx context.Context) {
 	var toolInfo []string
 	for _, toolID := range s.toolIDs {
 		if tool, ok := tools.ByID(toolID); ok {
-			tip := getToolTip(toolID)
+			tip := s.getToolTip(toolID)
 			toolInfo = append(toolInfo, fmt.Sprintf("%s: %s", tool.Name, tip))
 		}
 	}
@@ -285,7 +293,7 @@ func (s *DoneStep) sendDefaultMessageTo(ch chan string) {
 	ch <- "Enjoy the journey!"
 }
 
-func getToolTip(toolID tools.ToolID) string {
+func (s *DoneStep) getToolTip(toolID tools.ToolID) string {
 	switch toolID {
 	case tools.ToolOpenCode:
 		return "Run 'opencode' in any project directory to start. Use Ctrl+K for quick actions."
@@ -294,6 +302,9 @@ func getToolTip(toolID tools.ToolID) string {
 	case tools.ToolZed:
 		return "Open Zed and use Cmd+Enter to send prompts to the AI assistant."
 	case tools.ToolCodex:
+		if s.shellProfilePath != "" {
+			return fmt.Sprintf("Run 'codex' with a prompt. %s was added to %s — restart your shell or run 'source %s'.", tools.APIKeyEnv, s.shellProfilePath, s.shellProfilePath)
+		}
 		return fmt.Sprintf("Run 'codex' with a prompt. Ensure %s is set in your environment.", tools.APIKeyEnv)
 	case tools.ToolCline:
 		return "Open VS Code with Cline extension installed and start a new task."

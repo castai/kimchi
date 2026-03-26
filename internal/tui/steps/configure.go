@@ -11,6 +11,13 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 )
 
+type ConfigureParams struct {
+	ToolIDs        []tools.ToolID
+	Scope          config.ConfigScope
+	TelemetryOptIn bool
+	APIKey         string
+}
+
 type toolStatus struct {
 	tool    tools.Tool
 	status  string
@@ -19,13 +26,14 @@ type toolStatus struct {
 }
 
 type ConfigureStep struct {
-	toolIDs               []tools.ToolID
-	scope                 config.ConfigScope
-	telemetryOptIn        bool
-	changeDefaultProvider bool
-	statuses              []toolStatus
-	done                  bool
-	startOnce             sync.Once
+	toolIDs          []tools.ToolID
+	scope            config.ConfigScope
+	telemetryOptIn   bool
+	apiKey           string
+	shellProfilePath string
+	statuses         []toolStatus
+	done             bool
+	startOnce        sync.Once
 }
 
 type writeCompleteMsg struct {
@@ -36,13 +44,13 @@ type writeCompleteMsg struct {
 
 type startWriteMsg struct{}
 
-func NewConfigureStep(toolIDs []tools.ToolID, scope config.ConfigScope, telemetryOptIn bool, changeDefaultProvider bool) *ConfigureStep {
+func NewConfigureStep(params ConfigureParams) *ConfigureStep {
 	return &ConfigureStep{
-		toolIDs:               toolIDs,
-		scope:                 scope,
-		telemetryOptIn:        telemetryOptIn,
-		changeDefaultProvider: changeDefaultProvider,
-		statuses:              make([]toolStatus, len(toolIDs)),
+		toolIDs:        params.ToolIDs,
+		scope:          params.Scope,
+		telemetryOptIn: params.TelemetryOptIn,
+		apiKey:         params.APIKey,
+		statuses:       make([]toolStatus, len(params.ToolIDs)),
 	}
 }
 
@@ -86,6 +94,7 @@ func (s *ConfigureStep) Update(msg tea.Msg) (Step, tea.Cmd) {
 			err:    m.err,
 		}
 		if s.allComplete() {
+			s.exportAPIKeyToShellProfile()
 			s.done = true
 		}
 		return s, nil
@@ -112,8 +121,6 @@ func (s *ConfigureStep) writeToolConfig(index int) tea.Cmd {
 		var err error
 		if tool.ID == tools.ToolClaudeCode {
 			err = tools.WriteClaudeCode(s.scope, s.telemetryOptIn)
-		} else if tool.ID == tools.ToolCodex {
-			err = tools.WriteCodex(s.scope, s.changeDefaultProvider)
 		} else {
 			err = tool.Write(s.scope)
 		}
@@ -122,6 +129,18 @@ func (s *ConfigureStep) writeToolConfig(index int) tea.Cmd {
 		}
 		return writeCompleteMsg{index: index, status: "done"}
 	}
+}
+
+func (s *ConfigureStep) exportAPIKeyToShellProfile() {
+	if s.apiKey == "" {
+		return
+	}
+	path, _ := config.ExportEnvToShellProfile(tools.APIKeyEnv, s.apiKey)
+	s.shellProfilePath = path
+}
+
+func (s *ConfigureStep) ShellProfilePath() string {
+	return s.shellProfilePath
 }
 
 func (s *ConfigureStep) allComplete() bool {
@@ -198,7 +217,11 @@ func (s *ConfigureStep) View() string {
 			b.WriteString("• Code generation → minimax-m2.5")
 			b.WriteString("\n")
 			b.WriteString("• Multi-modal tasks → kimi-k2.5")
-			b.WriteString("\n\n")
+			b.WriteString("\n")
+			if s.shellProfilePath != "" {
+				b.WriteString(fmt.Sprintf("\n%s exported to %s\n", tools.APIKeyEnv, s.shellProfilePath))
+			}
+			b.WriteString("\n")
 			b.WriteString(Styles.Help.Render("Press enter to continue"))
 		}
 	}
