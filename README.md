@@ -101,6 +101,9 @@ kimchi
 # Show version
 kimchi version
 
+# Update to the latest version
+kimchi update
+
 # Enable debug output
 kimchi --debug
 

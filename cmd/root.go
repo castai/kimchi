@@ -55,11 +55,11 @@ Get your API key at: https://kimchi.console.cast.ai`,
 
 	root.PersistentFlags().BoolVar(&debug, "debug", false, "Enable debug output")
 	root.PersistentFlags().BoolVar(&verbose, "verbose", false, "Enable verbose output")
-
 	initKlog(root)
 
 	root.AddCommand(NewVersionCommand())
 	root.AddCommand(NewCompletionCommand())
+	root.AddCommand(NewUpdateCommand())
 
 	return root
 }
