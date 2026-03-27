@@ -207,29 +207,41 @@ func (w *wizard) collectStepResult() {
 		}
 	case *steps.ScopeStep:
 		w.config.Scope = s.SelectedScope()
-		if !w.hasClaudeCode() {
-			w.pendingGSD = steps.NewGSDStep(w.config.SelectedTools, w.config.Scope)
-			w.pendingConfigure = steps.NewConfigureStep(w.config.SelectedTools, w.config.Scope, w.config.TelemetryOptIn)
-		}
+		w.scheduleConfigureIfReady()
 	case *steps.TelemetryStep:
 		w.config.TelemetryOptIn = s.OptIn()
-		w.pendingGSD = steps.NewGSDStep(w.config.SelectedTools, w.config.Scope)
-		w.pendingConfigure = steps.NewConfigureStep(w.config.SelectedTools, w.config.Scope, w.config.TelemetryOptIn)
+		w.scheduleConfigureIfReady()
 	case *steps.GSDStep:
 		w.config.GSDMigrateFrom = s.GetMigrateInstallations()
 		w.config.GSDInstallFor = s.GetInstallTypes()
 	case *steps.ConfigureStep:
-		w.pendingDone = steps.NewDoneStep(context.Background(), w.config.APIKey, w.config.SelectedTools)
+		w.pendingDone = steps.NewDoneStep(context.Background(), steps.DoneParams{
+			APIKey:           w.config.APIKey,
+			ToolIDs:          w.config.SelectedTools,
+			ShellProfilePath: s.ShellProfilePath(),
+		})
 	}
 }
 
-func (w *wizard) hasClaudeCode() bool {
-	for _, toolID := range w.config.SelectedTools {
-		if toolID == tools.ToolClaudeCode {
-			return true
+// scheduleConfigureIfReady creates the GSD and configure steps once all
+// tool-specific question steps (telemetry) have been answered.
+func (w *wizard) scheduleConfigureIfReady() {
+	for _, step := range w.stepList[w.current+1:] {
+		if _, ok := step.(*steps.TelemetryStep); ok {
+			return // still waiting for telemetry answer
 		}
 	}
-	return false
+	w.pendingGSD = steps.NewGSDStep(w.config.SelectedTools, w.config.Scope)
+	w.pendingConfigure = steps.NewConfigureStep(steps.ConfigureParams{
+		ToolIDs:        w.config.SelectedTools,
+		Scope:          w.config.Scope,
+		TelemetryOptIn: w.config.TelemetryOptIn,
+		APIKey:         w.config.APIKey,
+	})
+}
+
+func (w *wizard) hasClaudeCode() bool {
+	return slices.Contains(w.config.SelectedTools, tools.ToolClaudeCode)
 }
 
 func RunWizard() (*WizardConfig, error) {

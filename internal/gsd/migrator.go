@@ -7,6 +7,7 @@ import (
 	"os"
 	"strings"
 
+	"github.com/castai/kimchi/internal/tools"
 	"gopkg.in/yaml.v3"
 )
 
@@ -123,15 +124,15 @@ func (m *Migrator) serializeFrontmatter(frontmatter map[string]any, body string)
 func (m *Migrator) determineModelForAgent(agentName string) string {
 	for _, name := range PlanningAgents {
 		if name == agentName {
-			return PlanningModel
+			return tools.ReasoningModel.Slug
 		}
 	}
 
 	for _, name := range ExecutionAgents {
 		if name == agentName {
-			return ExecutionModel
+			return tools.CodingModel.Slug
 		}
 	}
 
-	return PlanningModel
+	return tools.ReasoningModel.Slug
 }

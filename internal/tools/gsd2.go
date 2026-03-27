@@ -48,14 +48,14 @@ func writeGSD2(scope config.ConfigScope) error {
 				"baseUrl":      baseURL,
 				"apiKey":       apiKey,
 				"api":          "openai-completions",
-				"defaultModel": reasoningModel,
+				"defaultModel": ReasoningModel.Slug,
 				"models": []map[string]any{
 					{
-						"id":            reasoningModel,
-						"name":          "GLM-5 FP8",
-						"contextWindow": reasoningContext,
-						"maxTokens":     reasoningOutput,
-						"reasoning":     true,
+						"id":            ReasoningModel.Slug,
+						"name":          ReasoningModel.displayName,
+						"contextWindow": ReasoningModel.limits.contextWindow,
+						"maxTokens":     ReasoningModel.limits.maxOutputTokens,
+						"reasoning":     ReasoningModel.reasoning,
 						"input":         []string{"text"},
 						"cost": map[string]any{
 							"input":      0,
@@ -65,11 +65,11 @@ func writeGSD2(scope config.ConfigScope) error {
 						},
 					},
 					{
-						"id":            codingModel,
-						"name":          "MiniMax M2.5",
-						"contextWindow": codingContext,
-						"maxTokens":     codingOutput,
-						"reasoning":     false,
+						"id":            CodingModel.Slug,
+						"name":          CodingModel.displayName,
+						"contextWindow": CodingModel.limits.contextWindow,
+						"maxTokens":     CodingModel.limits.maxOutputTokens,
+						"reasoning":     CodingModel.reasoning,
 						"input":         []string{"text"},
 						"cost": map[string]any{
 							"input":      0,
@@ -79,11 +79,11 @@ func writeGSD2(scope config.ConfigScope) error {
 						},
 					},
 					{
-						"id":            imageModel,
-						"name":          "Kimi K2.5",
-						"contextWindow": imageContext,
-						"maxTokens":     imageOutput,
-						"reasoning":     false,
+						"id":            ImageModel.Slug,
+						"name":          ImageModel.displayName,
+						"contextWindow": ImageModel.limits.contextWindow,
+						"maxTokens":     ImageModel.limits.maxOutputTokens,
+						"reasoning":     ImageModel.reasoning,
 						"input":         []string{"text", "image"},
 						"cost": map[string]any{
 							"input":      0,
@@ -118,7 +118,7 @@ git:
   isolation: worktree
   merge_strategy: squash
 ---
-`, codingModel, reasoningModel, codingModel, codingModel)
+`, CodingModel.Slug, ReasoningModel.Slug, CodingModel.Slug, CodingModel.Slug)
 
 	if err := config.WriteFile(prefsPath, []byte(prefsContent)); err != nil {
 		return fmt.Errorf("write preferences.md: %w", err)

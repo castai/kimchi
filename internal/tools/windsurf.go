@@ -93,11 +93,11 @@ func writeWindsurf(scope config.ConfigScope) error {
 		"apiProvider": "openai-native",
 		"apiKey":      apiKey,
 		"baseUrl":     baseURL,
-		"modelId":     codingModel,
+		"modelId":     CodingModel.Slug,
 		"modelInfo": map[string]any{
-			"maxTokens":           codingOutput,
-			"contextWindow":       codingContext,
-			"supportsImages":      false,
+			"maxTokens":           CodingModel.limits.maxOutputTokens,
+			"contextWindow":       CodingModel.limits.contextWindow,
+			"supportsImages":      CodingModel.supportsImages,
 			"supportsPromptCache": false,
 		},
 	}
@@ -106,11 +106,11 @@ func writeWindsurf(scope config.ConfigScope) error {
 		"apiProvider": "openai-native",
 		"apiKey":      apiKey,
 		"baseUrl":     baseURL,
-		"modelId":     reasoningModel,
+		"modelId":     ReasoningModel.Slug,
 		"modelInfo": map[string]any{
-			"maxTokens":           reasoningOutput,
-			"contextWindow":       reasoningContext,
-			"supportsImages":      false,
+			"maxTokens":           ReasoningModel.limits.maxOutputTokens,
+			"contextWindow":       ReasoningModel.limits.contextWindow,
+			"supportsImages":      ReasoningModel.supportsImages,
 			"supportsPromptCache": false,
 		},
 	}
@@ -119,11 +119,11 @@ func writeWindsurf(scope config.ConfigScope) error {
 		"apiProvider": "openai-native",
 		"apiKey":      apiKey,
 		"baseUrl":     baseURL,
-		"modelId":     imageModel,
+		"modelId":     ImageModel.Slug,
 		"modelInfo": map[string]any{
-			"maxTokens":           imageOutput,
-			"contextWindow":       imageContext,
-			"supportsImages":      true,
+			"maxTokens":           ImageModel.limits.maxOutputTokens,
+			"contextWindow":       ImageModel.limits.contextWindow,
+			"supportsImages":      ImageModel.supportsImages,
 			"supportsPromptCache": false,
 		},
 	}

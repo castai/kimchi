@@ -47,7 +47,7 @@ func writeZed(scope config.ConfigScope) error {
 		defaultModel = make(map[string]any)
 	}
 	defaultModel["provider"] = "openai"
-	defaultModel["model"] = codingModel
+	defaultModel["model"] = CodingModel.Slug
 	assistant["default_model"] = defaultModel
 
 	openai, _ := assistant["openai"].(map[string]any)
@@ -55,7 +55,7 @@ func writeZed(scope config.ConfigScope) error {
 		openai = make(map[string]any)
 	}
 	openai["api_key"] = apiKey
-	openai["base_url"] = baseURL + "/v1"
+	openai["base_url"] = baseURL
 	assistant["openai"] = openai
 
 	existing["assistant"] = assistant

@@ -8,11 +8,6 @@ const (
 	InstallationCodex      InstallationType = "codex"
 )
 
-const (
-	PlanningModel  = "glm-5-fp8"
-	ExecutionModel = "minimax-m2.5"
-)
-
 var PlanningAgents = []string{
 	"gsd-planner",
 	"gsd-plan-checker",

@@ -13,7 +13,7 @@ import (
 	"time"
 
 	"github.com/charmbracelet/bubbles/spinner"
-	"github.com/charmbracelet/bubbletea"
+	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
 	"github.com/castai/kimchi/internal/tools"
@@ -34,9 +34,16 @@ type streamStartMsg struct{}
 
 type streamTimeoutMsg struct{}
 
+type DoneParams struct {
+	APIKey           string
+	ToolIDs          []tools.ToolID
+	ShellProfilePath string
+}
+
 type DoneStep struct {
-	apiKey             string
-	toolIDs            []tools.ToolID
+	apiKey           string
+	toolIDs          []tools.ToolID
+	shellProfilePath string
 	streamedMsg        strings.Builder
 	streamDone         bool
 	hasReceivedContent bool
@@ -48,15 +55,16 @@ type DoneStep struct {
 	streamClose  sync.Once
 }
 
-func NewDoneStep(ctx context.Context, apiKey string, toolIDs []tools.ToolID) *DoneStep {
+func NewDoneStep(ctx context.Context, params DoneParams) *DoneStep {
 	sp := spinner.New()
 	sp.Spinner = spinner.Dot
 	sp.Style = lipgloss.NewStyle().Foreground(lipgloss.Color("12"))
 
 	return &DoneStep{
-		apiKey:  apiKey,
-		toolIDs: toolIDs,
-		spin:    sp,
+		apiKey:           params.APIKey,
+		toolIDs:          params.ToolIDs,
+		shellProfilePath: params.ShellProfilePath,
+		spin:             sp,
 	}
 }
 
@@ -165,7 +173,7 @@ func (s *DoneStep) runStreamBackground(ctx context.Context) {
 	var toolInfo []string
 	for _, toolID := range s.toolIDs {
 		if tool, ok := tools.ByID(toolID); ok {
-			tip := getToolTip(toolID)
+			tip := s.getToolTip(toolID)
 			toolInfo = append(toolInfo, fmt.Sprintf("%s: %s", tool.Name, tip))
 		}
 	}
@@ -185,7 +193,7 @@ func (s *DoneStep) runStreamBackground(ctx context.Context) {
 	}
 
 	reqBody := map[string]any{
-		"model": "glm-5-fp8",
+		"model": tools.ReasoningModel.Slug,
 		"messages": []map[string]string{
 			{"role": "user", "content": prompt},
 		},
@@ -273,11 +281,11 @@ func (s *DoneStep) sendDefaultMessageTo(ch chan string) {
 	ch <- "Welcome to Kimchi by Cast AI!\n\n"
 	ch <- "You've just unlocked access to powerful open-source models\n"
 	ch <- "via Cast AI's infrastructure!\n\n"
-	ch <- "glm-5-fp8 is your reasoning companion for planning,\n"
+	ch <- tools.ReasoningModel.Slug + " is your reasoning companion for planning,\n"
 	ch <- "analysis, and solving complex problems.\n\n"
-	ch <- "minimax-m2.5 is your coding partner for writing,\n"
+	ch <- tools.CodingModel.Slug + " is your coding partner for writing,\n"
 	ch <- "refactoring, and debugging code.\n\n"
-	ch <- "kimi-k2.5 is your fast, affordable model for\n"
+	ch <- tools.ImageModel.Slug + " is your fast, affordable model for\n"
 	ch <- "image processing tasks.\n\n"
 	ch <- "Don't be shy - experiment boldly! Ask tough questions,\n"
 	ch <- "request detailed explanations, generate entire features.\n"
@@ -285,16 +293,19 @@ func (s *DoneStep) sendDefaultMessageTo(ch chan string) {
 	ch <- "Enjoy the journey!"
 }
 
-func getToolTip(toolID tools.ToolID) string {
+func (s *DoneStep) getToolTip(toolID tools.ToolID) string {
 	switch toolID {
 	case tools.ToolOpenCode:
 		return "Run 'opencode' in any project directory to start. Use Ctrl+K for quick actions."
 	case tools.ToolClaudeCode:
-		return "Run 'claude' to start. Default model is Kimchi's glm-5-fp8. Use /models to switch to Opus/Haiku (actual Claude) if needed."
+		return fmt.Sprintf("Run 'claude' to start. Default model is Kimchi's %s. Use /models to switch to Opus/Haiku (actual Claude) if needed.", tools.ReasoningModel.Slug)
 	case tools.ToolZed:
 		return "Open Zed and use Cmd+Enter to send prompts to the AI assistant."
 	case tools.ToolCodex:
-		return "Run 'codex' with a prompt to generate or modify code directly."
+		if s.shellProfilePath != "" {
+			return fmt.Sprintf("Run 'codex' with a prompt. %s was added to %s — restart your shell or run 'source %s'.", tools.APIKeyEnv, s.shellProfilePath, s.shellProfilePath)
+		}
+		return fmt.Sprintf("Run 'codex' with a prompt. Ensure %s is set in your environment.", tools.APIKeyEnv)
 	case tools.ToolCline:
 		return "Open VS Code with Cline extension installed and start a new task."
 	case tools.ToolGeneric:
@@ -348,7 +359,12 @@ func (s *DoneStep) buildPrompt(toolsSection string) (string, error) {
 	}
 
 	var buf strings.Builder
-	data := map[string]string{"Tools": toolsSection}
+	data := map[string]string{
+		"Tools":          toolsSection,
+		"ReasoningModel": tools.ReasoningModel.Slug,
+		"CodingModel":    tools.CodingModel.Slug,
+		"ImageModel":     tools.ImageModel.Slug,
+	}
 	if err := tmpl.Execute(&buf, data); err != nil {
 		return "", fmt.Errorf("execute welcome template: %w", err)
 	}

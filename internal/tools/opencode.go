@@ -49,31 +49,31 @@ func writeOpenCode(scope config.ConfigScope) error {
 			"apiKey":       apiKey,
 		},
 		"models": map[string]any{
-			reasoningModel: map[string]any{
-				"name":      reasoningModel,
-				"tool_call": true,
-				"reasoning": true,
+			ReasoningModel.Slug: map[string]any{
+				"name":      ReasoningModel.Slug,
+				"tool_call": ReasoningModel.toolCall,
+				"reasoning": ReasoningModel.reasoning,
 				"limit": map[string]any{
-					"context": reasoningContext,
-					"output":  reasoningOutput,
+					"context": ReasoningModel.limits.contextWindow,
+					"output":  ReasoningModel.limits.maxOutputTokens,
 				},
 			},
-			codingModel: map[string]any{
-				"name":      codingModel,
-				"tool_call": true,
-				"reasoning": false,
+			CodingModel.Slug: map[string]any{
+				"name":      CodingModel.Slug,
+				"tool_call": CodingModel.toolCall,
+				"reasoning": CodingModel.reasoning,
 				"limit": map[string]any{
-					"context": codingContext,
-					"output":  codingOutput,
+					"context": CodingModel.limits.contextWindow,
+					"output":  CodingModel.limits.maxOutputTokens,
 				},
 			},
-			imageModel: map[string]any{
-				"name":      imageModel,
-				"tool_call": true,
-				"reasoning": false,
+			ImageModel.Slug: map[string]any{
+				"name":      ImageModel.Slug,
+				"tool_call": ImageModel.toolCall,
+				"reasoning": ImageModel.reasoning,
 				"limit": map[string]any{
-					"context": imageContext,
-					"output":  imageOutput,
+					"context": ImageModel.limits.contextWindow,
+					"output":  ImageModel.limits.maxOutputTokens,
 				},
 			},
 		},
