@@ -31,6 +31,7 @@ type ConfigureStep struct {
 	telemetryOptIn   bool
 	apiKey           string
 	shellProfilePath string
+	shellProfileErr  error
 	statuses         []toolStatus
 	done             bool
 	startOnce        sync.Once
@@ -135,8 +136,9 @@ func (s *ConfigureStep) exportAPIKeyToShellProfile() {
 	if s.apiKey == "" {
 		return
 	}
-	path, _ := config.ExportEnvToShellProfile(tools.APIKeyEnv, s.apiKey)
+	path, err := config.ExportEnvToShellProfile(tools.APIKeyEnv, s.apiKey)
 	s.shellProfilePath = path
+	s.shellProfileErr = err
 }
 
 func (s *ConfigureStep) ShellProfilePath() string {
@@ -212,14 +214,16 @@ func (s *ConfigureStep) View() string {
 			b.WriteString("\n\n")
 			b.WriteString("Each tool has been configured with optimal models for its use case:")
 			b.WriteString("\n")
-			b.WriteString("• Reasoning tasks → glm-5-fp8")
+			b.WriteString(fmt.Sprintf("• Reasoning tasks → %s", tools.ReasoningModel.Slug))
 			b.WriteString("\n")
-			b.WriteString("• Code generation → minimax-m2.5")
+			b.WriteString(fmt.Sprintf("• Code generation → %s", tools.CodingModel.Slug))
 			b.WriteString("\n")
-			b.WriteString("• Multi-modal tasks → kimi-k2.5")
+			b.WriteString(fmt.Sprintf("• Multi-modal tasks → %s", tools.ImageModel.Slug))
 			b.WriteString("\n")
 			if s.shellProfilePath != "" {
 				b.WriteString(fmt.Sprintf("\n%s exported to %s\n", tools.APIKeyEnv, s.shellProfilePath))
+			} else if s.shellProfileErr != nil {
+				b.WriteString(fmt.Sprintf("\n%s\n", Styles.Warning.Render(fmt.Sprintf("Could not export %s to shell profile: %v", tools.APIKeyEnv, s.shellProfileErr))))
 			}
 			b.WriteString("\n")
 			b.WriteString(Styles.Help.Render("Press enter to continue"))
@@ -230,23 +234,27 @@ func (s *ConfigureStep) View() string {
 }
 
 func (s *ConfigureStep) getModelInfoForTool(toolID tools.ToolID) string {
+	r := tools.ReasoningModel.Slug
+	c := tools.CodingModel.Slug
+	i := tools.ImageModel.Slug
+
 	switch toolID {
 	case tools.ToolClaudeCode:
-		return "→ glm-5-fp8 (plan mode) + minimax-m2.5 (execution mode)"
+		return fmt.Sprintf("→ %s (plan mode) + %s (execution mode)", r, c)
 	case tools.ToolOpenCode:
-		return "→ glm-5-fp8 (reasoning) + minimax-m2.5 (coding) + kimi-k2.5 (vision)"
+		return fmt.Sprintf("→ %s (reasoning) + %s (coding) + %s (vision)", r, c, i)
 	case tools.ToolCursor, tools.ToolContinue:
-		return "→ glm-5-fp8 (reasoning) + minimax-m2.5 (coding) + kimi-k2.5 (vision)"
+		return fmt.Sprintf("→ %s (reasoning) + %s (coding) + %s (vision)", r, c, i)
 	case tools.ToolWindsurf:
-		return "→ minimax-m2.5 (coding) + glm-5-fp8 (reasoning) + kimi-k2.5 (vision)"
+		return fmt.Sprintf("→ %s (coding) + %s (reasoning) + %s (vision)", c, r, i)
 	case tools.ToolZed:
-		return "→ minimax-m2.5 (primary coding model)"
+		return fmt.Sprintf("→ %s (primary coding model)", c)
 	case tools.ToolCodex:
-		return "→ minimax-m2.5 (code generation and debugging)"
+		return fmt.Sprintf("→ %s (code generation and debugging)", c)
 	case tools.ToolCline:
-		return "→ minimax-m2.5 (action) + glm-5-fp8 (planning)"
+		return fmt.Sprintf("→ %s (action) + %s (planning)", c, r)
 	case tools.ToolGSD2:
-		return "→ glm-5-fp8 (default) + minimax-m2.5 (coding) + kimi-k2.5 (vision)"
+		return fmt.Sprintf("→ %s (default) + %s (coding) + %s (vision)", r, c, i)
 	case tools.ToolGeneric:
 		return "→ Environment variables for Cast AI endpoint"
 	default:

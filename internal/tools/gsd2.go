@@ -48,14 +48,14 @@ func writeGSD2(scope config.ConfigScope) error {
 				"baseUrl":      baseURL,
 				"apiKey":       apiKey,
 				"api":          "openai-completions",
-				"defaultModel": reasoningModel.slug,
+				"defaultModel": ReasoningModel.Slug,
 				"models": []map[string]any{
 					{
-						"id":            reasoningModel.slug,
-						"name":          reasoningModel.displayName,
-						"contextWindow": reasoningModel.limits.contextWindow,
-						"maxTokens":     reasoningModel.limits.maxOutputTokens,
-						"reasoning":     reasoningModel.reasoning,
+						"id":            ReasoningModel.Slug,
+						"name":          ReasoningModel.displayName,
+						"contextWindow": ReasoningModel.limits.contextWindow,
+						"maxTokens":     ReasoningModel.limits.maxOutputTokens,
+						"reasoning":     ReasoningModel.reasoning,
 						"input":         []string{"text"},
 						"cost": map[string]any{
 							"input":      0,
@@ -65,11 +65,11 @@ func writeGSD2(scope config.ConfigScope) error {
 						},
 					},
 					{
-						"id":            codingModel.slug,
-						"name":          codingModel.displayName,
-						"contextWindow": codingModel.limits.contextWindow,
-						"maxTokens":     codingModel.limits.maxOutputTokens,
-						"reasoning":     codingModel.reasoning,
+						"id":            CodingModel.Slug,
+						"name":          CodingModel.displayName,
+						"contextWindow": CodingModel.limits.contextWindow,
+						"maxTokens":     CodingModel.limits.maxOutputTokens,
+						"reasoning":     CodingModel.reasoning,
 						"input":         []string{"text"},
 						"cost": map[string]any{
 							"input":      0,
@@ -79,11 +79,11 @@ func writeGSD2(scope config.ConfigScope) error {
 						},
 					},
 					{
-						"id":            imageModel.slug,
-						"name":          imageModel.displayName,
-						"contextWindow": imageModel.limits.contextWindow,
-						"maxTokens":     imageModel.limits.maxOutputTokens,
-						"reasoning":     imageModel.reasoning,
+						"id":            ImageModel.Slug,
+						"name":          ImageModel.displayName,
+						"contextWindow": ImageModel.limits.contextWindow,
+						"maxTokens":     ImageModel.limits.maxOutputTokens,
+						"reasoning":     ImageModel.reasoning,
 						"input":         []string{"text", "image"},
 						"cost": map[string]any{
 							"input":      0,
@@ -118,7 +118,7 @@ git:
   isolation: worktree
   merge_strategy: squash
 ---
-`, codingModel.slug, reasoningModel.slug, codingModel.slug, codingModel.slug)
+`, CodingModel.Slug, ReasoningModel.Slug, CodingModel.Slug, CodingModel.Slug)
 
 	if err := config.WriteFile(prefsPath, []byte(prefsContent)); err != nil {
 		return fmt.Errorf("write preferences.md: %w", err)

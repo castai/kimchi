@@ -17,8 +17,8 @@ func codexAgentMD() string {
 	return `# Cast AI Configuration
 
 This project uses Cast AI's open-source models:
-- ` + reasoningModel.slug + ` for reasoning/planning
-- ` + codingModel.slug + ` for coding/execution
+- ` + ReasoningModel.Slug + ` for reasoning/planning
+- ` + CodingModel.Slug + ` for coding/execution
 
 Set the ` + APIKeyEnv + ` environment variable with your Cast AI API key.
 `
@@ -48,25 +48,25 @@ type codexTruncationPolicy struct {
 
 type codexModelEntry struct {
 	// Required fields
-	Slug                       string                 `json:"slug"`
-	DisplayName                string                 `json:"display_name"`
-	ShellType                  string                 `json:"shell_type"`
-	Visibility                 string                 `json:"visibility"`
-	SupportedInAPI             bool                   `json:"supported_in_api"`
-	Priority                   int                    `json:"priority"`
-	BaseInstructions           string                 `json:"base_instructions"`
-	SupportsReasoningSummaries bool                   `json:"supports_reasoning_summaries"`
-	SupportVerbosity           bool                   `json:"support_verbosity"`
-	TruncationPolicy           codexTruncationPolicy  `json:"truncation_policy"`
-	SupportsParallelToolCalls  bool                   `json:"supports_parallel_tool_calls"`
-	ExperimentalSupportedTools []string               `json:"experimental_supported_tools"`
-	SupportedReasoningLevels   []codexReasoningLevel  `json:"supported_reasoning_levels"`
+	Slug                       string                `json:"slug"`
+	DisplayName                string                `json:"display_name"`
+	ShellType                  string                `json:"shell_type"`
+	Visibility                 string                `json:"visibility"`
+	SupportedInAPI             bool                  `json:"supported_in_api"`
+	Priority                   int                   `json:"priority"`
+	BaseInstructions           string                `json:"base_instructions"`
+	SupportsReasoningSummaries bool                  `json:"supports_reasoning_summaries"`
+	SupportVerbosity           bool                  `json:"support_verbosity"`
+	TruncationPolicy           codexTruncationPolicy `json:"truncation_policy"`
+	SupportsParallelToolCalls  bool                  `json:"supports_parallel_tool_calls"`
+	ExperimentalSupportedTools []string              `json:"experimental_supported_tools"`
+	SupportedReasoningLevels   []codexReasoningLevel `json:"supported_reasoning_levels"`
 	// Optional but useful
-	Description         string   `json:"description,omitempty"`
-	ContextWindow       int      `json:"context_window,omitempty"`
-	InputModalities     []string `json:"input_modalities,omitempty"`
-	ApplyPatchToolType  string   `json:"apply_patch_tool_type,omitempty"`
-	DefaultReasoningLevel string `json:"default_reasoning_level,omitempty"`
+	Description           string   `json:"description,omitempty"`
+	ContextWindow         int      `json:"context_window,omitempty"`
+	InputModalities       []string `json:"input_modalities,omitempty"`
+	ApplyPatchToolType    string   `json:"apply_patch_tool_type,omitempty"`
+	DefaultReasoningLevel string   `json:"default_reasoning_level,omitempty"`
 }
 
 type codexCatalog struct {
@@ -77,14 +77,18 @@ func writeModelCatalog(path string) error {
 	var models []codexModelEntry
 	for _, m := range allModels {
 		entry := codexModelEntry{
-			Slug:                       m.slug,
+			Slug:                       m.Slug,
 			DisplayName:                m.displayName,
 			Description:                m.description,
 			ShellType:                  "shell_command",
 			Visibility:                 "list",
 			SupportedInAPI:             true,
 			BaseInstructions:           "",
-			TruncationPolicy:           codexTruncationPolicy{Mode: "tokens", Limit: 10000},
+			// Deliberately higher than the Codex default of 10,000 tokens
+			// (https://github.com/openai/codex/blob/main/codex-rs/core/models.json#L12)
+			// because tool outputs in coding use cases (file reads, docs) can be large.
+			// See: https://github.com/openai/codex/issues/6426
+			TruncationPolicy: codexTruncationPolicy{Mode: "tokens", Limit: 25_000},
 			SupportsParallelToolCalls:  m.toolCall,
 			ExperimentalSupportedTools: []string{},
 			ContextWindow:              m.limits.contextWindow,
@@ -126,15 +130,21 @@ func writeCodex(scope config.ConfigScope) error {
 	}
 
 	// Always set kimchi as the default model
-	cfg["model"] = codingModel.slug
+	cfg["model"] = CodingModel.Slug
 	cfg["model_provider"] = providerName
 	cfg["suppress_unstable_features_warning"] = true
 
 	// Add model provider
-	if cfg["model_providers"] == nil {
-		cfg["model_providers"] = make(map[string]any)
+	providers, ok := cfg["model_providers"].(map[string]any)
+	if !ok {
+		if cfg["model_providers"] != nil {
+			return fmt.Errorf("codex config file %s seems malformed, we don't want to destroy your changes: expected \"model_providers\" to be a TOML table, please fix the file and try again", configPath)
+		}
+
+		providers = make(map[string]any)
+		cfg["model_providers"] = providers
 	}
-	providers := cfg["model_providers"].(map[string]any)
+
 	providers["kimchi"] = map[string]any{
 		"name":                 "Kimchi by Cast AI",
 		"base_url":             baseURL,

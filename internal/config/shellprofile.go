@@ -9,10 +9,10 @@ import (
 	"unicode/utf8"
 )
 
-// ExportEnvToShellProfile writes an export line for the given envoronment variable key=value to the
-// user's shell profile. It detects the shell from $SHELL and falls back to
-// checking which profile files exist. Returns the path written to, or "" if
-// no profile was detected.
+// ExportEnvToShellProfile writes an export line for the given environment variable key=value to the
+// user's shell profile. It detects the shell from $SHELL and falls back to checking which profile
+// files exist. Returns the path written to, or ("", nil) if no profile was detected. An error is
+// returned only for real I/O failures (permissions, symlinks, write errors), not for missing profiles.
 func ExportEnvToShellProfile(key, value string) (string, error) {
 	profilePath, shell := detectShellProfile()
 	if profilePath == "" {

@@ -49,31 +49,31 @@ func writeOpenCode(scope config.ConfigScope) error {
 			"apiKey":       apiKey,
 		},
 		"models": map[string]any{
-			reasoningModel.slug: map[string]any{
-				"name":      reasoningModel.slug,
-				"tool_call": reasoningModel.toolCall,
-				"reasoning": reasoningModel.reasoning,
+			ReasoningModel.Slug: map[string]any{
+				"name":      ReasoningModel.Slug,
+				"tool_call": ReasoningModel.toolCall,
+				"reasoning": ReasoningModel.reasoning,
 				"limit": map[string]any{
-					"context": reasoningModel.limits.contextWindow,
-					"output":  reasoningModel.limits.maxOutputTokens,
+					"context": ReasoningModel.limits.contextWindow,
+					"output":  ReasoningModel.limits.maxOutputTokens,
 				},
 			},
-			codingModel.slug: map[string]any{
-				"name":      codingModel.slug,
-				"tool_call": codingModel.toolCall,
-				"reasoning": codingModel.reasoning,
+			CodingModel.Slug: map[string]any{
+				"name":      CodingModel.Slug,
+				"tool_call": CodingModel.toolCall,
+				"reasoning": CodingModel.reasoning,
 				"limit": map[string]any{
-					"context": codingModel.limits.contextWindow,
-					"output":  codingModel.limits.maxOutputTokens,
+					"context": CodingModel.limits.contextWindow,
+					"output":  CodingModel.limits.maxOutputTokens,
 				},
 			},
-			imageModel.slug: map[string]any{
-				"name":      imageModel.slug,
-				"tool_call": imageModel.toolCall,
-				"reasoning": imageModel.reasoning,
+			ImageModel.Slug: map[string]any{
+				"name":      ImageModel.Slug,
+				"tool_call": ImageModel.toolCall,
+				"reasoning": ImageModel.reasoning,
 				"limit": map[string]any{
-					"context": imageModel.limits.contextWindow,
-					"output":  imageModel.limits.maxOutputTokens,
+					"context": ImageModel.limits.contextWindow,
+					"output":  ImageModel.limits.maxOutputTokens,
 				},
 			},
 		},
