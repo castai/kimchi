@@ -151,7 +151,7 @@ wire_api = "responses"
 		require.NoError(t, os.WriteFile(filepath.Join(configDir, "config.toml"), []byte(""), 0644))
 
 		require.NoError(t, os.Chmod(configDir, 0555))
-		t.Cleanup(func() { os.Chmod(configDir, 0755) })
+		t.Cleanup(func() { _ = os.Chmod(configDir, 0755) })
 
 		err := writeCodex(config.ScopeGlobal)
 		require.ErrorContains(t, err, "permission denied")
