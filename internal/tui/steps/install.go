@@ -103,6 +103,7 @@ func downloadFile(url, destPath string) error {
 	}
 	if _, err := io.Copy(f, resp.Body); err != nil {
 		f.Close()
+		os.Remove(destPath)
 		return fmt.Errorf("failed to write file %s: %w", destPath, err)
 	}
 	return f.Close()
