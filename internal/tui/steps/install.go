@@ -1,9 +1,13 @@
 package steps
 
 import (
+	"bytes"
 	"fmt"
+	"io"
+	"net/http"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"runtime"
 	"strings"
 
@@ -11,6 +15,8 @@ import (
 
 	"github.com/castai/kimchi/internal/tools"
 )
+
+const openCodeInstallURL = "https://opencode.ai/install"
 
 type installState int
 
@@ -80,24 +86,62 @@ func (s *InstallStep) checkForTools() tea.Cmd {
 	}
 }
 
+func downloadFile(url, destPath string) error {
+	resp, err := http.Get(url) //nolint:gosec,noctx // URL is a compile-time constant.
+	if err != nil {
+		return fmt.Errorf("failed to download %s: %w", url, err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("failed to download %s: HTTP %d %s", url, resp.StatusCode, resp.Status)
+	}
+
+	f, err := os.Create(destPath)
+	if err != nil {
+		return fmt.Errorf("failed to create file %s: %w", destPath, err)
+	}
+	if _, err := io.Copy(f, resp.Body); err != nil {
+		f.Close()
+		return fmt.Errorf("failed to write file %s: %w", destPath, err)
+	}
+	return f.Close()
+}
+
 func (s *InstallStep) installOpenCode() tea.Cmd {
 	return func() tea.Msg {
-		var cmd *exec.Cmd
 		switch runtime.GOOS {
-		case "darwin":
-			cmd = exec.Command("bash", "-c", "curl -fsSL https://raw.githubusercontent.com/opencode-ai/opencode/main/install.sh | bash")
-		case "linux":
-			cmd = exec.Command("bash", "-c", "curl -fsSL https://raw.githubusercontent.com/opencode-ai/opencode/main/install.sh | bash")
+		case "darwin", "linux":
 		default:
 			return installCompleteMsg{err: fmt.Errorf("unsupported platform: %s", runtime.GOOS)}
 		}
 
-		cmd.Stdout = os.Stdout
-		cmd.Stderr = os.Stderr
-		cmd.Stdin = os.Stdin
+		tmpDir, err := os.MkdirTemp("", "kimchi-opencode-install")
+		if err != nil {
+			return installCompleteMsg{err: fmt.Errorf("failed to create temp directory: %w", err)}
+		}
+		defer os.RemoveAll(tmpDir)
 
-		err := cmd.Run()
-		return installCompleteMsg{err: err}
+		scriptPath := filepath.Join(tmpDir, "install.sh")
+		if err := downloadFile(openCodeInstallURL, scriptPath); err != nil {
+			return installCompleteMsg{err: err}
+		}
+
+		if err := os.Chmod(scriptPath, 0o700); err != nil {
+			return installCompleteMsg{err: fmt.Errorf("failed to make install script executable: %w", err)}
+		}
+
+		var outputBuf bytes.Buffer
+		cmd := exec.Command(scriptPath)
+		cmd.Stdout = &outputBuf
+		cmd.Stderr = &outputBuf
+		if err := cmd.Run(); err != nil {
+			return installCompleteMsg{
+				err: fmt.Errorf("OpenCode install script failed: %s (%w)", strings.TrimSpace(outputBuf.String()), err),
+			}
+		}
+
+		return installCompleteMsg{}
 	}
 }
 
@@ -119,6 +163,10 @@ func (s *InstallStep) Update(msg tea.Msg) (Step, tea.Cmd) {
 				s.state = installStateSkipped
 				return s, func() tea.Msg { return NextStepMsg{} }
 			}
+		case "enter":
+			if s.state == installStateSkipped {
+				return s, func() tea.Msg { return NextStepMsg{} }
+			}
 		}
 
 	case installCheckCompleteMsg:
@@ -133,7 +181,7 @@ func (s *InstallStep) Update(msg tea.Msg) (Step, tea.Cmd) {
 		if msg.err != nil {
 			s.state = installStateSkipped
 			s.installError = msg.err.Error()
-			return s, func() tea.Msg { return NextStepMsg{} }
+			return s, nil
 		}
 		s.state = installStateInstalled
 		s.selectedTool = tools.ToolOpenCode
@@ -180,7 +228,9 @@ func (s *InstallStep) View() string {
 			b.WriteString("\n\n")
 			b.WriteString(Styles.Desc.Render(s.installError))
 			b.WriteString("\n\n")
-			b.WriteString("You can select tools manually in the next step.")
+			b.WriteString("For installation instructions visit: https://opencode.ai/docs\n\n")
+			b.WriteString("You can select tools manually in the next step.\n\n")
+			b.WriteString(Styles.Help.Render("Press enter to continue."))
 		}
 	}
 
@@ -193,8 +243,11 @@ func (s *InstallStep) Name() string {
 
 func (s *InstallStep) Info() StepInfo {
 	bindings := []KeyBinding{BindingsQuit}
-	if s.state == installStateOffer {
+	switch s.state {
+	case installStateOffer:
 		bindings = append(bindings, KeyBinding{Key: "y", Text: "install"}, KeyBinding{Key: "n", Text: "skip"})
+	case installStateSkipped:
+		bindings = append(bindings, KeyBinding{Key: "↵", Text: "continue"})
 	}
 	return StepInfo{
 		Name:        "Check Tools",
