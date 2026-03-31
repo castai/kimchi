@@ -78,8 +78,8 @@ func writeModelCatalog(path string) error {
 	for _, m := range allModels {
 		entry := codexModelEntry{
 			Slug:             m.Slug,
-			DisplayName:      m.displayName,
-			Description:      m.description,
+			DisplayName:      m.DisplayName,
+			Description:      m.Description,
 			ShellType:        "shell_command",
 			Visibility:       "list",
 			SupportedInAPI:   true,
@@ -89,13 +89,13 @@ func writeModelCatalog(path string) error {
 			// because tool outputs in coding use cases (file reads, docs) can be large.
 			// See: https://github.com/openai/codex/issues/6426
 			TruncationPolicy:           codexTruncationPolicy{Mode: "tokens", Limit: 25_000},
-			SupportsParallelToolCalls:  m.toolCall,
+			SupportsParallelToolCalls:  m.ToolCall,
 			ExperimentalSupportedTools: []string{},
-			ContextWindow:              m.limits.contextWindow,
-			InputModalities:            m.inputModalities,
+			ContextWindow:              m.Limits.ContextWindow,
+			InputModalities:            m.InputModalities,
 			ApplyPatchToolType:         "function",
 		}
-		if m.reasoning {
+		if m.Reasoning {
 			entry.DefaultReasoningLevel = "medium"
 			entry.SupportedReasoningLevels = []codexReasoningLevel{
 				{Effort: "low", Description: "Fast responses with lighter reasoning"},

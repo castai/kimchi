@@ -109,9 +109,9 @@ wire_api = "responses"
 		for _, m := range catalog.Models {
 			bySlug[m.Slug] = m
 		}
-		assert.Equal(t, CodingModel.limits.contextWindow, bySlug[CodingModel.Slug].ContextWindow)
-		assert.Equal(t, ReasoningModel.limits.contextWindow, bySlug[ReasoningModel.Slug].ContextWindow)
-		assert.Equal(t, ImageModel.limits.contextWindow, bySlug[ImageModel.Slug].ContextWindow)
+		assert.Equal(t, CodingModel.Limits.ContextWindow, bySlug[CodingModel.Slug].ContextWindow)
+		assert.Equal(t, ReasoningModel.Limits.ContextWindow, bySlug[ReasoningModel.Slug].ContextWindow)
+		assert.Equal(t, ImageModel.Limits.ContextWindow, bySlug[ImageModel.Slug].ContextWindow)
 
 		// Reasoning model should have low/medium/high levels
 		assert.Equal(t, "medium", bySlug[ReasoningModel.Slug].DefaultReasoningLevel)

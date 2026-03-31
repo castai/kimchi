@@ -52,10 +52,10 @@ func writeGSD2(scope config.ConfigScope) error {
 				"models": []map[string]any{
 					{
 						"id":            ReasoningModel.Slug,
-						"name":          ReasoningModel.displayName,
-						"contextWindow": ReasoningModel.limits.contextWindow,
-						"maxTokens":     ReasoningModel.limits.maxOutputTokens,
-						"reasoning":     ReasoningModel.reasoning,
+						"name":          ReasoningModel.DisplayName,
+						"contextWindow": ReasoningModel.Limits.ContextWindow,
+						"maxTokens":     ReasoningModel.Limits.MaxOutputTokens,
+						"reasoning":     ReasoningModel.Reasoning,
 						"input":         []string{"text"},
 						"cost": map[string]any{
 							"input":      0,
@@ -66,10 +66,10 @@ func writeGSD2(scope config.ConfigScope) error {
 					},
 					{
 						"id":            CodingModel.Slug,
-						"name":          CodingModel.displayName,
-						"contextWindow": CodingModel.limits.contextWindow,
-						"maxTokens":     CodingModel.limits.maxOutputTokens,
-						"reasoning":     CodingModel.reasoning,
+						"name":          CodingModel.DisplayName,
+						"contextWindow": CodingModel.Limits.ContextWindow,
+						"maxTokens":     CodingModel.Limits.MaxOutputTokens,
+						"reasoning":     CodingModel.Reasoning,
 						"input":         []string{"text"},
 						"cost": map[string]any{
 							"input":      0,
@@ -80,10 +80,10 @@ func writeGSD2(scope config.ConfigScope) error {
 					},
 					{
 						"id":            ImageModel.Slug,
-						"name":          ImageModel.displayName,
-						"contextWindow": ImageModel.limits.contextWindow,
-						"maxTokens":     ImageModel.limits.maxOutputTokens,
-						"reasoning":     ImageModel.reasoning,
+						"name":          ImageModel.DisplayName,
+						"contextWindow": ImageModel.Limits.ContextWindow,
+						"maxTokens":     ImageModel.Limits.MaxOutputTokens,
+						"reasoning":     ImageModel.Reasoning,
 						"input":         []string{"text", "image"},
 						"cost": map[string]any{
 							"input":      0,

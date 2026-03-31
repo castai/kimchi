@@ -95,9 +95,9 @@ func writeWindsurf(scope config.ConfigScope) error {
 		"baseUrl":     BaseURL,
 		"modelId":     CodingModel.Slug,
 		"modelInfo": map[string]any{
-			"maxTokens":           CodingModel.limits.maxOutputTokens,
-			"contextWindow":       CodingModel.limits.contextWindow,
-			"supportsImages":      CodingModel.supportsImages,
+			"maxTokens":           CodingModel.Limits.MaxOutputTokens,
+			"contextWindow":       CodingModel.Limits.ContextWindow,
+			"supportsImages":      CodingModel.SupportsImages,
 			"supportsPromptCache": false,
 		},
 	}
@@ -108,9 +108,9 @@ func writeWindsurf(scope config.ConfigScope) error {
 		"baseUrl":     BaseURL,
 		"modelId":     ReasoningModel.Slug,
 		"modelInfo": map[string]any{
-			"maxTokens":           ReasoningModel.limits.maxOutputTokens,
-			"contextWindow":       ReasoningModel.limits.contextWindow,
-			"supportsImages":      ReasoningModel.supportsImages,
+			"maxTokens":           ReasoningModel.Limits.MaxOutputTokens,
+			"contextWindow":       ReasoningModel.Limits.ContextWindow,
+			"supportsImages":      ReasoningModel.SupportsImages,
 			"supportsPromptCache": false,
 		},
 	}
@@ -121,9 +121,9 @@ func writeWindsurf(scope config.ConfigScope) error {
 		"baseUrl":     BaseURL,
 		"modelId":     ImageModel.Slug,
 		"modelInfo": map[string]any{
-			"maxTokens":           ImageModel.limits.maxOutputTokens,
-			"contextWindow":       ImageModel.limits.contextWindow,
-			"supportsImages":      ImageModel.supportsImages,
+			"maxTokens":           ImageModel.Limits.MaxOutputTokens,
+			"contextWindow":       ImageModel.Limits.ContextWindow,
+			"supportsImages":      ImageModel.SupportsImages,
 			"supportsPromptCache": false,
 		},
 	}

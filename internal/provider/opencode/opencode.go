@@ -76,29 +76,29 @@ func providerConfig(apiKey string) map[string]any {
 		"models": map[string]any{
 			tools.ReasoningModel.Slug: map[string]any{
 				"name":      tools.ReasoningModel.Slug,
-				"tool_call": tools.ReasoningModel.GetToolCall(),
-				"reasoning": tools.ReasoningModel.GetReasoning(),
+				"tool_call": tools.ReasoningModel.ToolCall,
+				"reasoning": tools.ReasoningModel.Reasoning,
 				"limit": map[string]any{
-					"context": tools.ReasoningModel.GetContextWindow(),
-					"output":  tools.ReasoningModel.GetMaxOutputTokens(),
+					"context": tools.ReasoningModel.Limits.ContextWindow,
+					"output":  tools.ReasoningModel.Limits.MaxOutputTokens,
 				},
 			},
 			tools.CodingModel.Slug: map[string]any{
 				"name":      tools.CodingModel.Slug,
-				"tool_call": tools.CodingModel.GetToolCall(),
-				"reasoning": tools.CodingModel.GetReasoning(),
+				"tool_call": tools.CodingModel.ToolCall,
+				"reasoning": tools.CodingModel.Reasoning,
 				"limit": map[string]any{
-					"context": tools.CodingModel.GetContextWindow(),
-					"output":  tools.CodingModel.GetMaxOutputTokens(),
+					"context": tools.CodingModel.Limits.ContextWindow,
+					"output":  tools.CodingModel.Limits.MaxOutputTokens,
 				},
 			},
 			tools.ImageModel.Slug: map[string]any{
 				"name":      tools.ImageModel.Slug,
-				"tool_call": tools.ImageModel.GetToolCall(),
-				"reasoning": tools.ImageModel.GetReasoning(),
+				"tool_call": tools.ImageModel.ToolCall,
+				"reasoning": tools.ImageModel.Reasoning,
 				"limit": map[string]any{
-					"context": tools.ImageModel.GetContextWindow(),
-					"output":  tools.ImageModel.GetMaxOutputTokens(),
+					"context": tools.ImageModel.Limits.ContextWindow,
+					"output":  tools.ImageModel.Limits.MaxOutputTokens,
 				},
 			},
 		},

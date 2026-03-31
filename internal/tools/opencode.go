@@ -70,29 +70,29 @@ func openCodeProviderConfig(apiKey string) map[string]any {
 		"models": map[string]any{
 			ReasoningModel.Slug: map[string]any{
 				"name":      ReasoningModel.Slug,
-				"tool_call": ReasoningModel.toolCall,
-				"reasoning": ReasoningModel.reasoning,
+				"tool_call": ReasoningModel.ToolCall,
+				"reasoning": ReasoningModel.Reasoning,
 				"limit": map[string]any{
-					"context": ReasoningModel.limits.contextWindow,
-					"output":  ReasoningModel.limits.maxOutputTokens,
+					"context": ReasoningModel.Limits.ContextWindow,
+					"output":  ReasoningModel.Limits.MaxOutputTokens,
 				},
 			},
 			CodingModel.Slug: map[string]any{
 				"name":      CodingModel.Slug,
-				"tool_call": CodingModel.toolCall,
-				"reasoning": CodingModel.reasoning,
+				"tool_call": CodingModel.ToolCall,
+				"reasoning": CodingModel.Reasoning,
 				"limit": map[string]any{
-					"context": CodingModel.limits.contextWindow,
-					"output":  CodingModel.limits.maxOutputTokens,
+					"context": CodingModel.Limits.ContextWindow,
+					"output":  CodingModel.Limits.MaxOutputTokens,
 				},
 			},
 			ImageModel.Slug: map[string]any{
 				"name":      ImageModel.Slug,
-				"tool_call": ImageModel.toolCall,
-				"reasoning": ImageModel.reasoning,
+				"tool_call": ImageModel.ToolCall,
+				"reasoning": ImageModel.Reasoning,
 				"limit": map[string]any{
-					"context": ImageModel.limits.contextWindow,
-					"output":  ImageModel.limits.maxOutputTokens,
+					"context": ImageModel.Limits.ContextWindow,
+					"output":  ImageModel.Limits.MaxOutputTokens,
 				},
 			},
 		},
