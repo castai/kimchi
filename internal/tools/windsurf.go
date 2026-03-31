@@ -92,7 +92,7 @@ func writeWindsurf(scope config.ConfigScope) error {
 	castaiConfig := map[string]any{
 		"apiProvider": "openai-native",
 		"apiKey":      apiKey,
-		"baseUrl":     baseURL,
+		"baseUrl":     BaseURL,
 		"modelId":     CodingModel.Slug,
 		"modelInfo": map[string]any{
 			"maxTokens":           CodingModel.limits.maxOutputTokens,
@@ -105,7 +105,7 @@ func writeWindsurf(scope config.ConfigScope) error {
 	reasoningConfig := map[string]any{
 		"apiProvider": "openai-native",
 		"apiKey":      apiKey,
-		"baseUrl":     baseURL,
+		"baseUrl":     BaseURL,
 		"modelId":     ReasoningModel.Slug,
 		"modelInfo": map[string]any{
 			"maxTokens":           ReasoningModel.limits.maxOutputTokens,
@@ -118,7 +118,7 @@ func writeWindsurf(scope config.ConfigScope) error {
 	imageConfig := map[string]any{
 		"apiProvider": "openai-native",
 		"apiKey":      apiKey,
-		"baseUrl":     baseURL,
+		"baseUrl":     BaseURL,
 		"modelId":     ImageModel.Slug,
 		"modelInfo": map[string]any{
 			"maxTokens":           ImageModel.limits.maxOutputTokens,

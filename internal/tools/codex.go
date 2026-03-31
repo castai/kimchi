@@ -77,18 +77,18 @@ func writeModelCatalog(path string) error {
 	var models []codexModelEntry
 	for _, m := range allModels {
 		entry := codexModelEntry{
-			Slug:                       m.Slug,
-			DisplayName:                m.displayName,
-			Description:                m.description,
-			ShellType:                  "shell_command",
-			Visibility:                 "list",
-			SupportedInAPI:             true,
-			BaseInstructions:           "",
+			Slug:             m.Slug,
+			DisplayName:      m.displayName,
+			Description:      m.description,
+			ShellType:        "shell_command",
+			Visibility:       "list",
+			SupportedInAPI:   true,
+			BaseInstructions: "",
 			// Deliberately higher than the Codex default of 10,000 tokens
 			// (https://github.com/openai/codex/blob/main/codex-rs/core/models.json#L12)
 			// because tool outputs in coding use cases (file reads, docs) can be large.
 			// See: https://github.com/openai/codex/issues/6426
-			TruncationPolicy: codexTruncationPolicy{Mode: "tokens", Limit: 25_000},
+			TruncationPolicy:           codexTruncationPolicy{Mode: "tokens", Limit: 25_000},
 			SupportsParallelToolCalls:  m.toolCall,
 			ExperimentalSupportedTools: []string{},
 			ContextWindow:              m.limits.contextWindow,
@@ -131,7 +131,7 @@ func writeCodex(scope config.ConfigScope) error {
 
 	// Always set kimchi as the default model
 	cfg["model"] = CodingModel.Slug
-	cfg["model_provider"] = providerName
+	cfg["model_provider"] = ProviderName
 	cfg["suppress_unstable_features_warning"] = true
 
 	// Add model provider
@@ -147,7 +147,7 @@ func writeCodex(scope config.ConfigScope) error {
 
 	providers["kimchi"] = map[string]any{
 		"name":                 "Kimchi by Cast AI",
-		"base_url":             baseURL,
+		"base_url":             BaseURL,
 		"env_key":              APIKeyEnv,
 		"env_key_instructions": envKeyInstructions,
 		"wire_api":             "responses",

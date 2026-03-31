@@ -1,48 +1,48 @@
 package tools
 
-type limits struct {
-	contextWindow   int
-	maxOutputTokens int
+type ModelLimits struct {
+	ContextWindow   int
+	MaxOutputTokens int
 }
 
-type model struct {
+type Model struct {
 	Slug            string
-	displayName     string
-	description     string
-	toolCall        bool
-	reasoning       bool
-	supportsImages  bool
-	inputModalities []string
-	limits          limits
+	DisplayName     string
+	Description     string
+	ToolCall        bool
+	Reasoning       bool
+	SupportsImages  bool
+	InputModalities []string
+	Limits          ModelLimits
 }
 
 var (
-	ReasoningModel = model{
+	ReasoningModel = Model{
 		Slug:            "glm-5-fp8",
-		displayName:     "GLM-5 FP8",
-		description:     "Reasoning model for planning, analysis, and complex problem solving.",
-		toolCall:        true,
-		reasoning:       true,
-		inputModalities: []string{"text"},
-		limits:          limits{contextWindow: 202752, maxOutputTokens: 32768},
+		DisplayName:     "GLM-5 FP8",
+		Description:     "Reasoning model for planning, analysis, and complex problem solving.",
+		ToolCall:        true,
+		Reasoning:       true,
+		InputModalities: []string{"text"},
+		Limits:          ModelLimits{ContextWindow: 202752, MaxOutputTokens: 32768},
 	}
-	CodingModel = model{
+	CodingModel = Model{
 		Slug:            "minimax-m2.5",
-		displayName:     "MiniMax M2.5",
-		description:     "Coding model for writing, refactoring, and debugging code.",
-		toolCall:        true,
-		inputModalities: []string{"text"},
-		limits:          limits{contextWindow: 196608, maxOutputTokens: 32768},
+		DisplayName:     "MiniMax M2.5",
+		Description:     "Coding model for writing, refactoring, and debugging code.",
+		ToolCall:        true,
+		InputModalities: []string{"text"},
+		Limits:          ModelLimits{ContextWindow: 196608, MaxOutputTokens: 32768},
 	}
-	ImageModel = model{
+	ImageModel = Model{
 		Slug:            "kimi-k2.5",
-		displayName:     "Kimi K2.5",
-		description:     "Multi-modal model for image processing and code generation.",
-		toolCall:        true,
-		supportsImages:  true,
-		inputModalities: []string{"text", "image"},
-		limits:          limits{contextWindow: 262144, maxOutputTokens: 32768},
+		DisplayName:     "Kimi K2.5",
+		Description:     "Multi-modal model for image processing and code generation.",
+		ToolCall:        true,
+		SupportsImages:  true,
+		InputModalities: []string{"text", "image"},
+		Limits:          ModelLimits{ContextWindow: 262144, MaxOutputTokens: 32768},
 	}
 
-	allModels = []model{ReasoningModel, CodingModel, ImageModel}
+	allModels = []Model{ReasoningModel, CodingModel, ImageModel}
 )

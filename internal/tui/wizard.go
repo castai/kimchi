@@ -17,6 +17,7 @@ import (
 
 type WizardConfig struct {
 	APIKey         string
+	Mode           config.ConfigMode
 	SelectedTools  []tools.ToolID
 	Scope          config.ConfigScope
 	TelemetryOptIn bool
@@ -44,9 +45,10 @@ func newWizard(ctx context.Context) *wizard {
 	authStep := steps.NewAuthStep()
 	installStep := steps.NewInstallStep()
 	toolsStep := steps.NewToolsStep()
+	modeStep := steps.NewModeStep()
 	scopeStep := steps.NewScopeStep()
 
-	stepList := []steps.Step{welcomeStep, authStep, installStep, toolsStep, scopeStep}
+	stepList := []steps.Step{welcomeStep, authStep, installStep, toolsStep, modeStep, scopeStep}
 
 	return &wizard{
 		stepList: stepList,
@@ -205,6 +207,17 @@ func (w *wizard) collectStepResult() {
 		if w.hasClaudeCode() {
 			w.pendingTelemetry = steps.NewTelemetryStep()
 		}
+	case *steps.ModeStep:
+		w.config.Mode = s.SelectedMode()
+		if w.config.Mode == config.ModeInject {
+			// Skip the scope step — inject mode uses kimchi-managed paths.
+			w.config.Scope = config.ScopeGlobal
+			w.removePendingStep(func(step steps.Step) bool {
+				_, ok := step.(*steps.ScopeStep)
+				return ok
+			})
+			w.scheduleConfigureIfReady()
+		}
 	case *steps.ScopeStep:
 		w.config.Scope = s.SelectedScope()
 		w.scheduleConfigureIfReady()
@@ -216,9 +229,8 @@ func (w *wizard) collectStepResult() {
 		w.config.GSDInstallFor = s.GetInstallTypes()
 	case *steps.ConfigureStep:
 		w.pendingDone = steps.NewDoneStep(context.Background(), steps.DoneParams{
-			APIKey:           w.config.APIKey,
-			ToolIDs:          w.config.SelectedTools,
-			ShellProfilePath: s.ShellProfilePath(),
+			APIKey:  w.config.APIKey,
+			ToolIDs: w.config.SelectedTools,
 		})
 	}
 }
@@ -234,10 +246,20 @@ func (w *wizard) scheduleConfigureIfReady() {
 	w.pendingGSD = steps.NewGSDStep(w.config.SelectedTools, w.config.Scope)
 	w.pendingConfigure = steps.NewConfigureStep(steps.ConfigureParams{
 		ToolIDs:        w.config.SelectedTools,
+		Mode:           w.config.Mode,
 		Scope:          w.config.Scope,
 		TelemetryOptIn: w.config.TelemetryOptIn,
 		APIKey:         w.config.APIKey,
 	})
+}
+
+func (w *wizard) removePendingStep(match func(steps.Step) bool) {
+	for i := w.current + 1; i < len(w.stepList); i++ {
+		if match(w.stepList[i]) {
+			w.stepList = append(w.stepList[:i], w.stepList[i+1:]...)
+			return
+		}
+	}
 }
 
 func (w *wizard) hasClaudeCode() bool {
@@ -267,17 +289,59 @@ func RunWizard() (*WizardConfig, error) {
 
 	if len(cfg.GSDMigrateFrom) > 0 {
 		migrator := gsd.NewMigrator()
-		if _, err := migrator.Migrate(cfg.GSDMigrateFrom); err != nil {
+		var migrateInstallations []gsd.Installation
+		for _, install := range cfg.GSDMigrateFrom {
+			kimchiPath, err := gsd.KimchiManagedPath(install.Type)
+			if err != nil {
+				fmt.Printf("Warning: could not determine kimchi path for %s: %v\n", install.Type, err)
+				migrateInstallations = append(migrateInstallations, install)
+				continue
+			}
+			if err := gsd.CopyInstallation(install.Path, kimchiPath); err != nil {
+				fmt.Printf("Warning: could not copy GSD files to kimchi dir for %s: %v\n", install.Type, err)
+				migrateInstallations = append(migrateInstallations, install)
+				continue
+			}
+			agentFiles, err := gsd.ReadAgentFiles(kimchiPath)
+			if err != nil {
+				fmt.Printf("Warning: could not read GSD agent files for %s: %v\n", install.Type, err)
+				migrateInstallations = append(migrateInstallations, install)
+				continue
+			}
+			migrateInstallations = append(migrateInstallations, gsd.Installation{
+				Type:       install.Type,
+				Path:       kimchiPath,
+				AgentFiles: agentFiles,
+			})
+		}
+		if _, err := migrator.Migrate(migrateInstallations); err != nil {
 			fmt.Printf("Warning: GSD migration failed: %v\n", err)
 		}
 	}
+
+	var gsdInstalledTools []string
 
 	if len(cfg.GSDInstallFor) > 0 {
 		installer := gsd.NewInstaller()
 		for _, installType := range cfg.GSDInstallFor {
 			if _, err := installer.Install(installType, string(cfg.Scope)); err != nil {
 				fmt.Printf("Warning: GSD installation failed for %s: %v\n", installType, err)
+			} else {
+				gsdInstalledTools = append(gsdInstalledTools, string(installType))
 			}
+		}
+	}
+
+	for _, install := range cfg.GSDMigrateFrom {
+		tool := string(install.Type)
+		if !slices.Contains(gsdInstalledTools, tool) {
+			gsdInstalledTools = append(gsdInstalledTools, tool)
+		}
+	}
+
+	if len(gsdInstalledTools) > 0 {
+		if err := config.SaveGSDInstalled(gsdInstalledTools); err != nil {
+			fmt.Printf("Warning: could not save GSD installation state: %v\n", err)
 		}
 	}
 

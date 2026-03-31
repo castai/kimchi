@@ -60,7 +60,7 @@ func writeCursor(scope config.ConfigScope) error {
 	}
 
 	openAIConfig["apiKey"] = apiKey
-	openAIConfig["baseURL"] = baseURL
+	openAIConfig["baseURL"] = BaseURL
 	existing["openAICompatible"] = openAIConfig
 
 	if err := config.WriteJSON(path, existing); err != nil {

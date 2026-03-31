@@ -40,11 +40,30 @@ func writeOpenCode(scope config.ConfigScope) error {
 
 	existing["$schema"] = "https://opencode.ai/config.json"
 
-	providerConfig := map[string]any{
+	providers, _ := existing["provider"].(map[string]any)
+	if providers == nil {
+		providers = make(map[string]any)
+	}
+	providers[ProviderName] = openCodeProviderConfig(apiKey)
+	existing["provider"] = providers
+
+	existing["compaction"] = map[string]any{
+		"auto": true,
+	}
+
+	if err := config.WriteJSON(path, existing); err != nil {
+		return fmt.Errorf("write config: %w", err)
+	}
+
+	return nil
+}
+
+func openCodeProviderConfig(apiKey string) map[string]any {
+	return map[string]any{
 		"npm":  "@ai-sdk/openai-compatible",
 		"name": "Kimchi by Cast AI",
 		"options": map[string]any{
-			"baseURL":      baseURL,
+			"baseURL":      BaseURL,
 			"litellmProxy": true,
 			"apiKey":       apiKey,
 		},
@@ -78,23 +97,6 @@ func writeOpenCode(scope config.ConfigScope) error {
 			},
 		},
 	}
-
-	providers, _ := existing["provider"].(map[string]any)
-	if providers == nil {
-		providers = make(map[string]any)
-	}
-	providers[providerName] = providerConfig
-	existing["provider"] = providers
-
-	existing["compaction"] = map[string]any{
-		"auto": true,
-	}
-
-	if err := config.WriteJSON(path, existing); err != nil {
-		return fmt.Errorf("write config: %w", err)
-	}
-
-	return nil
 }
 
 func detectBinary(name string) func() bool {

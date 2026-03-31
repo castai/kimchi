@@ -27,10 +27,10 @@ func init() {
 }
 
 func writeClaudeCodeDefault(scope config.ConfigScope) error {
-	return WriteClaudeCode(scope, true)
+	return writeClaudeCode(scope, true)
 }
 
-func WriteClaudeCode(scope config.ConfigScope, telemetryOptIn bool) error {
+func writeClaudeCode(scope config.ConfigScope, telemetryOptIn bool) error {
 	apiKey, err := config.GetAPIKey()
 	if err != nil {
 		return fmt.Errorf("get API key: %w", err)
@@ -56,21 +56,27 @@ func WriteClaudeCode(scope config.ConfigScope, telemetryOptIn bool) error {
 
 	delete(envSettings, "ANTHROPIC_MODEL")
 
-	envSettings["ANTHROPIC_BASE_URL"] = anthropicBaseURL
-	envSettings["ANTHROPIC_AUTH_TOKEN"] = apiKey
-	envSettings["ANTHROPIC_DEFAULT_OPUS_MODEL"] = ReasoningModel.Slug
-	envSettings["ANTHROPIC_DEFAULT_SONNET_MODEL"] = CodingModel.Slug
-	envSettings["ANTHROPIC_DEFAULT_HAIKU_MODEL"] = CodingModel.Slug
-	envSettings["CLAUDE_CODE_SUBAGENT_MODEL"] = CodingModel.Slug
-	envSettings["CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS"] = "1"
+	envVars := map[string]string{
+		"ANTHROPIC_BASE_URL":                     AnthropicBaseURL,
+		"ANTHROPIC_AUTH_TOKEN":                   apiKey,
+		"ANTHROPIC_DEFAULT_OPUS_MODEL":           ReasoningModel.Slug,
+		"ANTHROPIC_DEFAULT_SONNET_MODEL":         CodingModel.Slug,
+		"ANTHROPIC_DEFAULT_HAIKU_MODEL":          CodingModel.Slug,
+		"CLAUDE_CODE_SUBAGENT_MODEL":             CodingModel.Slug,
+		"CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS": "1",
+	}
 
 	if telemetryOptIn {
-		envSettings["CLAUDE_CODE_ENABLE_TELEMETRY"] = "1"
-		envSettings["OTEL_LOGS_EXPORTER"] = logsExporter
-		envSettings["OTEL_EXPORTER_OTLP_LOGS_PROTOCOL"] = logsProtocol
-		envSettings["OTEL_EXPORTER_OTLP_LOGS_ENDPOINT"] = logsEndpoint
-		envSettings["OTEL_EXPORTER_OTLP_LOGS_HEADERS"] = fmt.Sprintf(logsAuthorizationHeaderFmt, apiKey)
-		envSettings["OTEL_LOGS_EXPORT_INTERVAL"] = logsExportInterval
+		envVars["CLAUDE_CODE_ENABLE_TELEMETRY"] = "1"
+		envVars["OTEL_LOGS_EXPORTER"] = logsExporter
+		envVars["OTEL_EXPORTER_OTLP_LOGS_PROTOCOL"] = logsProtocol
+		envVars["OTEL_EXPORTER_OTLP_LOGS_ENDPOINT"] = logsEndpoint
+		envVars["OTEL_EXPORTER_OTLP_LOGS_HEADERS"] = fmt.Sprintf(logsAuthorizationHeaderFmt, apiKey)
+		envVars["OTEL_LOGS_EXPORT_INTERVAL"] = logsExportInterval
+	}
+
+	for k, v := range envVars {
+		envSettings[k] = v
 	}
 
 	existing["env"] = envSettings

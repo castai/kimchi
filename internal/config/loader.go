@@ -68,6 +68,32 @@ func SetAPIKey(key string) error {
 	return Save(cfg)
 }
 
+func SavePreferences(apiKey string, mode ConfigMode, selectedTools []string, scope string, telemetryOptIn bool) error {
+	cfg, err := Load()
+	if err != nil {
+		return fmt.Errorf("load existing config: %w", err)
+	}
+
+	cfg.APIKey = apiKey
+	cfg.Mode = mode
+	cfg.SelectedTools = selectedTools
+	cfg.Scope = scope
+	cfg.TelemetryOptIn = telemetryOptIn
+
+	return Save(cfg)
+}
+
+func SaveGSDInstalled(tools []string) error {
+	cfg, err := Load()
+	if err != nil {
+		return fmt.Errorf("load existing config: %w", err)
+	}
+
+	cfg.GSDInstalledFor = tools
+
+	return Save(cfg)
+}
+
 func Save(cfg *Config) error {
 	path := ConfigPath()
 	if path == "" {

@@ -55,7 +55,7 @@ func writeZed(scope config.ConfigScope) error {
 		openai = make(map[string]any)
 	}
 	openai["api_key"] = apiKey
-	openai["base_url"] = baseURL
+	openai["base_url"] = BaseURL
 	assistant["openai"] = openai
 
 	existing["assistant"] = assistant

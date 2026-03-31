@@ -29,7 +29,7 @@ func writeGeneric(scope config.ConfigScope) error {
 
 	fmt.Printf("export CASTAI_API_KEY=%s\n", apiKey)
 	fmt.Printf("export OPENAI_API_KEY=%s\n", apiKey)
-	fmt.Printf("export OPENAI_BASE_URL=%s\n", baseURL)
+	fmt.Printf("export OPENAI_BASE_URL=%s\n", BaseURL)
 
 	return nil
 }

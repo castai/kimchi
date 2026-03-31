@@ -140,13 +140,6 @@ func (s *GSDStep) Update(msg tea.Msg) (Step, tea.Cmd) {
 			return s, func() tea.Msg { return NextStepMsg{} }
 		}
 		s.toolStatuses = m.statuses
-		for i := range s.toolStatuses {
-			if s.toolStatuses[i].installed {
-				s.toolStatuses[i].action = gsdActionMigrate
-			} else {
-				s.toolStatuses[i].action = gsdActionInstall
-			}
-		}
 		return s, nil
 
 	case tea.KeyMsg:
@@ -191,11 +184,10 @@ func (s *GSDStep) Update(msg tea.Msg) (Step, tea.Cmd) {
 func (s *GSDStep) View() string {
 	var b strings.Builder
 
-	b.WriteString("We recommend installing " + Styles.Selected.Render("GSD (Get Shit Done)") + " multi-agent framework.\n")
+	b.WriteString("Optional: install " + Styles.Selected.Render("GSD (Get Shit Done)") + " multi-agent framework?\n")
 	b.WriteString("It orchestrates multiple AI agents — planner, researcher, executor, verifier —\n")
 	b.WriteString("each using the model best suited to the task.\n\n")
-	b.WriteString("Both work seamlessly with Cast AI models you just configured.\n")
-	b.WriteString("Skip if you prefer to keep things simple for now!\n\n")
+	b.WriteString("Select the tools you want GSD for, or just press enter to skip.\n\n")
 
 	for i, status := range s.toolStatuses {
 		cursor := "  "

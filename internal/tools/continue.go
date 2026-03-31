@@ -78,7 +78,7 @@ func writeContinue(scope config.ConfigScope) error {
 			"title":         ReasoningModel.displayName,
 			"provider":      "openai",
 			"model":         ReasoningModel.Slug,
-			"apiBase":       baseURL,
+			"apiBase":       BaseURL,
 			"apiKey":        apiKey,
 			"contextLength": ReasoningModel.limits.contextWindow,
 			"completionOptions": map[string]any{
@@ -92,7 +92,7 @@ func writeContinue(scope config.ConfigScope) error {
 			"title":         CodingModel.displayName,
 			"provider":      "openai",
 			"model":         CodingModel.Slug,
-			"apiBase":       baseURL,
+			"apiBase":       BaseURL,
 			"apiKey":        apiKey,
 			"contextLength": CodingModel.limits.contextWindow,
 			"completionOptions": map[string]any{
@@ -106,7 +106,7 @@ func writeContinue(scope config.ConfigScope) error {
 			"title":         ImageModel.displayName,
 			"provider":      "openai",
 			"model":         ImageModel.Slug,
-			"apiBase":       baseURL,
+			"apiBase":       BaseURL,
 			"apiKey":        apiKey,
 			"contextLength": ImageModel.limits.contextWindow,
 			"completionOptions": map[string]any{
@@ -122,7 +122,7 @@ func writeContinue(scope config.ConfigScope) error {
 			"title":    CodingModel.displayName,
 			"provider": "openai",
 			"model":    CodingModel.Slug,
-			"apiBase":  baseURL,
+			"apiBase":  BaseURL,
 			"apiKey":   apiKey,
 		}
 	}
@@ -131,7 +131,7 @@ func writeContinue(scope config.ConfigScope) error {
 		existing["embeddingsProvider"] = map[string]any{
 			"provider": "openai",
 			"model":    "text-embedding-3-small",
-			"apiBase":  baseURL,
+			"apiBase":  BaseURL,
 			"apiKey":   apiKey,
 		}
 	}

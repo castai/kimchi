@@ -24,7 +24,7 @@ func TestWriteCodex(t *testing.T) {
 		require.NoError(t, err)
 
 		assert.Equal(t, CodingModel.Slug, cfg["model"])
-		assert.Equal(t, providerName, cfg["model_provider"])
+		assert.Equal(t, ProviderName, cfg["model_provider"])
 
 		providers := cfg["model_providers"].(map[string]any)
 		_, ok := providers["kimchi"]

@@ -35,15 +35,13 @@ type streamStartMsg struct{}
 type streamTimeoutMsg struct{}
 
 type DoneParams struct {
-	APIKey           string
-	ToolIDs          []tools.ToolID
-	ShellProfilePath string
+	APIKey  string
+	ToolIDs []tools.ToolID
 }
 
 type DoneStep struct {
-	apiKey           string
-	toolIDs          []tools.ToolID
-	shellProfilePath string
+	apiKey             string
+	toolIDs            []tools.ToolID
 	streamedMsg        strings.Builder
 	streamDone         bool
 	hasReceivedContent bool
@@ -61,10 +59,9 @@ func NewDoneStep(ctx context.Context, params DoneParams) *DoneStep {
 	sp.Style = lipgloss.NewStyle().Foreground(lipgloss.Color("12"))
 
 	return &DoneStep{
-		apiKey:           params.APIKey,
-		toolIDs:          params.ToolIDs,
-		shellProfilePath: params.ShellProfilePath,
-		spin:             sp,
+		apiKey:  params.APIKey,
+		toolIDs: params.ToolIDs,
+		spin:    sp,
 	}
 }
 
@@ -296,20 +293,17 @@ func (s *DoneStep) sendDefaultMessageTo(ch chan string) {
 func (s *DoneStep) getToolTip(toolID tools.ToolID) string {
 	switch toolID {
 	case tools.ToolOpenCode:
-		return "Run 'opencode' in any project directory to start. Use Ctrl+K for quick actions."
+		return "Run 'kimchi opencode' in any project directory to start. Use Ctrl+K for quick actions."
 	case tools.ToolClaudeCode:
-		return fmt.Sprintf("Run 'claude' to start. Default model is Kimchi's %s. Use /models to switch to Opus/Haiku (actual Claude) if needed.", tools.ReasoningModel.Slug)
+		return fmt.Sprintf("Run 'kimchi claude' to start. Default model is Kimchi's %s. Use /models to switch to Opus/Haiku (actual Claude) if needed.", tools.ReasoningModel.Slug)
 	case tools.ToolZed:
 		return "Open Zed and use Cmd+Enter to send prompts to the AI assistant."
 	case tools.ToolCodex:
-		if s.shellProfilePath != "" {
-			return fmt.Sprintf("Run 'codex' with a prompt. %s was added to %s — restart your shell or run 'source %s'.", tools.APIKeyEnv, s.shellProfilePath, s.shellProfilePath)
-		}
-		return fmt.Sprintf("Run 'codex' with a prompt. Ensure %s is set in your environment.", tools.APIKeyEnv)
+		return "Run 'kimchi codex' with a prompt."
 	case tools.ToolCline:
 		return "Open VS Code with Cline extension installed and start a new task."
 	case tools.ToolGeneric:
-		return "Source the exported environment variables in your shell."
+		return "Use 'kimchi' to launch your tools with Cast AI models."
 	default:
 		return "Check the tool's documentation for getting started."
 	}
