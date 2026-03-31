@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 )
 
 type Installer struct{}
@@ -33,18 +34,29 @@ func (i *Installer) Install(installType InstallationType, scope string) (*Instal
 }
 
 func (i *Installer) installOpenCode(scope string) (*InstallResult, error) {
-	args := []string{"--yes", "gsd-opencode@latest"}
+	scopeFlag := "--global"
 	if scope == "project" {
-		args = append(args, "--local")
-	} else {
-		args = append(args, "--global")
+		scopeFlag = "--local"
 	}
 
-	cmd := exec.Command("npx", args...)
-	cmd.Stdin = os.Stdin
-
-	if err := cmd.Run(); err != nil {
-		return nil, fmt.Errorf("run gsd-opencode installer: %w", err)
+	// If already installed, run the repair subcommand non-interactively.
+	// The repair command prompts "Proceed with repairs? (y/N)" which accepts
+	// a plain "y\n" on stdin even in non-TTY mode (uses @inquirer/prompts confirm).
+	if i.IsInstalledFor(InstallationOpenCode, scope) {
+		args := []string{"--yes", "gsd-opencode@latest", "repair", scopeFlag}
+		cmd := exec.Command("npx", args...)
+		// Pipe "y\n" to auto-confirm the repair prompt without blocking.
+		cmd.Stdin = strings.NewReader("y\n")
+		if err := cmd.Run(); err != nil {
+			return nil, fmt.Errorf("run gsd-opencode repair: %w", err)
+		}
+	} else {
+		args := []string{"--yes", "gsd-opencode@latest", scopeFlag}
+		cmd := exec.Command("npx", args...)
+		// No stdin: non-TTY environment prevents interactive prompts.
+		if err := cmd.Run(); err != nil {
+			return nil, fmt.Errorf("run gsd-opencode installer: %w", err)
+		}
 	}
 
 	basePath, err := getOpenCodeGSDPath(scope)
@@ -68,7 +80,7 @@ func (i *Installer) installClaudeCode(scope string) (*InstallResult, error) {
 	}
 
 	cmd := exec.Command("npx", args...)
-	cmd.Stdin = os.Stdin
+	// No stdin: prevents interactive statusline/SDK prompts (both check isTTY).
 
 	if err := cmd.Run(); err != nil {
 		return nil, fmt.Errorf("run get-shit-done-cc installer: %w", err)
@@ -125,7 +137,7 @@ func (i *Installer) installCodex(scope string) (*InstallResult, error) {
 	}
 
 	cmd := exec.Command("npx", args...)
-	cmd.Stdin = os.Stdin
+	// No stdin: prevents interactive statusline/SDK prompts (both check isTTY).
 
 	if err := cmd.Run(); err != nil {
 		return nil, fmt.Errorf("run get-shit-done-cc installer: %w", err)
