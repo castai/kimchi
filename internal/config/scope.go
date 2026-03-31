@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"strings"
 )
 
 type ConfigScope string
@@ -31,11 +30,7 @@ func ScopePaths(scope ConfigScope, toolConfigPath string) (string, error) {
 		if err != nil {
 			return "", fmt.Errorf("get working directory: %w", err)
 		}
-		filename := filepath.Base(toolConfigPath)
-		if !strings.HasPrefix(filename, ".") {
-			filename = "." + filename
-		}
-		return filepath.Join(cwd, filename), nil
+		return filepath.Join(cwd, ".claude", filepath.Base(toolConfigPath)), nil
 
 	default:
 		return "", fmt.Errorf("unknown scope: %s", scope)
