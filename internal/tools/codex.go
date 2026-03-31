@@ -17,8 +17,8 @@ func codexAgentMD() string {
 	return `# Cast AI Configuration
 
 This project uses Cast AI's open-source models:
-- ` + ReasoningModel.Slug + ` for reasoning/planning
-- ` + CodingModel.Slug + ` for coding/execution
+- ` + MainModel.Slug + ` for reasoning, planning, and image processing (primary model)
+- ` + CodingModel.Slug + ` for coding/execution (subagent)
 
 Set the ` + APIKeyEnv + ` environment variable with your Cast AI API key.
 `
@@ -77,18 +77,18 @@ func writeModelCatalog(path string) error {
 	var models []codexModelEntry
 	for _, m := range allModels {
 		entry := codexModelEntry{
-			Slug:                       m.Slug,
-			DisplayName:                m.displayName,
-			Description:                m.description,
-			ShellType:                  "shell_command",
-			Visibility:                 "list",
-			SupportedInAPI:             true,
-			BaseInstructions:           "",
+			Slug:             m.Slug,
+			DisplayName:      m.displayName,
+			Description:      m.description,
+			ShellType:        "shell_command",
+			Visibility:       "list",
+			SupportedInAPI:   true,
+			BaseInstructions: "",
 			// Deliberately higher than the Codex default of 10,000 tokens
 			// (https://github.com/openai/codex/blob/main/codex-rs/core/models.json#L12)
 			// because tool outputs in coding use cases (file reads, docs) can be large.
 			// See: https://github.com/openai/codex/issues/6426
-			TruncationPolicy: codexTruncationPolicy{Mode: "tokens", Limit: 25_000},
+			TruncationPolicy:           codexTruncationPolicy{Mode: "tokens", Limit: 25_000},
 			SupportsParallelToolCalls:  m.toolCall,
 			ExperimentalSupportedTools: []string{},
 			ContextWindow:              m.limits.contextWindow,
@@ -129,7 +129,7 @@ func writeCodex(scope config.ConfigScope) error {
 		return fmt.Errorf("read config: %w", err)
 	}
 
-	// Always set kimchi as the default model
+	// GLM is the coding subagent used as the fixed default for Codex (a coding-focused tool)
 	cfg["model"] = CodingModel.Slug
 	cfg["model_provider"] = providerName
 	cfg["suppress_unstable_features_warning"] = true

@@ -41,9 +41,9 @@ type DoneParams struct {
 }
 
 type DoneStep struct {
-	apiKey           string
-	toolIDs          []tools.ToolID
-	shellProfilePath string
+	apiKey             string
+	toolIDs            []tools.ToolID
+	shellProfilePath   string
 	streamedMsg        strings.Builder
 	streamDone         bool
 	hasReceivedContent bool
@@ -193,7 +193,7 @@ func (s *DoneStep) runStreamBackground(ctx context.Context) {
 	}
 
 	reqBody := map[string]any{
-		"model": tools.ReasoningModel.Slug,
+		"model": tools.MainModel.Slug,
 		"messages": []map[string]string{
 			{"role": "user", "content": prompt},
 		},
@@ -281,12 +281,12 @@ func (s *DoneStep) sendDefaultMessageTo(ch chan string) {
 	ch <- "Welcome to Kimchi by Cast AI!\n\n"
 	ch <- "You've just unlocked access to powerful open-source models\n"
 	ch <- "via Cast AI's infrastructure!\n\n"
-	ch <- tools.ReasoningModel.Slug + " is your reasoning companion for planning,\n"
-	ch <- "analysis, and solving complex problems.\n\n"
-	ch <- tools.CodingModel.Slug + " is your coding partner for writing,\n"
+	ch <- tools.MainModel.Slug + " is your primary model for reasoning, planning,\n"
+	ch <- "code generation, and image processing.\n\n"
+	ch <- tools.CodingModel.Slug + " is your coding subagent for writing,\n"
 	ch <- "refactoring, and debugging code.\n\n"
-	ch <- tools.ImageModel.Slug + " is your fast, affordable model for\n"
-	ch <- "image processing tasks.\n\n"
+	ch <- tools.SubModel.Slug + " is your secondary subagent available\n"
+	ch <- "across all your configured tools.\n\n"
 	ch <- "Don't be shy - experiment boldly! Ask tough questions,\n"
 	ch <- "request detailed explanations, generate entire features.\n"
 	ch <- "These models are here to help you build amazing things.\n\n"
@@ -298,7 +298,7 @@ func (s *DoneStep) getToolTip(toolID tools.ToolID) string {
 	case tools.ToolOpenCode:
 		return "Run 'opencode' in any project directory to start. Use Ctrl+K for quick actions."
 	case tools.ToolClaudeCode:
-		return fmt.Sprintf("Run 'claude' to start. Default model is Kimchi's %s. Use /models to switch to Opus/Haiku (actual Claude) if needed.", tools.ReasoningModel.Slug)
+		return fmt.Sprintf("Run 'claude' to start. Default model is Kimchi's %s. Use /models to switch to Opus/Haiku (actual Claude) if needed.", tools.MainModel.Slug)
 	case tools.ToolZed:
 		return "Open Zed and use Cmd+Enter to send prompts to the AI assistant."
 	case tools.ToolCodex:
@@ -360,10 +360,10 @@ func (s *DoneStep) buildPrompt(toolsSection string) (string, error) {
 
 	var buf strings.Builder
 	data := map[string]string{
-		"Tools":          toolsSection,
-		"ReasoningModel": tools.ReasoningModel.Slug,
-		"CodingModel":    tools.CodingModel.Slug,
-		"ImageModel":     tools.ImageModel.Slug,
+		"Tools":       toolsSection,
+		"MainModel":   tools.MainModel.Slug,
+		"CodingModel": tools.CodingModel.Slug,
+		"SubModel":    tools.SubModel.Slug,
 	}
 	if err := tmpl.Execute(&buf, data); err != nil {
 		return "", fmt.Errorf("execute welcome template: %w", err)

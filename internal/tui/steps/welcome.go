@@ -74,7 +74,7 @@ func (s *WelcomeStep) Update(msg tea.Msg) (Step, tea.Cmd) {
 func (s *WelcomeStep) View() string {
 	view := "Start coding with open-source LLMs now!\n\n" +
 		"Kimchi gives you instant access to production-ready open-source\n" +
-		"LLMs — " + Styles.Selected.Render("GLM 5") + ", " + Styles.Selected.Render("Kimi K2.5") + ", " + Styles.Selected.Render("MiniMax M2.5") + " — via an " + Styles.Selected.Render("OpenAI-compatible") + "\n" +
+		"LLMs — " + Styles.Selected.Render("Kimi K2.5") + ", " + Styles.Selected.Render("GLM 5") + ", " + Styles.Selected.Render("MiniMax M2.5") + " — via an " + Styles.Selected.Render("OpenAI-compatible") + "\n" +
 		"API. No GPUs to provision, no clusters to manage.\n\n" +
 		"This wizard will guide you through configuration of your local\n" +
 		"coding tools in a few quick steps.\n\n"
@@ -84,7 +84,7 @@ func (s *WelcomeStep) View() string {
 	return view
 }
 
-func (s *WelcomeStep) HasUpdate() bool      { return s.hasUpdate }
+func (s *WelcomeStep) HasUpdate() bool       { return s.hasUpdate }
 func (s *WelcomeStep) LatestVersion() string { return s.latestVersion }
 func (s *WelcomeStep) LatestTag() string     { return s.latestTag }
 

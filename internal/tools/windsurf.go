@@ -89,7 +89,20 @@ func writeWindsurf(scope config.ConfigScope) error {
 		apiConfigs = make(map[string]any)
 	}
 
-	castaiConfig := map[string]any{
+	kimiConfig := map[string]any{
+		"apiProvider": "openai-native",
+		"apiKey":      apiKey,
+		"baseUrl":     baseURL,
+		"modelId":     MainModel.Slug,
+		"modelInfo": map[string]any{
+			"maxTokens":           MainModel.limits.maxOutputTokens,
+			"contextWindow":       MainModel.limits.contextWindow,
+			"supportsImages":      MainModel.supportsImages,
+			"supportsPromptCache": false,
+		},
+	}
+
+	codingConfig := map[string]any{
 		"apiProvider": "openai-native",
 		"apiKey":      apiKey,
 		"baseUrl":     baseURL,
@@ -102,37 +115,24 @@ func writeWindsurf(scope config.ConfigScope) error {
 		},
 	}
 
-	reasoningConfig := map[string]any{
+	subConfig := map[string]any{
 		"apiProvider": "openai-native",
 		"apiKey":      apiKey,
 		"baseUrl":     baseURL,
-		"modelId":     ReasoningModel.Slug,
+		"modelId":     SubModel.Slug,
 		"modelInfo": map[string]any{
-			"maxTokens":           ReasoningModel.limits.maxOutputTokens,
-			"contextWindow":       ReasoningModel.limits.contextWindow,
-			"supportsImages":      ReasoningModel.supportsImages,
+			"maxTokens":           SubModel.limits.maxOutputTokens,
+			"contextWindow":       SubModel.limits.contextWindow,
+			"supportsImages":      SubModel.supportsImages,
 			"supportsPromptCache": false,
 		},
 	}
 
-	imageConfig := map[string]any{
-		"apiProvider": "openai-native",
-		"apiKey":      apiKey,
-		"baseUrl":     baseURL,
-		"modelId":     ImageModel.Slug,
-		"modelInfo": map[string]any{
-			"maxTokens":           ImageModel.limits.maxOutputTokens,
-			"contextWindow":       ImageModel.limits.contextWindow,
-			"supportsImages":      ImageModel.supportsImages,
-			"supportsPromptCache": false,
-		},
-	}
-
-	apiConfigs["castai-coding"] = castaiConfig
-	apiConfigs["castai-reasoning"] = reasoningConfig
-	apiConfigs["castai-image"] = imageConfig
+	apiConfigs["castai-kimi"] = kimiConfig
+	apiConfigs["castai-coding"] = codingConfig
+	apiConfigs["castai-sub"] = subConfig
 	state["apiConfigs"] = apiConfigs
-	state["currentApiConfigName"] = "castai-coding"
+	state["currentApiConfigName"] = "castai-kimi"
 	storage[stateKey] = state
 
 	newData, err := json.MarshalIndent(storage, "", "    ")

@@ -52,9 +52,9 @@ func writeContinue(scope config.ConfigScope) error {
 	}
 
 	models, _ := existing["models"].([]any)
-	hasReasoningModel := false
+	hasMainModel := false
 	hasCodingModel := false
-	hasImageModel := false
+	hasSubModel := false
 
 	for _, m := range models {
 		modelMap, ok := m.(map[string]any)
@@ -62,27 +62,27 @@ func writeContinue(scope config.ConfigScope) error {
 			continue
 		}
 		title, _ := modelMap["title"].(string)
-		if title == ReasoningModel.displayName {
-			hasReasoningModel = true
+		if title == MainModel.displayName {
+			hasMainModel = true
 		}
 		if title == CodingModel.displayName {
 			hasCodingModel = true
 		}
-		if title == ImageModel.displayName {
-			hasImageModel = true
+		if title == SubModel.displayName {
+			hasSubModel = true
 		}
 	}
 
-	if !hasReasoningModel {
+	if !hasMainModel {
 		models = append(models, map[string]any{
-			"title":         ReasoningModel.displayName,
+			"title":         MainModel.displayName,
 			"provider":      "openai",
-			"model":         ReasoningModel.Slug,
+			"model":         MainModel.Slug,
 			"apiBase":       baseURL,
 			"apiKey":        apiKey,
-			"contextLength": ReasoningModel.limits.contextWindow,
+			"contextLength": MainModel.limits.contextWindow,
 			"completionOptions": map[string]any{
-				"maxTokens": ReasoningModel.limits.maxOutputTokens,
+				"maxTokens": MainModel.limits.maxOutputTokens,
 			},
 		})
 	}
@@ -101,16 +101,16 @@ func writeContinue(scope config.ConfigScope) error {
 		})
 	}
 
-	if !hasImageModel {
+	if !hasSubModel {
 		models = append(models, map[string]any{
-			"title":         ImageModel.displayName,
+			"title":         SubModel.displayName,
 			"provider":      "openai",
-			"model":         ImageModel.Slug,
+			"model":         SubModel.Slug,
 			"apiBase":       baseURL,
 			"apiKey":        apiKey,
-			"contextLength": ImageModel.limits.contextWindow,
+			"contextLength": SubModel.limits.contextWindow,
 			"completionOptions": map[string]any{
-				"maxTokens": ImageModel.limits.maxOutputTokens,
+				"maxTokens": SubModel.limits.maxOutputTokens,
 			},
 		})
 	}
@@ -119,9 +119,9 @@ func writeContinue(scope config.ConfigScope) error {
 
 	if existing["tabAutocompleteModel"] == nil {
 		existing["tabAutocompleteModel"] = map[string]any{
-			"title":    CodingModel.displayName,
+			"title":    MainModel.displayName,
 			"provider": "openai",
-			"model":    CodingModel.Slug,
+			"model":    MainModel.Slug,
 			"apiBase":  baseURL,
 			"apiKey":   apiKey,
 		}

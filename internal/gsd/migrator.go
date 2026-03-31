@@ -124,7 +124,7 @@ func (m *Migrator) serializeFrontmatter(frontmatter map[string]any, body string)
 func (m *Migrator) determineModelForAgent(agentName string) string {
 	for _, name := range PlanningAgents {
 		if name == agentName {
-			return tools.ReasoningModel.Slug
+			return tools.MainModel.Slug
 		}
 	}
 
@@ -134,5 +134,5 @@ func (m *Migrator) determineModelForAgent(agentName string) string {
 		}
 	}
 
-	return tools.ReasoningModel.Slug
+	return tools.MainModel.Slug
 }
