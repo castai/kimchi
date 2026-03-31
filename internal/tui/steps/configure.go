@@ -214,11 +214,11 @@ func (s *ConfigureStep) View() string {
 			b.WriteString("\n\n")
 			b.WriteString("Each tool has been configured with optimal models for its use case:")
 			b.WriteString("\n")
-			b.WriteString(fmt.Sprintf("• Reasoning tasks → %s", tools.ReasoningModel.Slug))
+			b.WriteString(fmt.Sprintf("• Primary model → %s", tools.MainModel.Slug))
 			b.WriteString("\n")
-			b.WriteString(fmt.Sprintf("• Code generation → %s", tools.CodingModel.Slug))
+			b.WriteString(fmt.Sprintf("• Coding subagent → %s", tools.CodingModel.Slug))
 			b.WriteString("\n")
-			b.WriteString(fmt.Sprintf("• Multi-modal tasks → %s", tools.ImageModel.Slug))
+			b.WriteString(fmt.Sprintf("• Secondary subagent → %s", tools.SubModel.Slug))
 			b.WriteString("\n")
 			if s.shellProfilePath != "" {
 				b.WriteString(fmt.Sprintf("\n%s exported to %s\n", tools.APIKeyEnv, s.shellProfilePath))
@@ -234,27 +234,27 @@ func (s *ConfigureStep) View() string {
 }
 
 func (s *ConfigureStep) getModelInfoForTool(toolID tools.ToolID) string {
-	r := tools.ReasoningModel.Slug
+	m := tools.MainModel.Slug
 	c := tools.CodingModel.Slug
-	i := tools.ImageModel.Slug
+	s2 := tools.SubModel.Slug
 
 	switch toolID {
 	case tools.ToolClaudeCode:
-		return fmt.Sprintf("→ %s (plan mode) + %s (execution mode)", r, c)
+		return fmt.Sprintf("→ %s (plan mode) + %s (execution mode)", m, c)
 	case tools.ToolOpenCode:
-		return fmt.Sprintf("→ %s (reasoning) + %s (coding) + %s (vision)", r, c, i)
-	case tools.ToolCursor, tools.ToolContinue:
-		return fmt.Sprintf("→ %s (reasoning) + %s (coding) + %s (vision)", r, c, i)
+		return fmt.Sprintf("→ %s (primary) + %s (coding) + %s (sub)", m, c, s2)
+	case tools.ToolContinue:
+		return fmt.Sprintf("→ %s (primary) + %s (coding) + %s (sub)", m, c, s2)
 	case tools.ToolWindsurf:
-		return fmt.Sprintf("→ %s (coding) + %s (reasoning) + %s (vision)", c, r, i)
+		return fmt.Sprintf("→ %s (primary) + %s (coding) + %s (sub)", m, c, s2)
 	case tools.ToolZed:
-		return fmt.Sprintf("→ %s (primary coding model)", c)
+		return fmt.Sprintf("→ %s (primary model)", m)
 	case tools.ToolCodex:
 		return fmt.Sprintf("→ %s (code generation and debugging)", c)
 	case tools.ToolCline:
-		return fmt.Sprintf("→ %s (action) + %s (planning)", c, r)
+		return fmt.Sprintf("→ %s (action) + %s (planning)", c, m)
 	case tools.ToolGSD2:
-		return fmt.Sprintf("→ %s (default) + %s (coding) + %s (vision)", r, c, i)
+		return fmt.Sprintf("→ %s (default) + %s (coding) + %s (sub)", m, c, s2)
 	case tools.ToolGeneric:
 		return "→ Environment variables for Cast AI endpoint"
 	default:

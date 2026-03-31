@@ -49,13 +49,13 @@ func writeOpenCode(scope config.ConfigScope) error {
 			"apiKey":       apiKey,
 		},
 		"models": map[string]any{
-			ReasoningModel.Slug: map[string]any{
-				"name":      ReasoningModel.Slug,
-				"tool_call": ReasoningModel.toolCall,
-				"reasoning": ReasoningModel.reasoning,
+			MainModel.Slug: map[string]any{
+				"name":      MainModel.Slug,
+				"tool_call": MainModel.toolCall,
+				"reasoning": MainModel.reasoning,
 				"limit": map[string]any{
-					"context": ReasoningModel.limits.contextWindow,
-					"output":  ReasoningModel.limits.maxOutputTokens,
+					"context": MainModel.limits.contextWindow,
+					"output":  MainModel.limits.maxOutputTokens,
 				},
 			},
 			CodingModel.Slug: map[string]any{
@@ -67,13 +67,13 @@ func writeOpenCode(scope config.ConfigScope) error {
 					"output":  CodingModel.limits.maxOutputTokens,
 				},
 			},
-			ImageModel.Slug: map[string]any{
-				"name":      ImageModel.Slug,
-				"tool_call": ImageModel.toolCall,
-				"reasoning": ImageModel.reasoning,
+			SubModel.Slug: map[string]any{
+				"name":      SubModel.Slug,
+				"tool_call": SubModel.toolCall,
+				"reasoning": SubModel.reasoning,
 				"limit": map[string]any{
-					"context": ImageModel.limits.contextWindow,
-					"output":  ImageModel.limits.maxOutputTokens,
+					"context": SubModel.limits.contextWindow,
+					"output":  SubModel.limits.maxOutputTokens,
 				},
 			},
 		},
@@ -85,6 +85,8 @@ func writeOpenCode(scope config.ConfigScope) error {
 	}
 	providers[providerName] = providerConfig
 	existing["provider"] = providers
+
+	existing["model"] = providerName + "/" + MainModel.Slug
 
 	existing["compaction"] = map[string]any{
 		"auto": true,
