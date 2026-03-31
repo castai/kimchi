@@ -38,12 +38,22 @@ func NewClaudeCommand() *cobra.Command {
 
 			env := claudecode.Env(apiKey, cfg.TelemetryOptIn)
 
+			var cleanup func()
 			if slices.Contains(cfg.GSDInstalledFor, "claude-code") {
-				if err := claudecode.InjectGSD(); err != nil {
+				created, err := claudecode.InjectGSD()
+				if err != nil {
 					fmt.Fprintf(os.Stderr, "Warning: could not inject GSD agents: %v\n", err)
+				}
+				if len(created) > 0 {
+					cleanup = func() {
+						claudecode.CleanupGSD(created)
+					}
 				}
 			}
 
+			if cleanup != nil {
+				return tools.RunTool("claude", args, env, cleanup)
+			}
 			return tools.ExecTool("claude", args, env)
 		},
 	}

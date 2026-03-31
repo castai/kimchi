@@ -18,37 +18,68 @@ const (
 	logsExportInterval         = "5000"
 )
 
-// InjectGSD creates symlinks from ~/.claude/{subdir} to the kimchi-managed GSD
-// directory. Claude Code has no config-dir override, so symlinks into ~/.claude/
-// are the only viable injection path. These symlinks persist after exit but are
-// lightweight pointers to kimchi-managed content. If a target already exists
-// (user's own install), it is left untouched.
-func InjectGSD() error {
+// InjectGSD creates symlinks from ~/.claude/ to the kimchi-managed GSD
+// directory. Returns the list of symlink paths that were created so they
+// can be cleaned up after the process exits.
+func InjectGSD() ([]string, error) {
 	homeDir, err := os.UserHomeDir()
 	if err != nil {
-		return fmt.Errorf("get home directory: %w", err)
+		return nil, fmt.Errorf("get home directory: %w", err)
 	}
 
 	kimchiGSD := filepath.Join(homeDir, ".config", "kimchi", "gsd", "claude-code")
 	claudeDir := filepath.Join(homeDir, ".claude")
 
-	entries, err := os.ReadDir(kimchiGSD)
+	var created []string
+	if err := symlinkTree(kimchiGSD, claudeDir, &created); err != nil {
+		return created, err
+	}
+	return created, nil
+}
+
+// CleanupGSD removes the symlinks created by InjectGSD.
+func CleanupGSD(symlinks []string) {
+	for _, path := range symlinks {
+		// Only remove if it's still a symlink (don't delete real dirs).
+		info, err := os.Lstat(path)
+		if err == nil && info.Mode()&os.ModeSymlink != 0 {
+			os.Remove(path)
+		}
+	}
+}
+
+// symlinkTree symlinks directories from src into dst. If a target directory
+// already exists as a real directory, it recurses into it to symlink children
+// instead of skipping the whole tree. Created symlinks are appended to created.
+func symlinkTree(src, dst string, created *[]string) error {
+	entries, err := os.ReadDir(src)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return nil
 		}
-		return fmt.Errorf("read kimchi GSD dir: %w", err)
+		return fmt.Errorf("read dir %s: %w", src, err)
 	}
 
 	for _, entry := range entries {
 		if !entry.IsDir() {
 			continue
 		}
-		src := filepath.Join(kimchiGSD, entry.Name())
-		target := filepath.Join(claudeDir, entry.Name())
-		if err := gsd.EnsureSymlink(src, target); err != nil {
+		srcPath := filepath.Join(src, entry.Name())
+		dstPath := filepath.Join(dst, entry.Name())
+
+		info, err := os.Lstat(dstPath)
+		if err == nil && info.IsDir() && info.Mode()&os.ModeSymlink == 0 {
+			// Target exists as a real directory — recurse to symlink children.
+			if err := symlinkTree(srcPath, dstPath, created); err != nil {
+				return err
+			}
+			continue
+		}
+
+		if err := gsd.EnsureSymlink(srcPath, dstPath); err != nil {
 			return err
 		}
+		*created = append(*created, dstPath)
 	}
 
 	return nil

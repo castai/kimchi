@@ -29,24 +29,15 @@ func KimchiManagedPath(installType InstallationType) (string, error) {
 // EnsureSymlink creates a symlink from target to src. If target already exists
 // (symlink or real directory), it is left untouched.
 func EnsureSymlink(src, target string) error {
-	_, err := os.Lstat(target)
-	if err == nil {
-		// Target exists (symlink or real dir) — leave untouched.
+	if err := os.MkdirAll(filepath.Dir(target), 0755); err != nil {
+		return fmt.Errorf("create parent directory: %w", err)
+	}
+
+	err := os.Symlink(src, target)
+	if err == nil || os.IsExist(err) {
 		return nil
 	}
-	if !os.IsNotExist(err) {
-		return fmt.Errorf("stat GSD symlink target: %w", err)
-	}
-
-	if err := os.MkdirAll(filepath.Dir(target), 0755); err != nil {
-		return fmt.Errorf("create commands directory: %w", err)
-	}
-
-	if err := os.Symlink(src, target); err != nil {
-		return fmt.Errorf("create GSD symlink: %w", err)
-	}
-
-	return nil
+	return fmt.Errorf("create GSD symlink: %w", err)
 }
 
 // CopyInstallation copies GSD files from src to dst.

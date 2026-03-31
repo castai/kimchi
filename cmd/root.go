@@ -62,6 +62,7 @@ Get your API key at: https://kimchi.console.cast.ai`,
 	root.AddCommand(NewUpdateCommand())
 	root.AddCommand(NewClaudeCommand())
 	root.AddCommand(NewOpenCodeCommand())
+	root.AddCommand(NewCodexCommand())
 
 	return root
 }

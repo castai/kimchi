@@ -16,7 +16,6 @@ const (
 	ansiOrange = "\033[38;5;214m"
 	ansiBold   = "\033[1m"
 	ansiDim    = "\033[2m"
-	ansiGreen  = "\033[38;5;82m"
 )
 
 func colorEnabled() bool {

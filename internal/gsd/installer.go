@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 )
 
 type Installer struct{}
@@ -206,6 +207,7 @@ func getCodexGSDPath(scope string) (string, error) {
 }
 
 func (i *Installer) IsInstalledFor(installType InstallationType, scope string) bool {
+	// Check kimchi-managed path.
 	var basePath string
 	var err error
 
@@ -220,29 +222,66 @@ func (i *Installer) IsInstalledFor(installType InstallationType, scope string) b
 		return false
 	}
 
+	if err == nil {
+		if info, err := os.Stat(basePath); err == nil && info.IsDir() {
+			return true
+		}
+	}
+
+	// Also check the real tool path (user may have installed GSD directly).
+	homeDir, err := os.UserHomeDir()
 	if err != nil {
 		return false
 	}
 
-	info, err := os.Stat(basePath)
-	if err != nil {
-		return false
+	var realPaths []string
+	switch installType {
+	case InstallationOpenCode:
+		realPaths = []string{
+			filepath.Join(homeDir, ".config", "opencode", "commands", "gsd"),
+			filepath.Join(homeDir, ".config", "opencode", "agents"),
+		}
+	case InstallationClaudeCode:
+		realPaths = []string{
+			filepath.Join(homeDir, ".claude", "commands", "gsd"),
+			filepath.Join(homeDir, ".claude", "agents"),
+		}
+	case InstallationCodex:
+		realPaths = []string{
+			filepath.Join(homeDir, ".codex", "agents"),
+		}
 	}
 
-	return info.IsDir()
+	for _, p := range realPaths {
+		if info, err := os.Stat(p); err == nil && info.IsDir() {
+			return true
+		}
+	}
+
+	return false
 }
 
 // sandboxedEnv returns the current environment with HOME, XDG_CONFIG_HOME, and
 // XDG_DATA_HOME redirected to tmpHome. This ensures npm installers write into
 // the temp directory regardless of which path convention they follow.
 func sandboxedEnv(tmpHome string) []string {
-	env := os.Environ()
-	env = append(env,
-		"HOME="+tmpHome,
-		"XDG_CONFIG_HOME="+filepath.Join(tmpHome, ".config"),
-		"XDG_DATA_HOME="+filepath.Join(tmpHome, ".local", "share"),
-	)
-	return env
+	overrides := map[string]string{
+		"HOME":            tmpHome,
+		"XDG_CONFIG_HOME": filepath.Join(tmpHome, ".config"),
+		"XDG_DATA_HOME":   filepath.Join(tmpHome, ".local", "share"),
+	}
+	existing := os.Environ()
+	merged := make([]string, 0, len(existing)+len(overrides))
+	for _, e := range existing {
+		key, _, _ := strings.Cut(e, "=")
+		if _, ok := overrides[key]; !ok {
+			merged = append(merged, e)
+		}
+	}
+	for k, v := range overrides {
+		merged = append(merged, k+"="+v)
+	}
+	return merged
 }
 
 // copyDir recursively copies all files from src to dst, creating dst if needed.
@@ -272,21 +311,26 @@ func copyDir(src, dst string) error {
 }
 
 func copyFile(src, dst string) error {
+	info, err := os.Stat(src)
+	if err != nil {
+		return fmt.Errorf("stat source file: %w", err)
+	}
+
 	srcFile, err := os.Open(src)
 	if err != nil {
 		return fmt.Errorf("open source file: %w", err)
 	}
 	defer srcFile.Close()
 
-	dstFile, err := os.Create(dst)
+	dstFile, err := os.OpenFile(dst, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, info.Mode())
 	if err != nil {
 		return fmt.Errorf("create destination file: %w", err)
 	}
-	defer dstFile.Close()
 
 	if _, err := io.Copy(dstFile, srcFile); err != nil {
+		dstFile.Close()
 		return fmt.Errorf("copy file contents: %w", err)
 	}
 
-	return nil
+	return dstFile.Close()
 }

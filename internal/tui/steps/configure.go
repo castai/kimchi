@@ -27,12 +27,14 @@ type ConfigureStep struct {
 	telemetryOptIn bool
 	apiKey         string
 	saveErr        error
+	warning        string
 	done           bool
 	startOnce      sync.Once
 }
 
 type saveCompleteMsg struct {
-	err error
+	err     error
+	warning string
 }
 
 type startSaveMsg struct{}
@@ -67,6 +69,7 @@ func (s *ConfigureStep) Update(msg tea.Msg) (Step, tea.Cmd) {
 
 	case saveCompleteMsg:
 		s.saveErr = m.err
+		s.warning = m.warning
 		s.done = true
 		return s, nil
 
@@ -93,7 +96,7 @@ func (s *ConfigureStep) savePreferences() tea.Cmd {
 			return saveCompleteMsg{err: err}
 		}
 
-		// In override mode, write directly to tool config files (legacy behaviour).
+		// In override mode, write directly to tool config files.
 		if s.mode == config.ModeOverride {
 			for _, toolID := range s.toolIDs {
 				// Claude Code needs special handling for telemetry opt-in.
@@ -113,15 +116,33 @@ func (s *ConfigureStep) savePreferences() tea.Cmd {
 				}
 			}
 
+			var warning string
 			if s.apiKey != "" {
 				if _, err := config.ExportEnvToShellProfile(tools.APIKeyEnv, s.apiKey); err != nil {
-					// Non-fatal, continue.
-					_ = err
+					warning = fmt.Sprintf("Could not export %s to shell profile: %v", tools.APIKeyEnv, err)
+				}
+			}
+			return saveCompleteMsg{warning: warning}
+		}
+
+		// In inject mode, IDE tools (non-wrappable) still need config written
+		// directly because they cannot be launched via a kimchi wrapper.
+		if s.mode == config.ModeInject {
+			for _, toolID := range s.toolIDs {
+				if toolID.IsWrappable() {
+					continue
+				}
+				tool, ok := tools.ByID(toolID)
+				if !ok || tool.Write == nil {
+					continue
+				}
+				if err := tool.Write(s.scope); err != nil {
+					return saveCompleteMsg{err: fmt.Errorf("configure %s: %w", tool.Name, err)}
 				}
 			}
 		}
 
-		return saveCompleteMsg{err: nil}
+		return saveCompleteMsg{}
 	}
 }
 
@@ -146,10 +167,15 @@ func (s *ConfigureStep) View() string {
 	if s.mode == config.ModeInject {
 		b.WriteString(Styles.Desc.Render("Wrote:"))
 		b.WriteString(fmt.Sprintf("  ~/.config/kimchi/config.json\n\n"))
-		b.WriteString("Launch your tools via kimchi to use Cast AI models:\n")
 		for _, toolID := range s.toolIDs {
-			if tool, ok := tools.ByID(toolID); ok {
-				b.WriteString(fmt.Sprintf("  %s kimchi %s\n", Styles.Success.Render("→"), tool.Name))
+			tool, ok := tools.ByID(toolID)
+			if !ok {
+				continue
+			}
+			if toolID.IsWrappable() {
+				b.WriteString(fmt.Sprintf("  %s kimchi %s\n", Styles.Success.Render("→"), tool.BinaryName))
+			} else {
+				b.WriteString(fmt.Sprintf("  %s %s %s\n", Styles.Success.Render("→"), tool.Name, Styles.Desc.Render("(config written directly)")))
 			}
 		}
 	} else {
@@ -162,6 +188,11 @@ func (s *ConfigureStep) View() string {
 		}
 		b.WriteString("\n")
 		b.WriteString("Run your tools directly — they are already configured.\n")
+	}
+
+	if s.warning != "" {
+		b.WriteString(Styles.Warning.Render(s.warning))
+		b.WriteString("\n")
 	}
 
 	b.WriteString("\n")

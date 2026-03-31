@@ -210,13 +210,16 @@ func (w *wizard) collectStepResult() {
 	case *steps.ModeStep:
 		w.config.Mode = s.SelectedMode()
 		if w.config.Mode == config.ModeInject {
-			// Skip the scope step — inject mode uses kimchi-managed paths.
-			w.config.Scope = config.ScopeGlobal
-			w.removePendingStep(func(step steps.Step) bool {
-				_, ok := step.(*steps.ScopeStep)
-				return ok
-			})
-			w.scheduleConfigureIfReady()
+			// Only skip the scope step if all selected tools are wrappable.
+			// IDE tools (Cursor, Zed, etc.) still need override and thus need scope.
+			if w.allToolsWrappable() {
+				w.config.Scope = config.ScopeGlobal
+				w.removePendingStep(func(step steps.Step) bool {
+					_, ok := step.(*steps.ScopeStep)
+					return ok
+				})
+				w.scheduleConfigureIfReady()
+			}
 		}
 	case *steps.ScopeStep:
 		w.config.Scope = s.SelectedScope()
@@ -251,6 +254,15 @@ func (w *wizard) scheduleConfigureIfReady() {
 		TelemetryOptIn: w.config.TelemetryOptIn,
 		APIKey:         w.config.APIKey,
 	})
+}
+
+func (w *wizard) allToolsWrappable() bool {
+	for _, id := range w.config.SelectedTools {
+		if !id.IsWrappable() {
+			return false
+		}
+	}
+	return true
 }
 
 func (w *wizard) removePendingStep(match func(steps.Step) bool) {
