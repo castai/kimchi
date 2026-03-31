@@ -13,8 +13,9 @@ import (
 )
 
 var (
-	debug   bool
-	verbose bool
+	debug     bool
+	verbose   bool
+	telClient telemetry.Client
 )
 
 func newRootCommand() *cobra.Command {
@@ -43,19 +44,27 @@ Get your API key at: https://kimchi.console.cast.ai`,
 		SilenceErrors: true,
 		Version:       version.String(),
 		PersistentPreRun: func(cmd *cobra.Command, args []string) {
-			if debug {
-				klog.SetLogger(klog.LoggerWithValues(klog.Background(), "debug", true))
+			propagetKlogFlags(cmd)
+
+			telClient = telemetry.New()
+			cmd.SetContext(telemetry.WithCtx(cmd.Context(), telClient))
+			telClient.Track(telemetry.NewEvent("app_started", nil))
+		},
+		PersistentPostRun: func(cmd *cobra.Command, args []string) {
+			if telClient != nil {
+				telClient.Close()
 			}
-			if verbose {
-				klog.SetLogger(klog.LoggerWithValues(klog.Background(), "verbose", true))
-			}
+
+			klog.Flush()
+
 		},
 		RunE: runConfigure,
 	}
 
 	root.PersistentFlags().BoolVar(&debug, "debug", false, "Enable debug output")
 	root.PersistentFlags().BoolVar(&verbose, "verbose", false, "Enable verbose output")
-	initKlog(root)
+
+	initKlogFlags(root)
 
 	root.AddCommand(NewVersionCommand())
 	root.AddCommand(NewCompletionCommand())
@@ -65,10 +74,28 @@ Get your API key at: https://kimchi.console.cast.ai`,
 	return root
 }
 
-func initKlog(root *cobra.Command) {
+// initKlogFlags registers klog verbosity flags (-v) on the root command
+func initKlogFlags(root *cobra.Command) {
 	fs := flag.NewFlagSet("klog", flag.ContinueOnError)
 	klog.InitFlags(fs)
 	root.PersistentFlags().AddGoFlagSet(fs)
+}
+
+// propagetKlogFlags applies the --debug or --verbose flag values to klog's -v verbosity level
+func propagetKlogFlags(cmd *cobra.Command) {
+	vLevel := "0"
+	if verbose {
+		vLevel = "2"
+	} else if debug {
+		vLevel = "1"
+	}
+
+	if vLevel != "0" {
+		err := cmd.Flags().Set("v", vLevel)
+		if err != nil {
+			klog.Warningf("Failed to set verbosity level: %v", err)
+		}
+	}
 }
 
 func runConfigure(cmd *cobra.Command, args []string) error {
@@ -76,14 +103,8 @@ func runConfigure(cmd *cobra.Command, args []string) error {
 	return err
 }
 
-// Execute runs the root command with the given telemetry client.
+// Execute runs the root command.
 func Execute() error {
-	telClient := telemetry.New()
-	defer telClient.Close()
-
-	telClient.Track(telemetry.NewEvent("app_started", nil))
-
 	root := newRootCommand()
-	ctx := telemetry.WithCtx(context.Background(), telClient)
-	return root.ExecuteContext(ctx)
+	return root.ExecuteContext(context.Background())
 }

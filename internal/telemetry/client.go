@@ -12,8 +12,10 @@ import (
 	"k8s.io/klog/v2"
 )
 
-const posthogAPIKey = "phc_PLACEHOLDER"
-const posthogEndpoint = "https://us.posthog.com"
+// PostHogAPIKey is set at build time via ldflags
+var PostHogAPIKey = "phc_PLACEHOLDER"
+
+const posthogEndpoint = "https://eu.i.posthog.com"
 
 type Event struct {
 	Name    string
@@ -39,36 +41,35 @@ type Client interface {
 func New() Client {
 	enabled, err := config.IsTelemetryEnabled()
 	if err != nil {
-		klog.ErrorS(err, "failed to check telemetry status, assuming disabled")
+		klog.V(1).ErrorS(err, "failed to check telemetry status, assuming disabled")
 		enabled = false
 	}
 
 	if !enabled {
-		klog.InfoS("telemetry disabled")
+		klog.V(1).InfoS("telemetry disabled")
 		return &noopClient{}
 	}
 
 	client, err := newPosthogClient(version.Version)
 	if err != nil {
-		klog.ErrorS(err, "failed to create telemetry client, disabling telemetry")
+		klog.V(1).ErrorS(err, "failed to create telemetry client, disabling telemetry")
 		return &noopClient{}
 	}
 
-	klog.InfoS("telemetry enabled", "endpoint", posthogEndpoint)
+	klog.V(1).InfoS("telemetry enabled", "endpoint", posthogEndpoint)
 	return client
 }
 
 // posthogClient is the real PostHog implementation
 type posthogClient struct {
-	client           posthog.Client
-	deviceID         string
-	sendFeatureFlags posthog.SendFeatureFlagsOptions
+	client   posthog.Client
+	deviceID string
 }
 
 func newPosthogClient(cliVersion string) (*posthogClient, error) {
 	deviceID, err := machineid.ID()
 	if err != nil {
-		klog.ErrorS(err, "failed to get machine ID, using empty device ID")
+		klog.V(1).ErrorS(err, "failed to get machine ID, using empty device ID", "error")
 		deviceID = ""
 	}
 
@@ -80,22 +81,14 @@ func newPosthogClient(cliVersion string) (*posthogClient, error) {
 			Set("arch", runtime.GOARCH),
 	}
 
-	client, err := posthog.NewWithConfig(posthogAPIKey, config)
+	client, err := posthog.NewWithConfig(PostHogAPIKey, config)
 	if err != nil {
 		return nil, fmt.Errorf("create posthog client: %w", err)
 	}
 
-	opts := posthog.SendFeatureFlagsOptions{
-		OnlyEvaluateLocally: true,
-	}
-	if deviceID != "" {
-		opts.DeviceId = &deviceID
-	}
-
 	return &posthogClient{
-		client:           client,
-		deviceID:         deviceID,
-		sendFeatureFlags: opts,
+		client:   client,
+		deviceID: deviceID,
 	}, nil
 }
 
@@ -106,21 +99,20 @@ func (c *posthogClient) Track(evt Event) {
 	}
 
 	cap := posthog.Capture{
-		Event:            evt.Name,
-		Timestamp:        evt.Time,
-		Properties:       props,
-		DistinctId:       c.deviceID,
-		SendFeatureFlags: &c.sendFeatureFlags,
+		Event:      evt.Name,
+		Timestamp:  evt.Time,
+		Properties: props,
+		DistinctId: c.deviceID,
 	}
 	err := c.client.Enqueue(cap)
 	if err != nil {
-		klog.ErrorS(err, "failed to capture telemetry event")
+		klog.V(1).ErrorS(err, "failed to capture telemetry event")
 	}
 }
 
 func (c *posthogClient) Close() {
 	if err := c.client.Close(); err != nil {
-		klog.ErrorS(err, "failed to close telemetry client")
+		klog.V(1).ErrorS(err, "failed to close telemetry client")
 	}
 }
 
