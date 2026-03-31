@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
+	"strings"
 )
 
 const (
@@ -66,6 +68,64 @@ func SetAPIKey(key string) error {
 	cfg.APIKey = key
 
 	return Save(cfg)
+}
+
+const envTelemetry = "KIMCHI_TELEMETRY"
+
+// IsTelemetryEnabled returns whether telemetry is enabled.
+// Checks environment variable first, then config file.
+// Returns (enabled, error). If env var is set but invalid, returns error.
+func IsTelemetryEnabled() (enabled bool, err error) {
+	// Check environment variable first
+	if envVal := os.Getenv(envTelemetry); envVal != "" {
+		enabled, err := ParseSwitch(envVal)
+		if err != nil {
+			return false, fmt.Errorf("invalid %s value: %w", envTelemetry, err)
+		}
+		return enabled, nil
+	}
+
+	// Fall back to config
+	cfg, err := Load()
+	if err != nil {
+		return false, err
+	}
+
+	// If not set (nil), default to enabled (opt-out)
+	if cfg.TelemetryEnabled == nil {
+		return true, nil
+	}
+
+	return *cfg.TelemetryEnabled, nil
+}
+
+func SetTelemetryEnabled(enabled bool) error {
+	cfg, err := Load()
+	if err != nil {
+		return fmt.Errorf("load existing config: %w", err)
+	}
+
+	cfg.TelemetryEnabled = &enabled
+
+	return Save(cfg)
+}
+
+// ParseSwitch parses a string value as a boolean switch.
+// Accepts: "on"|"off", "true"|"false", "1"|"0", "yes"|"no" (case insensitive)
+func ParseSwitch(s string) (bool, error) {
+	s = strings.ToLower(strings.TrimSpace(s))
+	switch s {
+	case "on", "true", "1", "yes":
+		return true, nil
+	case "off", "false", "0", "no":
+		return false, nil
+	default:
+		// Try strconv as fallback for other valid bool formats
+		if b, err := strconv.ParseBool(s); err == nil {
+			return b, nil
+		}
+		return false, fmt.Errorf("invalid switch value: %q (expected on/off, true/false, 1/0, yes/no)", s)
+	}
 }
 
 func Save(cfg *Config) error {

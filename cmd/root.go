@@ -1,13 +1,13 @@
 package cmd
 
 import (
+	"context"
 	"flag"
-	"fmt"
-	"os"
 
 	"github.com/spf13/cobra"
 	"k8s.io/klog/v2"
 
+	"github.com/castai/kimchi/internal/telemetry"
 	"github.com/castai/kimchi/internal/tui"
 	"github.com/castai/kimchi/internal/version"
 )
@@ -17,7 +17,7 @@ var (
 	verbose bool
 )
 
-func NewRootCommand() *cobra.Command {
+func newRootCommand() *cobra.Command {
 	root := &cobra.Command{
 		Use:   "kimchi",
 		Short: "Configure AI coding tools to use Cast AI open-source models",
@@ -60,6 +60,7 @@ Get your API key at: https://kimchi.console.cast.ai`,
 	root.AddCommand(NewVersionCommand())
 	root.AddCommand(NewCompletionCommand())
 	root.AddCommand(NewUpdateCommand())
+	root.AddCommand(NewConfigCommand())
 
 	return root
 }
@@ -71,14 +72,18 @@ func initKlog(root *cobra.Command) {
 }
 
 func runConfigure(cmd *cobra.Command, args []string) error {
-	_, err := tui.RunWizard()
+	_, err := tui.RunWizard(cmd.Context())
 	return err
 }
 
-func Execute() {
-	root := NewRootCommand()
-	if err := root.Execute(); err != nil {
-		fmt.Fprintf(os.Stderr, "error: %v\n", err)
-		os.Exit(1)
-	}
+// Execute runs the root command with the given telemetry client.
+func Execute() error {
+	telClient := telemetry.New()
+	defer telClient.Close()
+
+	telClient.Track(telemetry.NewEvent("app_started", nil))
+
+	root := newRootCommand()
+	ctx := telemetry.WithCtx(context.Background(), telClient)
+	return root.ExecuteContext(ctx)
 }

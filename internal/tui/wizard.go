@@ -10,6 +10,7 @@ import (
 
 	"github.com/castai/kimchi/internal/config"
 	"github.com/castai/kimchi/internal/gsd"
+	"github.com/castai/kimchi/internal/telemetry"
 	"github.com/castai/kimchi/internal/tools"
 	"github.com/castai/kimchi/internal/tui/steps"
 	"github.com/castai/kimchi/internal/version"
@@ -239,8 +240,18 @@ func (w *wizard) scheduleConfigureIfReady() {
 	})
 }
 
-func RunWizard() (*WizardConfig, error) {
-	ctx := context.Background()
+func (w *wizard) hasClaudeCode() bool {
+	return slices.Contains(w.config.SelectedTools, tools.ToolClaudeCode)
+}
+
+func (w *wizard) currentStepName() string {
+	if w.current < len(w.stepList) {
+		return w.stepList[w.current].Info().Name
+	}
+	return ""
+}
+
+func RunWizard(ctx context.Context) (*WizardConfig, error) {
 	w := newWizard(ctx)
 
 	p := tea.NewProgram(w, tea.WithAltScreen())
@@ -255,6 +266,10 @@ func RunWizard() (*WizardConfig, error) {
 	}
 
 	if finalWizard.aborted {
+		telemetryClient := telemetry.FromCtx(ctx)
+		telemetryClient.Track(telemetry.NewEvent("setup_aborted", map[string]any{
+			"step": finalWizard.currentStepName(),
+		}))
 		return nil, nil
 	}
 
@@ -275,6 +290,18 @@ func RunWizard() (*WizardConfig, error) {
 			}
 		}
 	}
+
+	telemetryClient := telemetry.FromCtx(ctx)
+	for _, tool := range cfg.SelectedTools {
+		telemetryClient.Track(telemetry.NewEvent("tool_configured", map[string]any{
+			"tool_name": string(tool),
+		}))
+	}
+
+	telemetryClient.Track(telemetry.NewEvent("setup_completed", map[string]any{
+		"tools_count": len(cfg.SelectedTools),
+		"scope":       string(cfg.Scope),
+	}))
 
 	return cfg, nil
 }
