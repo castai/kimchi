@@ -18,11 +18,11 @@ func KimchiManagedPath(installType InstallationType) (string, error) {
 
 	switch installType {
 	case InstallationClaudeCode:
-		return filepath.Join(homeDir, ".config", "kimchi", "gsd", "claude-code"), nil
+		return filepath.Join(homeDir, ".config", "kimchi", "claude-code"), nil
 	case InstallationOpenCode:
 		return filepath.Join(homeDir, ".config", "kimchi", "opencode"), nil
 	case InstallationCodex:
-		return filepath.Join(homeDir, ".config", "kimchi", "gsd", "codex"), nil
+		return filepath.Join(homeDir, ".config", "kimchi", "codex"), nil
 	default:
 		return "", fmt.Errorf("unsupported installation type: %s", installType)
 	}

@@ -19,7 +19,7 @@ func InjectGSD() ([]string, error) {
 		return nil, fmt.Errorf("get home directory: %w", err)
 	}
 
-	kimchiGSD := filepath.Join(homeDir, ".config", "kimchi", "gsd", "claude-code")
+	kimchiGSD := filepath.Join(homeDir, ".config", "kimchi", "claude-code")
 	claudeDir := filepath.Join(homeDir, ".claude")
 
 	var created []string

@@ -23,11 +23,26 @@ func Env(apiKey string) (map[string]string, error) {
 	userCodexDir := filepath.Join(homeDir, ".codex")
 	managedCodexDir := filepath.Join(homeDir, ".config", "kimchi", "codex")
 
-	// Copy the user's entire codex directory first (agents, config, etc.)
-	// so custom user content is carried over.
-	if info, err := os.Stat(userCodexDir); err == nil && info.IsDir() {
-		if err := gsd.CopyInstallation(userCodexDir, managedCodexDir); err != nil {
-			return nil, fmt.Errorf("copy user codex config: %w", err)
+	// Copy only config-relevant content from the user's codex directory.
+	// We skip runtime artifacts (sqlite DBs, logs, sessions, .tmp, etc.)
+	// that can contain read-only files and aren't needed for config.
+	codexConfigDirs := []string{"agents", "skills", "get-shit-done", "hooks"}
+	codexConfigFiles := []string{"AGENTS.md", "AGENTS.override.md"}
+	for _, dir := range codexConfigDirs {
+		src := filepath.Join(userCodexDir, dir)
+		if info, err := os.Stat(src); err == nil && info.IsDir() {
+			if err := gsd.CopyInstallation(src, filepath.Join(managedCodexDir, dir)); err != nil {
+				return nil, fmt.Errorf("copy user codex %s: %w", dir, err)
+			}
+		}
+	}
+	for _, file := range codexConfigFiles {
+		src := filepath.Join(userCodexDir, file)
+		dst := filepath.Join(managedCodexDir, file)
+		if data, err := os.ReadFile(src); err == nil {
+			if err := config.WriteFile(dst, data); err != nil {
+				return nil, fmt.Errorf("copy user codex %s: %w", file, err)
+			}
 		}
 	}
 
