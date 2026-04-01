@@ -8,7 +8,7 @@ GIT_COMMIT := $(shell git rev-parse --short HEAD 2>/dev/null || echo "unknown")
 GIT_VERSION := $(shell git describe --tags --always --dirty 2>/dev/null || echo "dev")
 BUILD_DATE := $(shell date -u +"%Y-%m-%dT%H:%M:%SZ")
 
-POSTHOG_API_KEY ?= phc_PLACEHOLDER
+POSTHOG_API_KEY ?=
 
 LDFLAGS := \
 	-X github.com/castai/kimchi/internal/version.Version=$(GIT_VERSION) \

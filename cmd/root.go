@@ -46,7 +46,7 @@ Get your API key at: https://kimchi.console.cast.ai`,
 		PersistentPreRun: func(cmd *cobra.Command, args []string) {
 			propagateKlogFlags(cmd)
 
-			telClient = telemetry.New()
+			telClient = telemetry.New(telemetry.PostHogAPIKey)
 			cmd.SetContext(telemetry.WithCtx(cmd.Context(), telClient))
 			telClient.Track(telemetry.NewEvent("app_started", nil))
 		},

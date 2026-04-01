@@ -12,7 +12,7 @@ import (
 )
 
 // PostHogAPIKey is set at build time via ldflags
-var PostHogAPIKey = "phc_PLACEHOLDER"
+var PostHogAPIKey string
 
 const posthogEndpoint = "https://eu.i.posthog.com"
 
@@ -37,7 +37,7 @@ type Client interface {
 }
 
 // New creates a telemetry client based on environment and config
-func New() Client {
+func New(apiKey string) Client {
 	enabled, err := config.IsTelemetryEnabled()
 	if err != nil {
 		klog.V(1).ErrorS(err, "failed to check telemetry status, assuming disabled")
@@ -49,7 +49,12 @@ func New() Client {
 		return &noopClient{}
 	}
 
-	client, err := newPosthogClient(version.Version)
+	if apiKey == "" {
+		klog.V(1).InfoS("telemetry disabled: API key not set")
+		return &noopClient{}
+	}
+
+	client, err := newPosthogClient(apiKey, version.Version)
 	if err != nil {
 		klog.V(1).ErrorS(err, "failed to create telemetry client, disabling telemetry")
 		return &noopClient{}
@@ -65,7 +70,7 @@ type posthogClient struct {
 	deviceID string
 }
 
-func newPosthogClient(cliVersion string) (*posthogClient, error) {
+func newPosthogClient(apiKey string, cliVersion string) (*posthogClient, error) {
 	deviceID, err := config.GetOrCreateDeviceID()
 	if err != nil {
 		klog.V(1).ErrorS(err, "failed to get device ID, using empty device ID")
@@ -80,7 +85,7 @@ func newPosthogClient(cliVersion string) (*posthogClient, error) {
 			Set("arch", runtime.GOARCH),
 	}
 
-	client, err := posthog.NewWithConfig(PostHogAPIKey, config)
+	client, err := posthog.NewWithConfig(apiKey, config)
 	if err != nil {
 		return nil, fmt.Errorf("create posthog client: %w", err)
 	}
