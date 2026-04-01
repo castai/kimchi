@@ -44,19 +44,11 @@ Get your API key at: https://kimchi.console.cast.ai`,
 		SilenceErrors: true,
 		Version:       version.String(),
 		PersistentPreRun: func(cmd *cobra.Command, args []string) {
-			propagetKlogFlags(cmd)
+			propagateKlogFlags(cmd)
 
 			telClient = telemetry.New()
 			cmd.SetContext(telemetry.WithCtx(cmd.Context(), telClient))
 			telClient.Track(telemetry.NewEvent("app_started", nil))
-		},
-		PersistentPostRun: func(cmd *cobra.Command, args []string) {
-			if telClient != nil {
-				telClient.Close()
-			}
-
-			klog.Flush()
-
 		},
 		RunE: runConfigure,
 	}
@@ -81,8 +73,8 @@ func initKlogFlags(root *cobra.Command) {
 	root.PersistentFlags().AddGoFlagSet(fs)
 }
 
-// propagetKlogFlags applies the --debug or --verbose flag values to klog's -v verbosity level
-func propagetKlogFlags(cmd *cobra.Command) {
+// propagateKlogFlags applies the --debug or --verbose flag values to klog's -v verbosity level
+func propagateKlogFlags(cmd *cobra.Command) {
 	vLevel := "0"
 	if verbose {
 		vLevel = "2"
@@ -106,5 +98,11 @@ func runConfigure(cmd *cobra.Command, args []string) error {
 // Execute runs the root command.
 func Execute() error {
 	root := newRootCommand()
+	defer func() {
+		if telClient != nil {
+			telClient.Close()
+		}
+		klog.Flush()
+	}()
 	return root.ExecuteContext(context.Background())
 }
