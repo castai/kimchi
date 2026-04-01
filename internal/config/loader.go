@@ -7,8 +7,6 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
-
-	"github.com/google/uuid"
 )
 
 const (
@@ -115,25 +113,6 @@ func SetTelemetryEnabled(enabled bool) error {
 	return Save(cfg)
 }
 
-// GetOrCreateDeviceID returns the device ID from config, generating a new UUID if empty.
-func GetOrCreateDeviceID() (string, error) {
-	cfg, err := Load()
-	if err != nil {
-		return "", fmt.Errorf("load config: %w", err)
-	}
-
-	if cfg.DeviceID != "" {
-		return cfg.DeviceID, nil
-	}
-
-	cfg.DeviceID = uuid.NewString()
-	if err := Save(cfg); err != nil {
-		return "", fmt.Errorf("save config: %w", err)
-	}
-
-	return cfg.DeviceID, nil
-}
-
 // ParseSwitch parses a string value as a boolean switch.
 // Accepts: "on"|"off", "true"|"false", "1"|"0", "yes"|"no" (case insensitive)
 func ParseSwitch(s string) (bool, error) {
@@ -150,43 +129,6 @@ func ParseSwitch(s string) (bool, error) {
 		}
 		return false, fmt.Errorf("invalid switch value: %q (expected on/off, true/false, 1/0, yes/no)", s)
 	}
-}
-
-// ShouldShowTelemetryNotice returns true if the one-time telemetry disclosure
-// notice has not yet been shown and telemetry is currently enabled.
-// Returns false when KIMCHI_TELEMETRY env var is set (CI/automated contexts)
-// or when telemetry has been explicitly disabled.
-func ShouldShowTelemetryNotice() (bool, error) {
-	// If the env var is set, the user is in an automated/CI context — skip notice.
-	if os.Getenv(EnvTelemetry) != "" {
-		return false, nil
-	}
-
-	cfg, err := Load()
-	if err != nil {
-		return false, err
-	}
-
-	if cfg.TelemetryNoticeShown {
-		return false, nil
-	}
-
-	// If telemetry has been explicitly disabled, no notice needed.
-	if cfg.TelemetryEnabled != nil && !*cfg.TelemetryEnabled {
-		return false, nil
-	}
-
-	return true, nil
-}
-
-// MarkTelemetryNoticeShown persists that the telemetry disclosure notice has been shown.
-func MarkTelemetryNoticeShown() error {
-	cfg, err := Load()
-	if err != nil {
-		return fmt.Errorf("load config: %w", err)
-	}
-	cfg.TelemetryNoticeShown = true
-	return Save(cfg)
 }
 
 func Save(cfg *Config) error {

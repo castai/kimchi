@@ -3,56 +3,9 @@ package config
 import (
 	"testing"
 
-	"github.com/google/uuid"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
-
-func TestGetOrCreateDeviceID_GeneratesAndPersists(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
-
-	id1, err := GetOrCreateDeviceID()
-	if err != nil {
-		t.Fatalf("first call: %v", err)
-	}
-	if _, err := uuid.Parse(id1); err != nil {
-		t.Fatalf("not a valid UUID: %q", id1)
-	}
-
-	id2, err := GetOrCreateDeviceID()
-	if err != nil {
-		t.Fatalf("second call: %v", err)
-	}
-	if id1 != id2 {
-		t.Errorf("expected same ID on second call, got %q and %q", id1, id2)
-	}
-}
-
-func TestGetOrCreateDeviceID_RegeneratesAfterClear(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
-
-	id1, err := GetOrCreateDeviceID()
-	if err != nil {
-		t.Fatalf("first call: %v", err)
-	}
-
-	cfg, err := Load()
-	if err != nil {
-		t.Fatalf("load: %v", err)
-	}
-	cfg.DeviceID = ""
-	if err := Save(cfg); err != nil {
-		t.Fatalf("save: %v", err)
-	}
-
-	id2, err := GetOrCreateDeviceID()
-	if err != nil {
-		t.Fatalf("after clear: %v", err)
-	}
-	if id1 == id2 {
-		t.Error("expected new ID after clear, got same")
-	}
-}
 
 func TestIsTelemetryEnabled_InvalidEnvVar_ReturnsError(t *testing.T) {
 	t.Setenv(EnvTelemetry, "banana")
@@ -65,16 +18,17 @@ func TestIsTelemetryEnabled_InvalidEnvVar_ReturnsError(t *testing.T) {
 func TestSetTelemetryEnabled_ClearsDeviceIDOnDisable(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 
-	// Generate a device ID first
-	if _, err := GetOrCreateDeviceID(); err != nil {
-		t.Fatalf("setup: %v", err)
-	}
+	// Set up a device ID directly via config
+	cfg, err := Load()
+	require.NoError(t, err)
+	cfg.DeviceID = "test-device-id"
+	require.NoError(t, Save(cfg))
 
 	if err := SetTelemetryEnabled(false); err != nil {
 		t.Fatalf("disable: %v", err)
 	}
 
-	cfg, err := Load()
+	cfg, err = Load()
 	if err != nil {
 		t.Fatalf("load: %v", err)
 	}
@@ -83,61 +37,24 @@ func TestSetTelemetryEnabled_ClearsDeviceIDOnDisable(t *testing.T) {
 	}
 }
 
-func TestShouldShowTelemetryNotice_FirstRun(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
-	t.Setenv(EnvTelemetry, "")
-
-	show, err := ShouldShowTelemetryNotice()
-	require.NoError(t, err)
-	assert.True(t, show, "expected notice on first run with no config")
-}
-
-func TestShouldShowTelemetryNotice_AlreadyShown(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
-
-	require.NoError(t, MarkTelemetryNoticeShown())
-
-	show, err := ShouldShowTelemetryNotice()
-	require.NoError(t, err)
-	assert.False(t, show, "expected no notice after already shown")
-}
-
-func TestShouldShowTelemetryNotice_ExplicitlyDisabled(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
-
-	require.NoError(t, SetTelemetryEnabled(false))
-
-	show, err := ShouldShowTelemetryNotice()
-	require.NoError(t, err)
-	assert.False(t, show, "expected no notice when telemetry explicitly disabled")
-}
-
-func TestShouldShowTelemetryNotice_EnvVarSet(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
-	t.Setenv(EnvTelemetry, "on")
-
-	show, err := ShouldShowTelemetryNotice()
-	require.NoError(t, err)
-	assert.False(t, show, "expected no notice when KIMCHI_TELEMETRY env var is set")
-}
-
 func TestSetTelemetryEnabled_PreservesDeviceIDOnEnable(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 
-	id, err := GetOrCreateDeviceID()
-	if err != nil {
-		t.Fatalf("setup: %v", err)
-	}
+	// Set up a device ID directly via config
+	cfg, err := Load()
+	require.NoError(t, err)
+	cfg.DeviceID = "test-device-id"
+	require.NoError(t, Save(cfg))
 
 	if err := SetTelemetryEnabled(true); err != nil {
 		t.Fatalf("enable: %v", err)
 	}
 
-	cfg, err := Load()
+	cfg, err = Load()
 	if err != nil {
 		t.Fatalf("load: %v", err)
 	}
-	if cfg.DeviceID != id {
-		t.Errorf("expected device ID %q preserved, got %q", id, cfg.DeviceID)
+	if cfg.DeviceID != "test-device-id" {
+		t.Errorf("expected device ID %q preserved, got %q", "test-device-id", cfg.DeviceID)
 	}
 }

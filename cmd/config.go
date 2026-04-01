@@ -26,6 +26,7 @@ func NewConfigTelemetryCommand() *cobra.Command {
 		Use:   "telemetry [on|off]",
 		Short: "Manage telemetry settings",
 		Long:  `Enable or disable anonymous usage telemetry for kimchi. Run without arguments to show current status.`,
+		Args:  cobra.MaximumNArgs(1),
 		Example: `  kimchi config telemetry on    # enable telemetry
   kimchi config telemetry off   # disable telemetry
   kimchi config telemetry       # show current status`,
