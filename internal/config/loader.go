@@ -74,11 +74,9 @@ func SetAPIKey(key string) error {
 
 const EnvTelemetry = "KIMCHI_TELEMETRY"
 
-// IsTelemetryEnabled returns whether telemetry is enabled.
-// Checks environment variable first, then config file.
-// Returns (enabled, error). If env var is set but invalid, returns error.
-func IsTelemetryEnabled() (enabled bool, err error) {
-	// Check environment variable first
+// IsTelemetryEnabledFromConfig returns whether telemetry is enabled using a pre-loaded config.
+// Checks environment variable first, then the provided config. No I/O.
+func IsTelemetryEnabledFromConfig(cfg *Config) (bool, error) {
 	if envVal := os.Getenv(EnvTelemetry); envVal != "" {
 		enabled, err := ParseSwitch(envVal)
 		if err != nil {
@@ -86,19 +84,21 @@ func IsTelemetryEnabled() (enabled bool, err error) {
 		}
 		return enabled, nil
 	}
+	if cfg.TelemetryEnabled == nil {
+		return true, nil
+	}
+	return *cfg.TelemetryEnabled, nil
+}
 
-	// Fall back to config
+// IsTelemetryEnabled returns whether telemetry is enabled.
+// Checks environment variable first, then config file.
+// Returns (enabled, error). If env var is set but invalid, returns error.
+func IsTelemetryEnabled() (bool, error) {
 	cfg, err := Load()
 	if err != nil {
 		return false, err
 	}
-
-	// If not set (nil), default to enabled (opt-out)
-	if cfg.TelemetryEnabled == nil {
-		return true, nil
-	}
-
-	return *cfg.TelemetryEnabled, nil
+	return IsTelemetryEnabledFromConfig(cfg)
 }
 
 func SetTelemetryEnabled(enabled bool) error {

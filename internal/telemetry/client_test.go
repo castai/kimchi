@@ -7,15 +7,11 @@ import (
 )
 
 func TestNew_EmptyAPIKey_ReturnsNoopClient(t *testing.T) {
-	t.Setenv("KIMCHI_TELEMETRY", "true")
-
-	client := New("")
+	client := New("", true, "test-device-id")
 	assert.IsType(t, &noopClient{}, client, "expected noopClient when API key is empty")
 }
 
-func TestNew_InvalidTelemetryEnvVar_ReturnsNoopClient(t *testing.T) {
-	t.Setenv("KIMCHI_TELEMETRY", "banana")
-
-	client := New("some-api-key")
-	assert.IsType(t, &noopClient{}, client, "expected noopClient (fail closed) on invalid KIMCHI_TELEMETRY value")
+func TestNew_TelemetryDisabled_ReturnsNoopClient(t *testing.T) {
+	client := New("some-api-key", false, "test-device-id")
+	assert.IsType(t, &noopClient{}, client, "expected noopClient when telemetry is disabled")
 }

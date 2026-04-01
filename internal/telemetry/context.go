@@ -10,10 +10,10 @@ func WithCtx(ctx context.Context, client Client) context.Context {
 }
 
 // FromCtx retrieves the telemetry client from the context.
-// Returns nil if no client is found (safe to call Track on nil, it's a no-op).
+// Returns a no-op client if no client is found.
 func FromCtx(ctx context.Context) Client {
 	if client, ok := ctx.Value(clientKey{}).(Client); ok {
 		return client
 	}
-	return nil
+	return &noopClient{}
 }

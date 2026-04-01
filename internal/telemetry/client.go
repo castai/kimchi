@@ -5,7 +5,6 @@ import (
 	"runtime"
 	"time"
 
-	"github.com/castai/kimchi/internal/config"
 	"github.com/castai/kimchi/internal/version"
 	"github.com/posthog/posthog-go"
 	"k8s.io/klog/v2"
@@ -36,14 +35,8 @@ type Client interface {
 	Close()
 }
 
-// New creates a telemetry client based on environment and config
-func New(apiKey string) Client {
-	enabled, err := config.IsTelemetryEnabled()
-	if err != nil {
-		klog.V(1).ErrorS(err, "failed to check telemetry status, assuming disabled")
-		enabled = false
-	}
-
+// New creates a telemetry client. enabled and deviceID are pre-resolved by the caller.
+func New(apiKey string, enabled bool, deviceID string) Client {
 	if !enabled {
 		klog.V(1).InfoS("telemetry disabled")
 		return &noopClient{}
@@ -54,7 +47,7 @@ func New(apiKey string) Client {
 		return &noopClient{}
 	}
 
-	client, err := newPosthogClient(apiKey, version.Version)
+	client, err := newPosthogClient(apiKey, version.Version, deviceID)
 	if err != nil {
 		klog.V(1).ErrorS(err, "failed to create telemetry client, disabling telemetry")
 		return &noopClient{}
@@ -70,13 +63,7 @@ type posthogClient struct {
 	deviceID string
 }
 
-func newPosthogClient(apiKey string, cliVersion string) (*posthogClient, error) {
-	deviceID, err := config.GetOrCreateDeviceID()
-	if err != nil {
-		klog.V(1).ErrorS(err, "failed to get device ID, using empty device ID")
-		deviceID = ""
-	}
-
+func newPosthogClient(apiKey string, cliVersion string, deviceID string) (*posthogClient, error) {
 	config := posthog.Config{
 		Endpoint: posthogEndpoint,
 		DefaultEventProperties: posthog.NewProperties().

@@ -61,10 +61,10 @@ func showTelemetryStatus() error {
 	}
 
 	// Check if env var is set for display purposes
-	envVal := os.Getenv("KIMCHI_TELEMETRY")
+	envVal := os.Getenv(config.EnvTelemetry)
 	if envVal != "" {
-		fmt.Printf("Telemetry: %s (from KIMCHI_TELEMETRY=%s, overrides config)\n",
-			formatStatus(enabled), envVal)
+		fmt.Printf("Telemetry: %s (from %s=%s, overrides config)\n",
+			formatStatus(enabled), config.EnvTelemetry, envVal)
 		return nil
 	}
 

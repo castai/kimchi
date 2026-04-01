@@ -5,6 +5,7 @@ import (
 	"flag"
 	"fmt"
 
+	"github.com/google/uuid"
 	"github.com/spf13/cobra"
 	"k8s.io/klog/v2"
 
@@ -15,9 +16,8 @@ import (
 )
 
 var (
-	debug     bool
-	verbose   bool
-	telClient telemetry.Client
+	debug   bool
+	verbose bool
 )
 
 func newRootCommand() *cobra.Command {
@@ -48,15 +48,38 @@ Get your API key at: https://kimchi.console.cast.ai`,
 		PersistentPreRun: func(cmd *cobra.Command, args []string) {
 			propagateKlogFlags(cmd)
 
-			telClient = telemetry.New(telemetry.PostHogAPIKey)
-			cmd.SetContext(telemetry.WithCtx(cmd.Context(), telClient))
-			telClient.Track(telemetry.NewEvent("app_started", nil))
+			cfg, loadErr := config.Load()
+			if loadErr != nil {
+				klog.V(1).ErrorS(loadErr, "failed to load config")
+				cfg = &config.Config{}
+			}
+			original := *cfg
 
-			if show, err := config.ShouldShowTelemetryNotice(); err == nil && show {
+			enabled, err := config.IsTelemetryEnabledFromConfig(cfg)
+			if err != nil {
+				klog.V(1).ErrorS(err, "failed to check telemetry status, assuming disabled")
+				enabled = false
+			}
+
+			if cfg.DeviceID == "" {
+				cfg.DeviceID = uuid.NewString()
+			}
+
+			client := telemetry.New(telemetry.PostHogAPIKey, enabled, cfg.DeviceID)
+			cmd.SetContext(telemetry.WithCtx(cmd.Context(), client))
+			client.Track(telemetry.NewEvent("app_started", nil))
+
+			if !cfg.TelemetryNoticeShown && enabled {
 				fmt.Fprintln(cmd.ErrOrStderr(),
 					"INFO: Kimchi collects anonymous usage data to improve the product. "+
 						"Run 'kimchi config telemetry off' to disable.")
-				_ = config.MarkTelemetryNoticeShown()
+				cfg.TelemetryNoticeShown = true
+			}
+
+			if !original.Equal(cfg) {
+				if saveErr := config.Save(cfg); saveErr != nil {
+					klog.V(1).ErrorS(saveErr, "failed to save config")
+				}
 			}
 		},
 		RunE: runConfigure,
@@ -107,11 +130,10 @@ func runConfigure(cmd *cobra.Command, args []string) error {
 // Execute runs the root command.
 func Execute() error {
 	root := newRootCommand()
+	ctx := context.Background()
 	defer func() {
-		if telClient != nil {
-			telClient.Close()
-		}
+		telemetry.FromCtx(root.Context()).Close()
 		klog.Flush()
 	}()
-	return root.ExecuteContext(context.Background())
+	return root.ExecuteContext(ctx)
 }
