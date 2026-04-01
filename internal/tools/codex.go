@@ -11,9 +11,12 @@ import (
 const codexConfigPath = "~/.codex/config.toml"
 const codexAgentsPath = "~/.codex/AGENTS.md"
 const codexCatalogPath = "~/.codex/kimchi-models.json"
-const envKeyInstructions = "Set the " + APIKeyEnv + " environment variable with your Cast AI API key. You can add it to your shell profile (~/.zshrc, ~/.bashrc) or a .env file."
 
-func codexAgentMD() string {
+// CodexEnvKeyInstructions is the human-readable instruction for setting the API key.
+const CodexEnvKeyInstructions = "Set the " + APIKeyEnv + " environment variable with your Cast AI API key. You can add it to your shell profile (~/.zshrc, ~/.bashrc) or a .env file."
+
+// CodexAgentMD returns the default AGENTS.md content for Codex.
+func CodexAgentMD() string {
 	return `# Cast AI Configuration
 
 This project uses Cast AI's open-source models:
@@ -73,7 +76,8 @@ type codexCatalog struct {
 	Models []codexModelEntry `json:"models"`
 }
 
-func writeModelCatalog(path string) error {
+// WriteCodexModelCatalog writes the model catalog JSON to the given path.
+func WriteCodexModelCatalog(path string) error {
 	var models []codexModelEntry
 	for _, m := range allModels {
 		entry := codexModelEntry{
@@ -149,7 +153,7 @@ func writeCodex(scope config.ConfigScope) error {
 		"name":                 "Kimchi by Cast AI",
 		"base_url":             BaseURL,
 		"env_key":              APIKeyEnv,
-		"env_key_instructions": envKeyInstructions,
+		"env_key_instructions": CodexEnvKeyInstructions,
 		"wire_api":             "responses",
 	}
 
@@ -158,7 +162,7 @@ func writeCodex(scope config.ConfigScope) error {
 	if err != nil {
 		return fmt.Errorf("get catalog path: %w", err)
 	}
-	if err := writeModelCatalog(catalogPath); err != nil {
+	if err := WriteCodexModelCatalog(catalogPath); err != nil {
 		return fmt.Errorf("write model catalog: %w", err)
 	}
 	cfg["model_catalog_json"] = catalogPath
@@ -177,7 +181,7 @@ func writeCodex(scope config.ConfigScope) error {
 		if !os.IsNotExist(err) {
 			return fmt.Errorf("stat AGENTS.md: %w", err)
 		}
-		if err := config.WriteFile(instructionsPath, []byte(codexAgentMD())); err != nil {
+		if err := config.WriteFile(instructionsPath, []byte(CodexAgentMD())); err != nil {
 			return fmt.Errorf("write AGENTS.md: %w", err)
 		}
 	}

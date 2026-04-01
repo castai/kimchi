@@ -25,55 +25,19 @@ func NewCodexCommand() *cobra.Command {
 				return fmt.Errorf("load config: %w", err)
 			}
 
-			apiKey := cfg.APIKey
-			if envKey := os.Getenv("KIMCHI_API_KEY"); envKey != "" {
-				apiKey = envKey
-			}
-			if apiKey == "" {
-				return fmt.Errorf("no API key configured — run 'kimchi' to set up, or set KIMCHI_API_KEY")
-			}
-
-			scope := config.ConfigScope(cfg.Scope)
-			if scope == "" {
-				scope = config.ScopeGlobal
-			}
-
-			if err := ensureCodexConfig(scope); err != nil {
-				fmt.Fprintf(os.Stderr, "Warning: could not write codex config: %v\n", err)
+			apiKey, err := config.ResolveAPIKey(cfg)
+			if err != nil {
+				return err
 			}
 
 			printBanner(os.Stderr, "codex", cfg)
 
-			env := codex.Env(apiKey)
+			env, err := codex.Env(apiKey)
+			if err != nil {
+				return fmt.Errorf("prepare codex environment: %w", err)
+			}
 
 			return tools.ExecTool("codex", args, env)
 		},
 	}
-}
-
-// ensureCodexConfig writes the kimchi provider and model catalog into
-// ~/.codex/config.toml if the kimchi provider is not already defined there.
-// This is a one-time setup: subsequent runs skip the write.
-func ensureCodexConfig(scope config.ConfigScope) error {
-	tool, ok := tools.ByID(tools.ToolCodex)
-	if !ok || tool.Write == nil {
-		return nil
-	}
-
-	configPath, err := config.ScopePaths(scope, "~/.codex/config.toml")
-	if err != nil {
-		return fmt.Errorf("get config path: %w", err)
-	}
-
-	existing, err := config.ReadTOML(configPath)
-	if err != nil {
-		return fmt.Errorf("read config: %w", err)
-	}
-
-	providers, _ := existing["model_providers"].(map[string]any)
-	if _, hasKimchi := providers[tools.ProviderName]; hasKimchi {
-		return nil
-	}
-
-	return tool.Write(scope)
 }

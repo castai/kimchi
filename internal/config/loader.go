@@ -57,6 +57,19 @@ func GetAPIKey() (string, error) {
 	return cfg.APIKey, nil
 }
 
+// ResolveAPIKey returns the API key from the config, overridden by
+// KIMCHI_API_KEY env var. Returns an error if no key is available.
+func ResolveAPIKey(cfg *Config) (string, error) {
+	apiKey := cfg.APIKey
+	if envKey := os.Getenv(envAPIKey); envKey != "" {
+		apiKey = envKey
+	}
+	if apiKey == "" {
+		return "", fmt.Errorf("no API key configured — run 'kimchi' to set up, or set KIMCHI_API_KEY")
+	}
+	return apiKey, nil
+}
+
 func SetAPIKey(key string) error {
 	cfg, err := Load()
 	if err != nil {

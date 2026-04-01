@@ -1,7 +1,9 @@
 package gsd
 
 import (
+	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 )
@@ -34,7 +36,7 @@ func EnsureSymlink(src, target string) error {
 	}
 
 	err := os.Symlink(src, target)
-	if err == nil || os.IsExist(err) {
+	if err == nil || errors.Is(err, fs.ErrExist) {
 		return nil
 	}
 	return fmt.Errorf("create GSD symlink: %w", err)

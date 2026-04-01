@@ -44,7 +44,7 @@ func writeOpenCode(scope config.ConfigScope) error {
 	if providers == nil {
 		providers = make(map[string]any)
 	}
-	providers[ProviderName] = openCodeProviderConfig(apiKey)
+	providers[ProviderName] = OpenCodeProviderConfig(apiKey)
 	existing["provider"] = providers
 
 	existing["compaction"] = map[string]any{
@@ -58,7 +58,8 @@ func writeOpenCode(scope config.ConfigScope) error {
 	return nil
 }
 
-func openCodeProviderConfig(apiKey string) map[string]any {
+// OpenCodeProviderConfig returns the provider configuration map for OpenCode.
+func OpenCodeProviderConfig(apiKey string) map[string]any {
 	return map[string]any{
 		"npm":  "@ai-sdk/openai-compatible",
 		"name": "Kimchi by Cast AI",

@@ -61,7 +61,10 @@ func RunTool(binary string, args []string, env map[string]string, cleanup func()
 	// Forward signals to the child process.
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM, syscall.SIGHUP)
-	defer signal.Stop(sigCh)
+	defer func() {
+		signal.Stop(sigCh)
+		close(sigCh)
+	}()
 
 	if err := cmd.Start(); err != nil {
 		return fmt.Errorf("start %s: %w", binary, err)

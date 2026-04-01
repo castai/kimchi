@@ -45,7 +45,7 @@ func Env(apiKey string) (map[string]string, error) {
 	if providers == nil {
 		providers = make(map[string]any)
 	}
-	providers[tools.ProviderName] = providerConfig(apiKey)
+	providers[tools.ProviderName] = tools.OpenCodeProviderConfig(apiKey)
 	existing["provider"] = providers
 
 	if _, ok := existing["compaction"]; !ok {
@@ -62,45 +62,4 @@ func Env(apiKey string) (map[string]string, error) {
 	return map[string]string{
 		"XDG_CONFIG_HOME": filepath.Join(homeDir, ".config", "kimchi"),
 	}, nil
-}
-
-func providerConfig(apiKey string) map[string]any {
-	return map[string]any{
-		"npm":  "@ai-sdk/openai-compatible",
-		"name": "Kimchi by Cast AI",
-		"options": map[string]any{
-			"baseURL":      tools.BaseURL,
-			"litellmProxy": true,
-			"apiKey":       apiKey,
-		},
-		"models": map[string]any{
-			tools.ReasoningModel.Slug: map[string]any{
-				"name":      tools.ReasoningModel.Slug,
-				"tool_call": tools.ReasoningModel.ToolCall,
-				"reasoning": tools.ReasoningModel.Reasoning,
-				"limit": map[string]any{
-					"context": tools.ReasoningModel.Limits.ContextWindow,
-					"output":  tools.ReasoningModel.Limits.MaxOutputTokens,
-				},
-			},
-			tools.CodingModel.Slug: map[string]any{
-				"name":      tools.CodingModel.Slug,
-				"tool_call": tools.CodingModel.ToolCall,
-				"reasoning": tools.CodingModel.Reasoning,
-				"limit": map[string]any{
-					"context": tools.CodingModel.Limits.ContextWindow,
-					"output":  tools.CodingModel.Limits.MaxOutputTokens,
-				},
-			},
-			tools.ImageModel.Slug: map[string]any{
-				"name":      tools.ImageModel.Slug,
-				"tool_call": tools.ImageModel.ToolCall,
-				"reasoning": tools.ImageModel.Reasoning,
-				"limit": map[string]any{
-					"context": tools.ImageModel.Limits.ContextWindow,
-					"output":  tools.ImageModel.Limits.MaxOutputTokens,
-				},
-			},
-		},
-	}
 }

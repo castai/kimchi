@@ -25,11 +25,11 @@ func TestEnv_TelemetryEnabled(t *testing.T) {
 	env := Env("test-key", true)
 
 	assert.Equal(t, "1", env["CLAUDE_CODE_ENABLE_TELEMETRY"])
-	assert.Equal(t, logsExporter, env["OTEL_LOGS_EXPORTER"])
-	assert.Equal(t, logsProtocol, env["OTEL_EXPORTER_OTLP_LOGS_PROTOCOL"])
-	assert.Equal(t, logsEndpoint, env["OTEL_EXPORTER_OTLP_LOGS_ENDPOINT"])
-	assert.Equal(t, fmt.Sprintf(logsAuthorizationHeaderFmt, "test-key"), env["OTEL_EXPORTER_OTLP_LOGS_HEADERS"])
-	assert.Equal(t, logsExportInterval, env["OTEL_LOGS_EXPORT_INTERVAL"])
+	assert.Equal(t, tools.LogsExporter, env["OTEL_LOGS_EXPORTER"])
+	assert.Equal(t, tools.LogsProtocol, env["OTEL_EXPORTER_OTLP_LOGS_PROTOCOL"])
+	assert.Equal(t, tools.LogsEndpoint, env["OTEL_EXPORTER_OTLP_LOGS_ENDPOINT"])
+	assert.Equal(t, fmt.Sprintf(tools.LogsAuthorizationHeaderFmt, "test-key"), env["OTEL_EXPORTER_OTLP_LOGS_HEADERS"])
+	assert.Equal(t, tools.LogsExportInterval, env["OTEL_LOGS_EXPORT_INTERVAL"])
 }
 
 func TestEnv_TelemetryDisabled(t *testing.T) {

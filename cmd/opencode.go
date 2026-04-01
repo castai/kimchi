@@ -25,12 +25,9 @@ func NewOpenCodeCommand() *cobra.Command {
 				return fmt.Errorf("load config: %w", err)
 			}
 
-			apiKey := cfg.APIKey
-			if envKey := os.Getenv("KIMCHI_API_KEY"); envKey != "" {
-				apiKey = envKey
-			}
-			if apiKey == "" {
-				return fmt.Errorf("no API key configured — run 'kimchi' to set up, or set KIMCHI_API_KEY")
+			apiKey, err := config.ResolveAPIKey(cfg)
+			if err != nil {
+				return err
 			}
 
 			printBanner(os.Stderr, "opencode", cfg)
