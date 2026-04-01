@@ -4,6 +4,8 @@ import (
 	"testing"
 
 	"github.com/google/uuid"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestGetOrCreateDeviceID_GeneratesAndPersists(t *testing.T) {
@@ -50,6 +52,14 @@ func TestGetOrCreateDeviceID_RegeneratesAfterClear(t *testing.T) {
 	if id1 == id2 {
 		t.Error("expected new ID after clear, got same")
 	}
+}
+
+func TestIsTelemetryEnabled_InvalidEnvVar_ReturnsError(t *testing.T) {
+	t.Setenv("KIMCHI_TELEMETRY", "banana")
+
+	enabled, err := IsTelemetryEnabled()
+	require.Error(t, err, "expected error for invalid KIMCHI_TELEMETRY value")
+	assert.False(t, enabled, "expected fail-closed (false) on invalid value")
 }
 
 func TestSetTelemetryEnabled_ClearsDeviceIDOnDisable(t *testing.T) {
