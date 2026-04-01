@@ -55,7 +55,7 @@ func TestGetOrCreateDeviceID_RegeneratesAfterClear(t *testing.T) {
 }
 
 func TestIsTelemetryEnabled_InvalidEnvVar_ReturnsError(t *testing.T) {
-	t.Setenv("KIMCHI_TELEMETRY", "banana")
+	t.Setenv(EnvTelemetry, "banana")
 
 	enabled, err := IsTelemetryEnabled()
 	require.Error(t, err, "expected error for invalid KIMCHI_TELEMETRY value")
@@ -85,7 +85,7 @@ func TestSetTelemetryEnabled_ClearsDeviceIDOnDisable(t *testing.T) {
 
 func TestShouldShowTelemetryNotice_FirstRun(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
-	t.Setenv("KIMCHI_TELEMETRY", "")
+	t.Setenv(EnvTelemetry, "")
 
 	show, err := ShouldShowTelemetryNotice()
 	require.NoError(t, err)
@@ -114,7 +114,7 @@ func TestShouldShowTelemetryNotice_ExplicitlyDisabled(t *testing.T) {
 
 func TestShouldShowTelemetryNotice_EnvVarSet(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
-	t.Setenv("KIMCHI_TELEMETRY", "on")
+	t.Setenv(EnvTelemetry, "on")
 
 	show, err := ShouldShowTelemetryNotice()
 	require.NoError(t, err)
