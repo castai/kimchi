@@ -7,7 +7,6 @@ import (
 
 	"github.com/castai/kimchi/internal/config"
 	"github.com/castai/kimchi/internal/version"
-	"github.com/denisbrodbeck/machineid"
 	"github.com/posthog/posthog-go"
 	"k8s.io/klog/v2"
 )
@@ -67,9 +66,9 @@ type posthogClient struct {
 }
 
 func newPosthogClient(cliVersion string) (*posthogClient, error) {
-	deviceID, err := machineid.ID()
+	deviceID, err := config.GetOrCreateDeviceID()
 	if err != nil {
-		klog.V(1).ErrorS(err, "failed to get machine ID, using empty device ID", "error")
+		klog.V(1).ErrorS(err, "failed to get device ID, using empty device ID")
 		deviceID = ""
 	}
 

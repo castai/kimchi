@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+
+	"github.com/google/uuid"
 )
 
 const (
@@ -106,8 +108,30 @@ func SetTelemetryEnabled(enabled bool) error {
 	}
 
 	cfg.TelemetryEnabled = &enabled
+	if !enabled {
+		cfg.DeviceID = ""
+	}
 
 	return Save(cfg)
+}
+
+// GetOrCreateDeviceID returns the device ID from config, generating a new UUID if empty.
+func GetOrCreateDeviceID() (string, error) {
+	cfg, err := Load()
+	if err != nil {
+		return "", fmt.Errorf("load config: %w", err)
+	}
+
+	if cfg.DeviceID != "" {
+		return cfg.DeviceID, nil
+	}
+
+	cfg.DeviceID = uuid.NewString()
+	if err := Save(cfg); err != nil {
+		return "", fmt.Errorf("save config: %w", err)
+	}
+
+	return cfg.DeviceID, nil
 }
 
 // ParseSwitch parses a string value as a boolean switch.
