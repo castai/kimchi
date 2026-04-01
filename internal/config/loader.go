@@ -152,6 +152,43 @@ func ParseSwitch(s string) (bool, error) {
 	}
 }
 
+// ShouldShowTelemetryNotice returns true if the one-time telemetry disclosure
+// notice has not yet been shown and telemetry is currently enabled.
+// Returns false when KIMCHI_TELEMETRY env var is set (CI/automated contexts)
+// or when telemetry has been explicitly disabled.
+func ShouldShowTelemetryNotice() (bool, error) {
+	// If the env var is set, the user is in an automated/CI context — skip notice.
+	if os.Getenv(envTelemetry) != "" {
+		return false, nil
+	}
+
+	cfg, err := Load()
+	if err != nil {
+		return false, err
+	}
+
+	if cfg.TelemetryNoticeShown {
+		return false, nil
+	}
+
+	// If telemetry has been explicitly disabled, no notice needed.
+	if cfg.TelemetryEnabled != nil && !*cfg.TelemetryEnabled {
+		return false, nil
+	}
+
+	return true, nil
+}
+
+// MarkTelemetryNoticeShown persists that the telemetry disclosure notice has been shown.
+func MarkTelemetryNoticeShown() error {
+	cfg, err := Load()
+	if err != nil {
+		return fmt.Errorf("load config: %w", err)
+	}
+	cfg.TelemetryNoticeShown = true
+	return Save(cfg)
+}
+
 func Save(cfg *Config) error {
 	path := ConfigPath()
 	if path == "" {

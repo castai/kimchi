@@ -83,6 +83,44 @@ func TestSetTelemetryEnabled_ClearsDeviceIDOnDisable(t *testing.T) {
 	}
 }
 
+func TestShouldShowTelemetryNotice_FirstRun(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("KIMCHI_TELEMETRY", "")
+
+	show, err := ShouldShowTelemetryNotice()
+	require.NoError(t, err)
+	assert.True(t, show, "expected notice on first run with no config")
+}
+
+func TestShouldShowTelemetryNotice_AlreadyShown(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+
+	require.NoError(t, MarkTelemetryNoticeShown())
+
+	show, err := ShouldShowTelemetryNotice()
+	require.NoError(t, err)
+	assert.False(t, show, "expected no notice after already shown")
+}
+
+func TestShouldShowTelemetryNotice_ExplicitlyDisabled(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+
+	require.NoError(t, SetTelemetryEnabled(false))
+
+	show, err := ShouldShowTelemetryNotice()
+	require.NoError(t, err)
+	assert.False(t, show, "expected no notice when telemetry explicitly disabled")
+}
+
+func TestShouldShowTelemetryNotice_EnvVarSet(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("KIMCHI_TELEMETRY", "on")
+
+	show, err := ShouldShowTelemetryNotice()
+	require.NoError(t, err)
+	assert.False(t, show, "expected no notice when KIMCHI_TELEMETRY env var is set")
+}
+
 func TestSetTelemetryEnabled_PreservesDeviceIDOnEnable(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 

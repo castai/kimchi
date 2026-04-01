@@ -3,10 +3,12 @@ package cmd
 import (
 	"context"
 	"flag"
+	"fmt"
 
 	"github.com/spf13/cobra"
 	"k8s.io/klog/v2"
 
+	"github.com/castai/kimchi/internal/config"
 	"github.com/castai/kimchi/internal/telemetry"
 	"github.com/castai/kimchi/internal/tui"
 	"github.com/castai/kimchi/internal/version"
@@ -49,6 +51,13 @@ Get your API key at: https://kimchi.console.cast.ai`,
 			telClient = telemetry.New(telemetry.PostHogAPIKey)
 			cmd.SetContext(telemetry.WithCtx(cmd.Context(), telClient))
 			telClient.Track(telemetry.NewEvent("app_started", nil))
+
+			if show, err := config.ShouldShowTelemetryNotice(); err == nil && show {
+				fmt.Fprintln(cmd.ErrOrStderr(),
+					"INFO: Kimchi collects anonymous usage data to improve the product. "+
+						"Run 'kimchi config telemetry off' to disable.")
+				_ = config.MarkTelemetryNoticeShown()
+			}
 		},
 		RunE: runConfigure,
 	}
