@@ -52,9 +52,9 @@ func writeContinue(scope config.ConfigScope) error {
 	}
 
 	models, _ := existing["models"].([]any)
-	hasReasoningModel := false
+	hasMainModel := false
 	hasCodingModel := false
-	hasImageModel := false
+	hasSubModel := false
 
 	for _, m := range models {
 		modelMap, ok := m.(map[string]any)
@@ -62,55 +62,55 @@ func writeContinue(scope config.ConfigScope) error {
 			continue
 		}
 		title, _ := modelMap["title"].(string)
-		if title == ReasoningModel.DisplayName {
-			hasReasoningModel = true
+		if title == MainModel.displayName {
+			hasMainModel = true
 		}
-		if title == CodingModel.DisplayName {
+		if title == CodingModel.displayName {
 			hasCodingModel = true
 		}
-		if title == ImageModel.DisplayName {
-			hasImageModel = true
+		if title == SubModel.displayName {
+			hasSubModel = true
 		}
 	}
 
-	if !hasReasoningModel {
+	if !hasMainModel {
 		models = append(models, map[string]any{
-			"title":         ReasoningModel.DisplayName,
+			"title":         MainModel.displayName,
 			"provider":      "openai",
-			"model":         ReasoningModel.Slug,
-			"apiBase":       BaseURL,
+			"model":         MainModel.Slug,
+			"apiBase":       baseURL,
 			"apiKey":        apiKey,
-			"contextLength": ReasoningModel.Limits.ContextWindow,
+			"contextLength": MainModel.limits.contextWindow,
 			"completionOptions": map[string]any{
-				"maxTokens": ReasoningModel.Limits.MaxOutputTokens,
+				"maxTokens": MainModel.limits.maxOutputTokens,
 			},
 		})
 	}
 
 	if !hasCodingModel {
 		models = append(models, map[string]any{
-			"title":         CodingModel.DisplayName,
+			"title":         CodingModel.displayName,
 			"provider":      "openai",
 			"model":         CodingModel.Slug,
-			"apiBase":       BaseURL,
+			"apiBase":       baseURL,
 			"apiKey":        apiKey,
-			"contextLength": CodingModel.Limits.ContextWindow,
+			"contextLength": CodingModel.limits.contextWindow,
 			"completionOptions": map[string]any{
-				"maxTokens": CodingModel.Limits.MaxOutputTokens,
+				"maxTokens": CodingModel.limits.maxOutputTokens,
 			},
 		})
 	}
 
-	if !hasImageModel {
+	if !hasSubModel {
 		models = append(models, map[string]any{
-			"title":         ImageModel.DisplayName,
+			"title":         SubModel.displayName,
 			"provider":      "openai",
-			"model":         ImageModel.Slug,
-			"apiBase":       BaseURL,
+			"model":         SubModel.Slug,
+			"apiBase":       baseURL,
 			"apiKey":        apiKey,
-			"contextLength": ImageModel.Limits.ContextWindow,
+			"contextLength": SubModel.limits.contextWindow,
 			"completionOptions": map[string]any{
-				"maxTokens": ImageModel.Limits.MaxOutputTokens,
+				"maxTokens": SubModel.limits.maxOutputTokens,
 			},
 		})
 	}
@@ -119,10 +119,10 @@ func writeContinue(scope config.ConfigScope) error {
 
 	if existing["tabAutocompleteModel"] == nil {
 		existing["tabAutocompleteModel"] = map[string]any{
-			"title":    CodingModel.DisplayName,
+			"title":    MainModel.displayName,
 			"provider": "openai",
-			"model":    CodingModel.Slug,
-			"apiBase":  BaseURL,
+			"model":    MainModel.Slug,
+			"apiBase":  baseURL,
 			"apiKey":   apiKey,
 		}
 	}
@@ -131,7 +131,7 @@ func writeContinue(scope config.ConfigScope) error {
 		existing["embeddingsProvider"] = map[string]any{
 			"provider": "openai",
 			"model":    "text-embedding-3-small",
-			"apiBase":  BaseURL,
+			"apiBase":  baseURL,
 			"apiKey":   apiKey,
 		}
 	}

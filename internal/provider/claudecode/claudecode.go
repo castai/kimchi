@@ -89,7 +89,7 @@ func Env(apiKey string, telemetryOptIn bool) map[string]string {
 }
 
 // WriteConfig writes the Claude Code settings file for the given scope.
-// Delegates to tools.WriteClaudeCodeConfig.
+// Delegates to tools.WriteClaudeCode.
 func WriteConfig(scope config.ConfigScope, telemetryOptIn bool) error {
-	return tools.WriteClaudeCodeConfig(scope, telemetryOptIn)
+	return tools.WriteClaudeCode(scope, telemetryOptIn)
 }

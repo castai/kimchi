@@ -24,7 +24,7 @@ func TestWriteCodex(t *testing.T) {
 		require.NoError(t, err)
 
 		assert.Equal(t, CodingModel.Slug, cfg["model"])
-		assert.Equal(t, ProviderName, cfg["model_provider"])
+		assert.Equal(t, providerName, cfg["model_provider"])
 
 		providers := cfg["model_providers"].(map[string]any)
 		_, ok := providers["kimchi"]
@@ -109,17 +109,19 @@ wire_api = "responses"
 		for _, m := range catalog.Models {
 			bySlug[m.Slug] = m
 		}
-		assert.Equal(t, CodingModel.Limits.ContextWindow, bySlug[CodingModel.Slug].ContextWindow)
-		assert.Equal(t, ReasoningModel.Limits.ContextWindow, bySlug[ReasoningModel.Slug].ContextWindow)
-		assert.Equal(t, ImageModel.Limits.ContextWindow, bySlug[ImageModel.Slug].ContextWindow)
+		assert.Equal(t, MainModel.limits.contextWindow, bySlug[MainModel.Slug].ContextWindow)
+		assert.Equal(t, CodingModel.limits.contextWindow, bySlug[CodingModel.Slug].ContextWindow)
+		assert.Equal(t, SubModel.limits.contextWindow, bySlug[SubModel.Slug].ContextWindow)
 
-		// Reasoning model should have low/medium/high levels
-		assert.Equal(t, "medium", bySlug[ReasoningModel.Slug].DefaultReasoningLevel)
-		assert.Equal(t, 3, len(bySlug[ReasoningModel.Slug].SupportedReasoningLevels))
+		// MainModel (kimi-k2.5) and CodingModel (glm-5-fp8) have reasoning=true
+		assert.Equal(t, "medium", bySlug[MainModel.Slug].DefaultReasoningLevel)
+		assert.Equal(t, 3, len(bySlug[MainModel.Slug].SupportedReasoningLevels))
+		assert.Equal(t, "medium", bySlug[CodingModel.Slug].DefaultReasoningLevel)
+		assert.Equal(t, 3, len(bySlug[CodingModel.Slug].SupportedReasoningLevels))
 
-		// Non-reasoning models should have "none"
-		assert.Equal(t, "none", bySlug[CodingModel.Slug].DefaultReasoningLevel)
-		assert.Equal(t, 1, len(bySlug[CodingModel.Slug].SupportedReasoningLevels))
+		// SubModel (minimax-m2.5) has no reasoning
+		assert.Equal(t, "none", bySlug[SubModel.Slug].DefaultReasoningLevel)
+		assert.Equal(t, 1, len(bySlug[SubModel.Slug].SupportedReasoningLevels))
 
 		// Verify config.toml references the catalog
 		cfg, err := config.ReadTOML(filepath.Join(tmpDir, ".codex", "config.toml"))

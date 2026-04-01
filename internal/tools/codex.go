@@ -11,17 +11,14 @@ import (
 const codexConfigPath = "~/.codex/config.toml"
 const codexAgentsPath = "~/.codex/AGENTS.md"
 const codexCatalogPath = "~/.codex/kimchi-models.json"
+const envKeyInstructions = "Set the " + APIKeyEnv + " environment variable with your Cast AI API key. You can add it to your shell profile (~/.zshrc, ~/.bashrc) or a .env file."
 
-// CodexEnvKeyInstructions is the human-readable instruction for setting the API key.
-const CodexEnvKeyInstructions = "Set the " + APIKeyEnv + " environment variable with your Cast AI API key. You can add it to your shell profile (~/.zshrc, ~/.bashrc) or a .env file."
-
-// CodexAgentMD returns the default AGENTS.md content for Codex.
-func CodexAgentMD() string {
+func codexAgentMD() string {
 	return `# Cast AI Configuration
 
 This project uses Cast AI's open-source models:
-- ` + ReasoningModel.Slug + ` for reasoning/planning
-- ` + CodingModel.Slug + ` for coding/execution
+- ` + MainModel.Slug + ` for reasoning, planning, and image processing (primary model)
+- ` + CodingModel.Slug + ` for coding/execution (subagent)
 
 Set the ` + APIKeyEnv + ` environment variable with your Cast AI API key.
 `
@@ -77,13 +74,18 @@ type codexCatalog struct {
 }
 
 // WriteCodexModelCatalog writes the model catalog JSON to the given path.
+// Exported for use by the codex inject-mode provider.
 func WriteCodexModelCatalog(path string) error {
+	return writeModelCatalog(path)
+}
+
+func writeModelCatalog(path string) error {
 	var models []codexModelEntry
 	for _, m := range allModels {
 		entry := codexModelEntry{
 			Slug:             m.Slug,
-			DisplayName:      m.DisplayName,
-			Description:      m.Description,
+			DisplayName:      m.displayName,
+			Description:      m.description,
 			ShellType:        "shell_command",
 			Visibility:       "list",
 			SupportedInAPI:   true,
@@ -93,13 +95,13 @@ func WriteCodexModelCatalog(path string) error {
 			// because tool outputs in coding use cases (file reads, docs) can be large.
 			// See: https://github.com/openai/codex/issues/6426
 			TruncationPolicy:           codexTruncationPolicy{Mode: "tokens", Limit: 25_000},
-			SupportsParallelToolCalls:  m.ToolCall,
+			SupportsParallelToolCalls:  m.toolCall,
 			ExperimentalSupportedTools: []string{},
-			ContextWindow:              m.Limits.ContextWindow,
-			InputModalities:            m.InputModalities,
+			ContextWindow:              m.limits.contextWindow,
+			InputModalities:            m.inputModalities,
 			ApplyPatchToolType:         "function",
 		}
-		if m.Reasoning {
+		if m.reasoning {
 			entry.DefaultReasoningLevel = "medium"
 			entry.SupportedReasoningLevels = []codexReasoningLevel{
 				{Effort: "low", Description: "Fast responses with lighter reasoning"},
@@ -127,18 +129,15 @@ func writeCodex(scope config.ConfigScope) error {
 		return fmt.Errorf("get config path: %w", err)
 	}
 
-	// Read existing config or start fresh
 	cfg, err := config.ReadTOML(configPath)
 	if err != nil {
 		return fmt.Errorf("read config: %w", err)
 	}
 
-	// Always set kimchi as the default model
 	cfg["model"] = CodingModel.Slug
-	cfg["model_provider"] = ProviderName
+	cfg["model_provider"] = providerName
 	cfg["suppress_unstable_features_warning"] = true
 
-	// Add model provider
 	providers, ok := cfg["model_providers"].(map[string]any)
 	if !ok {
 		if cfg["model_providers"] != nil {
@@ -151,18 +150,17 @@ func writeCodex(scope config.ConfigScope) error {
 
 	providers["kimchi"] = map[string]any{
 		"name":                 "Kimchi by Cast AI",
-		"base_url":             BaseURL,
+		"base_url":             baseURL,
 		"env_key":              APIKeyEnv,
-		"env_key_instructions": CodexEnvKeyInstructions,
+		"env_key_instructions": envKeyInstructions,
 		"wire_api":             "responses",
 	}
 
-	// Write model catalog and reference it in config
 	catalogPath, err := config.ScopePaths(scope, codexCatalogPath)
 	if err != nil {
 		return fmt.Errorf("get catalog path: %w", err)
 	}
-	if err := WriteCodexModelCatalog(catalogPath); err != nil {
+	if err := writeModelCatalog(catalogPath); err != nil {
 		return fmt.Errorf("write model catalog: %w", err)
 	}
 	cfg["model_catalog_json"] = catalogPath
@@ -171,7 +169,6 @@ func writeCodex(scope config.ConfigScope) error {
 		return fmt.Errorf("write config: %w", err)
 	}
 
-	// Write AGENTS.md only if it doesn't exist
 	instructionsPath, err := config.ScopePaths(scope, codexAgentsPath)
 	if err != nil {
 		return fmt.Errorf("get AGENTS.md path: %w", err)
@@ -181,10 +178,22 @@ func writeCodex(scope config.ConfigScope) error {
 		if !os.IsNotExist(err) {
 			return fmt.Errorf("stat AGENTS.md: %w", err)
 		}
-		if err := config.WriteFile(instructionsPath, []byte(CodexAgentMD())); err != nil {
+		if err := config.WriteFile(instructionsPath, []byte(codexAgentMD())); err != nil {
 			return fmt.Errorf("write AGENTS.md: %w", err)
 		}
 	}
 
 	return nil
 }
+
+// ProviderName returns the kimchi provider name used in tool configs.
+func ProviderName() string { return providerName }
+
+// BaseURL returns the Cast AI inference endpoint URL.
+func BaseURL() string { return baseURL }
+
+// EnvKeyInstructions returns the human-readable instruction for setting the API key.
+func EnvKeyInstructions() string { return envKeyInstructions }
+
+// CodexAgentMD returns the default AGENTS.md content for Codex.
+func CodexAgentMD() string { return codexAgentMD() }

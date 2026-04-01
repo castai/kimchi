@@ -1,7 +1,6 @@
 package config
 
 import (
-	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -24,24 +23,12 @@ func TestScopePaths(t *testing.T) {
 			},
 		},
 		{
-			name:  "project creates dotfile",
+			name:  "project creates .claude directory",
 			scope: ScopeProject,
-			input: "~/.config/opencode/opencode.json",
+			input: "~/.config/claude/settings.json",
 			check: func(t *testing.T, result string) {
-				filename := filepath.Base(result)
-				if !strings.HasPrefix(filename, ".") {
-					t.Errorf("expected dotfile, got %s", filename)
-				}
-			},
-		},
-		{
-			name:  "project doesn't double dot prefix",
-			scope: ScopeProject,
-			input: "~/.opencode.json",
-			check: func(t *testing.T, result string) {
-				filename := filepath.Base(result)
-				if strings.Count(filename, ".") > 1 && strings.HasPrefix(filename, "..") {
-					t.Errorf("expected single dot prefix, got %s", filename)
+				if !strings.HasSuffix(result, ".claude/settings.json") {
+					t.Errorf("expected .claude/settings.json, got %s", result)
 				}
 			},
 		},

@@ -36,7 +36,7 @@ func TestEnv_WritesKimchiProvider(t *testing.T) {
 	require.NoError(t, err)
 
 	assert.Equal(t, tools.CodingModel.Slug, cfg["model"])
-	assert.Equal(t, tools.ProviderName, cfg["model_provider"])
+	assert.Equal(t, tools.ProviderName(), cfg["model_provider"])
 
 	providers, ok := cfg["model_providers"].(map[string]any)
 	require.True(t, ok)

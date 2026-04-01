@@ -44,8 +44,10 @@ func writeOpenCode(scope config.ConfigScope) error {
 	if providers == nil {
 		providers = make(map[string]any)
 	}
-	providers[ProviderName] = OpenCodeProviderConfig(apiKey)
+	providers[providerName] = OpenCodeProviderConfig(apiKey)
 	existing["provider"] = providers
+
+	existing["model"] = providerName + "/" + MainModel.Slug
 
 	if _, ok := existing["compaction"]; !ok {
 		existing["compaction"] = map[string]any{
@@ -66,36 +68,36 @@ func OpenCodeProviderConfig(apiKey string) map[string]any {
 		"npm":  "@ai-sdk/openai-compatible",
 		"name": "Kimchi by Cast AI",
 		"options": map[string]any{
-			"baseURL":      BaseURL,
+			"baseURL":      baseURL,
 			"litellmProxy": true,
 			"apiKey":       apiKey,
 		},
 		"models": map[string]any{
-			ReasoningModel.Slug: map[string]any{
-				"name":      ReasoningModel.Slug,
-				"tool_call": ReasoningModel.ToolCall,
-				"reasoning": ReasoningModel.Reasoning,
+			MainModel.Slug: map[string]any{
+				"name":      MainModel.Slug,
+				"tool_call": MainModel.toolCall,
+				"reasoning": MainModel.reasoning,
 				"limit": map[string]any{
-					"context": ReasoningModel.Limits.ContextWindow,
-					"output":  ReasoningModel.Limits.MaxOutputTokens,
+					"context": MainModel.limits.contextWindow,
+					"output":  MainModel.limits.maxOutputTokens,
 				},
 			},
 			CodingModel.Slug: map[string]any{
 				"name":      CodingModel.Slug,
-				"tool_call": CodingModel.ToolCall,
-				"reasoning": CodingModel.Reasoning,
+				"tool_call": CodingModel.toolCall,
+				"reasoning": CodingModel.reasoning,
 				"limit": map[string]any{
-					"context": CodingModel.Limits.ContextWindow,
-					"output":  CodingModel.Limits.MaxOutputTokens,
+					"context": CodingModel.limits.contextWindow,
+					"output":  CodingModel.limits.maxOutputTokens,
 				},
 			},
-			ImageModel.Slug: map[string]any{
-				"name":      ImageModel.Slug,
-				"tool_call": ImageModel.ToolCall,
-				"reasoning": ImageModel.Reasoning,
+			SubModel.Slug: map[string]any{
+				"name":      SubModel.Slug,
+				"tool_call": SubModel.toolCall,
+				"reasoning": SubModel.reasoning,
 				"limit": map[string]any{
-					"context": ImageModel.Limits.ContextWindow,
-					"output":  ImageModel.Limits.MaxOutputTokens,
+					"context": SubModel.limits.contextWindow,
+					"output":  SubModel.limits.maxOutputTokens,
 				},
 			},
 		},

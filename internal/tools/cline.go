@@ -37,13 +37,13 @@ func writeCline(scope config.ConfigScope) error {
 		return fmt.Errorf("read existing config: %w", err)
 	}
 
-	existing["ollamaBaseUrl"] = BaseURL
+	existing["ollamaBaseUrl"] = baseURL
 	existing["actModeApiProvider"] = "ollama"
 	existing["actModeOllamaModelId"] = CodingModel.Slug
-	existing["actModeOllamaBaseUrl"] = BaseURL
+	existing["actModeOllamaBaseUrl"] = baseURL
 	existing["planModeApiProvider"] = "ollama"
-	existing["planModeOllamaModelId"] = ReasoningModel.Slug
-	existing["planModeOllamaBaseUrl"] = BaseURL
+	existing["planModeOllamaModelId"] = MainModel.Slug
+	existing["planModeOllamaBaseUrl"] = baseURL
 	existing["welcomeViewCompleted"] = true
 
 	if err := config.WriteJSON(path, existing); err != nil {

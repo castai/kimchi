@@ -7,70 +7,97 @@ import (
 	"time"
 
 	"github.com/castai/kimchi/internal/config"
-	"github.com/castai/kimchi/internal/provider/claudecode"
 	"github.com/castai/kimchi/internal/tools"
 	tea "github.com/charmbracelet/bubbletea"
 )
 
 type ConfigureParams struct {
 	ToolIDs        []tools.ToolID
-	Mode           config.ConfigMode
 	Scope          config.ConfigScope
 	TelemetryOptIn bool
 	APIKey         string
 }
 
-type ConfigureStep struct {
-	toolIDs        []tools.ToolID
-	mode           config.ConfigMode
-	scope          config.ConfigScope
-	telemetryOptIn bool
-	apiKey         string
-	saveErr        error
-	warning        string
-	done           bool
-	startOnce      sync.Once
-}
-
-type saveCompleteMsg struct {
+type toolStatus struct {
+	tool    tools.Tool
+	status  string
 	err     error
-	warning string
+	writing bool
 }
 
-type startSaveMsg struct{}
+type ConfigureStep struct {
+	toolIDs          []tools.ToolID
+	scope            config.ConfigScope
+	telemetryOptIn   bool
+	apiKey           string
+	shellProfilePath string
+	shellProfileErr  error
+	statuses         []toolStatus
+	done             bool
+	startOnce        sync.Once
+}
+
+type writeCompleteMsg struct {
+	index  int
+	status string
+	err    error
+}
+
+type startWriteMsg struct{}
 
 func NewConfigureStep(params ConfigureParams) *ConfigureStep {
 	return &ConfigureStep{
 		toolIDs:        params.ToolIDs,
-		mode:           params.Mode,
 		scope:          params.Scope,
 		telemetryOptIn: params.TelemetryOptIn,
 		apiKey:         params.APIKey,
+		statuses:       make([]toolStatus, len(params.ToolIDs)),
 	}
 }
 
 func (s *ConfigureStep) Init() tea.Cmd {
 	return tea.Tick(50*time.Millisecond, func(t time.Time) tea.Msg {
-		return startSaveMsg{}
+		return startWriteMsg{}
 	})
 }
 
 func (s *ConfigureStep) Update(msg tea.Msg) (Step, tea.Cmd) {
 	switch m := msg.(type) {
-	case startSaveMsg:
-		var cmd tea.Cmd
+	case startWriteMsg:
 		s.startOnce.Do(func() {
-			cmd = s.savePreferences()
+			for i, toolID := range s.toolIDs {
+				tool, ok := tools.ByID(toolID)
+				if !ok {
+					s.statuses[i] = toolStatus{tool: tool, status: "unknown tool", err: fmt.Errorf("unknown tool: %s", toolID)}
+					continue
+				}
+				s.statuses[i] = toolStatus{tool: tool, writing: true}
+			}
 		})
-		if cmd != nil {
-			return s, cmd
+		var cmds []tea.Cmd
+		for i, status := range s.statuses {
+			if status.writing && status.err == nil && status.status == "" {
+				cmds = append(cmds, s.writeToolConfig(i))
+			}
+		}
+		if len(cmds) > 0 {
+			return s, tea.Batch(cmds...)
+		}
+		if s.allComplete() {
+			s.done = true
 		}
 		return s, nil
 
-	case saveCompleteMsg:
-		s.saveErr = m.err
-		s.warning = m.warning
-		s.done = true
+	case writeCompleteMsg:
+		s.statuses[m.index] = toolStatus{
+			tool:   s.statuses[m.index].tool,
+			status: m.status,
+			err:    m.err,
+		}
+		if s.allComplete() {
+			s.exportAPIKeyToShellProfile()
+			s.done = true
+		}
 		return s, nil
 
 	case tea.KeyMsg:
@@ -85,124 +112,158 @@ func (s *ConfigureStep) Update(msg tea.Msg) (Step, tea.Cmd) {
 	return s, nil
 }
 
-func (s *ConfigureStep) savePreferences() tea.Cmd {
+func (s *ConfigureStep) writeToolConfig(index int) tea.Cmd {
 	return func() tea.Msg {
-		toolStrings := make([]string, len(s.toolIDs))
-		for i, id := range s.toolIDs {
-			toolStrings[i] = string(id)
+		tool := s.statuses[index].tool
+		if tool.Write == nil {
+			return writeCompleteMsg{index: index, status: "skipped", err: fmt.Errorf("no writer for tool")}
 		}
 
-		if err := config.SavePreferences(s.apiKey, s.mode, toolStrings, string(s.scope), s.telemetryOptIn); err != nil {
-			return saveCompleteMsg{err: err}
+		var err error
+		if tool.ID == tools.ToolClaudeCode {
+			err = tools.WriteClaudeCode(s.scope, s.telemetryOptIn)
+		} else {
+			err = tool.Write(s.scope)
 		}
-
-		// In override mode, write directly to tool config files.
-		if s.mode == config.ModeOverride {
-			for _, toolID := range s.toolIDs {
-				// Claude Code needs special handling for telemetry opt-in.
-				if toolID == tools.ToolClaudeCode {
-					if err := claudecode.WriteConfig(s.scope, s.telemetryOptIn); err != nil {
-						return saveCompleteMsg{err: fmt.Errorf("configure Claude Code: %w", err)}
-					}
-					continue
-				}
-
-				tool, ok := tools.ByID(toolID)
-				if !ok || tool.Write == nil {
-					continue
-				}
-				if err := tool.Write(s.scope); err != nil {
-					return saveCompleteMsg{err: fmt.Errorf("configure %s: %w", tool.Name, err)}
-				}
-			}
-
-			var warning string
-			if s.apiKey != "" {
-				if _, err := config.ExportEnvToShellProfile(tools.APIKeyEnv, s.apiKey); err != nil {
-					warning = fmt.Sprintf("Could not export %s to shell profile: %v", tools.APIKeyEnv, err)
-				}
-			}
-			return saveCompleteMsg{warning: warning}
+		if err != nil {
+			return writeCompleteMsg{index: index, status: "failed", err: err}
 		}
-
-		// In inject mode, IDE tools (non-wrappable) still need config written
-		// directly because they cannot be launched via a kimchi wrapper.
-		if s.mode == config.ModeInject {
-			for _, toolID := range s.toolIDs {
-				if toolID.IsWrappable() {
-					continue
-				}
-				tool, ok := tools.ByID(toolID)
-				if !ok || tool.Write == nil {
-					continue
-				}
-				if err := tool.Write(s.scope); err != nil {
-					return saveCompleteMsg{err: fmt.Errorf("configure %s: %w", tool.Name, err)}
-				}
-			}
-		}
-
-		return saveCompleteMsg{}
+		return writeCompleteMsg{index: index, status: "done"}
 	}
+}
+
+func (s *ConfigureStep) exportAPIKeyToShellProfile() {
+	if s.apiKey == "" {
+		return
+	}
+	path, err := config.ExportEnvToShellProfile(tools.APIKeyEnv, s.apiKey)
+	s.shellProfilePath = path
+	s.shellProfileErr = err
+}
+
+func (s *ConfigureStep) ShellProfilePath() string {
+	return s.shellProfilePath
+}
+
+func (s *ConfigureStep) allComplete() bool {
+	for _, status := range s.statuses {
+		if status.writing && status.status == "" && status.err == nil {
+			return false
+		}
+	}
+	return true
+}
+
+func (s *ConfigureStep) hasErrors() bool {
+	for _, status := range s.statuses {
+		if status.err != nil {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *ConfigureStep) View() string {
 	var b strings.Builder
 
-	if !s.done {
-		b.WriteString(fmt.Sprintf("  %s Saving preferences...\n", "⠋"))
-		return b.String()
-	}
+	spinChars := []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"}
+	spinIdx := 0
 
-	if s.saveErr != nil {
-		b.WriteString(Styles.Error.Render(fmt.Sprintf("✗ Failed to save preferences: %v", s.saveErr)))
-		b.WriteString("\n\n")
-		b.WriteString(Styles.Help.Render("Press enter to continue"))
-		return b.String()
-	}
+	for _, status := range s.statuses {
+		var icon string
+		var msg string
 
-	b.WriteString(Styles.Success.Render("✓ Configuration complete"))
-	b.WriteString("\n\n")
-
-	if s.mode == config.ModeInject {
-		b.WriteString(Styles.Desc.Render("Wrote:"))
-		b.WriteString(fmt.Sprintf("  %s\n\n", config.ConfigPath()))
-		for _, toolID := range s.toolIDs {
-			tool, ok := tools.ByID(toolID)
-			if !ok {
-				continue
-			}
-			if toolID.IsWrappable() {
-				b.WriteString(fmt.Sprintf("  %s kimchi %s\n", Styles.Success.Render("→"), tool.BinaryName))
-			} else {
-				b.WriteString(fmt.Sprintf("  %s %s %s\n", Styles.Success.Render("→"), tool.Name, Styles.Desc.Render("(config written directly)")))
-			}
+		if status.err != nil {
+			icon = Styles.Error.Render("✗")
+			msg = Styles.Error.Render(fmt.Sprintf(" %s", status.err))
+		} else if status.status == "done" {
+			icon = Styles.Success.Render("✓")
+			msg = Styles.Success.Render(" configured")
+		} else if status.writing {
+			spin := spinChars[spinIdx%len(spinChars)]
+			spinIdx++
+			icon = Styles.Spinner.Render(spin)
+			msg = Styles.Spinner.Render(" writing...")
+		} else {
+			icon = "○"
+			msg = " waiting"
 		}
-	} else {
-		b.WriteString(Styles.Desc.Render("Wrote:"))
-		b.WriteString(fmt.Sprintf("  %s\n", config.ConfigPath()))
-		for _, toolID := range s.toolIDs {
-			if tool, ok := tools.ByID(toolID); ok {
-				b.WriteString(fmt.Sprintf("  %s\n", tool.ConfigPath))
-			}
-		}
-		b.WriteString("\n")
-		b.WriteString("Run your tools directly — they are already configured.\n")
-	}
 
-	if s.warning != "" {
-		b.WriteString(Styles.Warning.Render(s.warning))
+		// Add model information for each tool
+		modelInfo := s.getModelInfoForTool(status.tool.ID)
+		line := fmt.Sprintf("  %s %s%s", icon, status.tool.Name, msg)
+		if modelInfo != "" {
+			line += fmt.Sprintf("\n    %s", Styles.Desc.Render(modelInfo))
+		}
+
+		b.WriteString(line)
 		b.WriteString("\n")
 	}
 
-	b.WriteString("\n")
-	b.WriteString(Styles.Help.Render("Press enter to continue"))
+	if s.done {
+		b.WriteString("\n")
+		if s.hasErrors() {
+			b.WriteString(Styles.Warning.Render("Configuration completed with errors."))
+			b.WriteString("\n")
+			b.WriteString(Styles.Help.Render("Press enter to continue"))
+		} else {
+			b.WriteString(Styles.Success.Render("Configuration complete!"))
+			b.WriteString("\n\n")
+			b.WriteString("Your tools are now connected to Cast AI's inference endpoint:\n")
+			b.WriteString(Styles.Success.Render("https://llm.cast.ai"))
+			b.WriteString("\n\n")
+			b.WriteString("Each tool has been configured with optimal models for its use case:")
+			b.WriteString("\n")
+			b.WriteString(fmt.Sprintf("• Primary model → %s", tools.MainModel.Slug))
+			b.WriteString("\n")
+			b.WriteString(fmt.Sprintf("• Coding subagent → %s", tools.CodingModel.Slug))
+			b.WriteString("\n")
+			b.WriteString(fmt.Sprintf("• Secondary subagent → %s", tools.SubModel.Slug))
+			b.WriteString("\n")
+			if s.shellProfilePath != "" {
+				b.WriteString(fmt.Sprintf("\n%s exported to %s\n", tools.APIKeyEnv, s.shellProfilePath))
+			} else if s.shellProfileErr != nil {
+				b.WriteString(fmt.Sprintf("\n%s\n", Styles.Warning.Render(fmt.Sprintf("Could not export %s to shell profile: %v", tools.APIKeyEnv, s.shellProfileErr))))
+			}
+			b.WriteString("\n")
+			b.WriteString(Styles.Help.Render("Press enter to continue"))
+		}
+	}
 
 	return b.String()
 }
 
+func (s *ConfigureStep) getModelInfoForTool(toolID tools.ToolID) string {
+	m := tools.MainModel.Slug
+	c := tools.CodingModel.Slug
+	s2 := tools.SubModel.Slug
+
+	switch toolID {
+	case tools.ToolClaudeCode:
+		return fmt.Sprintf("→ %s (plan mode) + %s (execution mode)", m, c)
+	case tools.ToolOpenCode:
+		return fmt.Sprintf("→ %s (primary) + %s (coding) + %s (sub)", m, c, s2)
+	case tools.ToolContinue:
+		return fmt.Sprintf("→ %s (primary) + %s (coding) + %s (sub)", m, c, s2)
+	case tools.ToolWindsurf:
+		return fmt.Sprintf("→ %s (primary) + %s (coding) + %s (sub)", m, c, s2)
+	case tools.ToolZed:
+		return fmt.Sprintf("→ %s (primary model)", m)
+	case tools.ToolCodex:
+		return fmt.Sprintf("→ %s (code generation and debugging)", c)
+	case tools.ToolCline:
+		return fmt.Sprintf("→ %s (action) + %s (planning)", c, m)
+	case tools.ToolGSD2:
+		return fmt.Sprintf("→ %s (default) + %s (coding) + %s (sub)", m, c, s2)
+	case tools.ToolGeneric:
+		return "→ Environment variables for Cast AI endpoint"
+	default:
+		return ""
+	}
+}
+
 func (s *ConfigureStep) Name() string {
-	return "Saving preferences"
+	return "Configuring tools"
 }
 
 func (s *ConfigureStep) Info() StepInfo {
@@ -211,7 +272,7 @@ func (s *ConfigureStep) Info() StepInfo {
 		bindings = append(bindings, BindingsConfirm)
 	}
 	return StepInfo{
-		Name:        "Saving preferences",
+		Name:        "Configuring tools",
 		KeyBindings: bindings,
 	}
 }

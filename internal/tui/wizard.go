@@ -249,7 +249,6 @@ func (w *wizard) scheduleConfigureIfReady() {
 	w.pendingGSD = steps.NewGSDStep(w.config.SelectedTools, w.config.Scope)
 	w.pendingConfigure = steps.NewConfigureStep(steps.ConfigureParams{
 		ToolIDs:        w.config.SelectedTools,
-		Mode:           w.config.Mode,
 		Scope:          w.config.Scope,
 		TelemetryOptIn: w.config.TelemetryOptIn,
 		APIKey:         w.config.APIKey,

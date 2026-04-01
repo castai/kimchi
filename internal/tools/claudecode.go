@@ -7,11 +7,11 @@ import (
 )
 
 const (
-	LogsExporter               = "otlp"
-	LogsProtocol               = "http/json"
-	LogsEndpoint               = "https://api.cast.ai/ai-optimizer/v1beta/logs:ingest"
-	LogsAuthorizationHeaderFmt = "Authorization=Bearer %s"
-	LogsExportInterval         = "5000"
+	logsExporter               = "otlp"
+	logsProtocol               = "http/json"
+	logsEndpoint               = "https://api.cast.ai/ai-optimizer/v1beta/logs:ingest"
+	logsAuthorizationHeaderFmt = "Authorization=Bearer %s"
+	logsExportInterval         = "5000"
 )
 
 func init() {
@@ -22,39 +22,16 @@ func init() {
 		ConfigPath:  "~/.claude/settings.json",
 		BinaryName:  "claude",
 		IsInstalled: detectBinary("claude"),
-		Write: func(scope config.ConfigScope) error {
-			return WriteClaudeCodeConfig(scope, true)
-		},
+		Write:       writeClaudeCodeDefault,
 	})
 }
 
-// ClaudeCodeEnvVars returns the environment variables needed to run Claude Code
-// with Cast AI configuration.
-func ClaudeCodeEnvVars(apiKey string, telemetryOptIn bool) map[string]string {
-	env := map[string]string{
-		"ANTHROPIC_BASE_URL":                     AnthropicBaseURL,
-		"ANTHROPIC_AUTH_TOKEN":                   apiKey,
-		"ANTHROPIC_DEFAULT_OPUS_MODEL":           ReasoningModel.Slug,
-		"ANTHROPIC_DEFAULT_SONNET_MODEL":         CodingModel.Slug,
-		"ANTHROPIC_DEFAULT_HAIKU_MODEL":          CodingModel.Slug,
-		"CLAUDE_CODE_SUBAGENT_MODEL":             CodingModel.Slug,
-		"CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS": "1",
-	}
-
-	if telemetryOptIn {
-		env["CLAUDE_CODE_ENABLE_TELEMETRY"] = "1"
-		env["OTEL_LOGS_EXPORTER"] = LogsExporter
-		env["OTEL_EXPORTER_OTLP_LOGS_PROTOCOL"] = LogsProtocol
-		env["OTEL_EXPORTER_OTLP_LOGS_ENDPOINT"] = LogsEndpoint
-		env["OTEL_EXPORTER_OTLP_LOGS_HEADERS"] = fmt.Sprintf(LogsAuthorizationHeaderFmt, apiKey)
-		env["OTEL_LOGS_EXPORT_INTERVAL"] = LogsExportInterval
-	}
-
-	return env
+func writeClaudeCodeDefault(scope config.ConfigScope) error {
+	return WriteClaudeCode(scope, true)
 }
 
-// WriteClaudeCodeConfig writes the Claude Code settings file for the given scope.
-func WriteClaudeCodeConfig(scope config.ConfigScope, telemetryOptIn bool) error {
+// WriteClaudeCode writes the Claude Code settings file for the given scope.
+func WriteClaudeCode(scope config.ConfigScope, telemetryOptIn bool) error {
 	apiKey, err := config.GetAPIKey()
 	if err != nil {
 		return fmt.Errorf("get API key: %w", err)
@@ -94,4 +71,29 @@ func WriteClaudeCodeConfig(scope config.ConfigScope, telemetryOptIn bool) error 
 	}
 
 	return nil
+}
+
+// ClaudeCodeEnvVars returns the environment variables needed to run Claude Code
+// with Cast AI configuration (used by inject mode).
+func ClaudeCodeEnvVars(apiKey string, telemetryOptIn bool) map[string]string {
+	env := map[string]string{
+		"ANTHROPIC_BASE_URL":                     anthropicBaseURL,
+		"ANTHROPIC_AUTH_TOKEN":                   apiKey,
+		"ANTHROPIC_DEFAULT_OPUS_MODEL":           MainModel.Slug,
+		"ANTHROPIC_DEFAULT_SONNET_MODEL":         CodingModel.Slug,
+		"ANTHROPIC_DEFAULT_HAIKU_MODEL":          CodingModel.Slug,
+		"CLAUDE_CODE_SUBAGENT_MODEL":             CodingModel.Slug,
+		"CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS": "1",
+	}
+
+	if telemetryOptIn {
+		env["CLAUDE_CODE_ENABLE_TELEMETRY"] = "1"
+		env["OTEL_LOGS_EXPORTER"] = logsExporter
+		env["OTEL_EXPORTER_OTLP_LOGS_PROTOCOL"] = logsProtocol
+		env["OTEL_EXPORTER_OTLP_LOGS_ENDPOINT"] = logsEndpoint
+		env["OTEL_EXPORTER_OTLP_LOGS_HEADERS"] = fmt.Sprintf(logsAuthorizationHeaderFmt, apiKey)
+		env["OTEL_LOGS_EXPORT_INTERVAL"] = logsExportInterval
+	}
+
+	return env
 }

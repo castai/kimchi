@@ -1,48 +1,52 @@
 package tools
 
-type ModelLimits struct {
-	ContextWindow   int
-	MaxOutputTokens int
+type limits struct {
+	contextWindow   int
+	maxOutputTokens int
 }
 
-type Model struct {
+type model struct {
 	Slug            string
-	DisplayName     string
-	Description     string
-	ToolCall        bool
-	Reasoning       bool
-	SupportsImages  bool
-	InputModalities []string
-	Limits          ModelLimits
+	displayName     string
+	description     string
+	toolCall        bool
+	reasoning       bool
+	supportsImages  bool
+	inputModalities []string
+	limits          limits
 }
 
 var (
-	ReasoningModel = Model{
-		Slug:            "glm-5-fp8",
-		DisplayName:     "GLM-5 FP8",
-		Description:     "Reasoning model for planning, analysis, and complex problem solving.",
-		ToolCall:        true,
-		Reasoning:       true,
-		InputModalities: []string{"text"},
-		Limits:          ModelLimits{ContextWindow: 202752, MaxOutputTokens: 32768},
-	}
-	CodingModel = Model{
-		Slug:            "minimax-m2.5",
-		DisplayName:     "MiniMax M2.5",
-		Description:     "Coding model for writing, refactoring, and debugging code.",
-		ToolCall:        true,
-		InputModalities: []string{"text"},
-		Limits:          ModelLimits{ContextWindow: 196608, MaxOutputTokens: 32768},
-	}
-	ImageModel = Model{
+	// MainModel is the primary model for reasoning, planning, code generation, and image processing.
+	MainModel = model{
 		Slug:            "kimi-k2.5",
-		DisplayName:     "Kimi K2.5",
-		Description:     "Multi-modal model for image processing and code generation.",
-		ToolCall:        true,
-		SupportsImages:  true,
-		InputModalities: []string{"text", "image"},
-		Limits:          ModelLimits{ContextWindow: 262144, MaxOutputTokens: 32768},
+		displayName:     "Kimi K2.5",
+		description:     "Primary model for reasoning, planning, code generation, and image processing.",
+		toolCall:        true,
+		reasoning:       true,
+		supportsImages:  true,
+		inputModalities: []string{"text", "image"},
+		limits:          limits{contextWindow: 262144, maxOutputTokens: 32768},
+	}
+	// CodingModel is the coding subagent used where tools require a fixed model value for code tasks.
+	CodingModel = model{
+		Slug:            "glm-5-fp8",
+		displayName:     "GLM-5 FP8",
+		description:     "Coding subagent for writing, refactoring, and debugging code.",
+		toolCall:        true,
+		reasoning:       true,
+		inputModalities: []string{"text"},
+		limits:          limits{contextWindow: 202752, maxOutputTokens: 32768},
+	}
+	// SubModel is the secondary subagent available across all tool installations.
+	SubModel = model{
+		Slug:            "minimax-m2.5",
+		displayName:     "MiniMax M2.5",
+		description:     "Secondary subagent for code generation and debugging.",
+		toolCall:        true,
+		inputModalities: []string{"text"},
+		limits:          limits{contextWindow: 196608, maxOutputTokens: 32768},
 	}
 
-	allModels = []Model{ReasoningModel, CodingModel, ImageModel}
+	allModels = []model{MainModel, CodingModel, SubModel}
 )

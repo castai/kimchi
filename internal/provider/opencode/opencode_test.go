@@ -31,7 +31,7 @@ func TestEnv_GeneratesConfig(t *testing.T) {
 	providers, ok := cfg["provider"].(map[string]any)
 	require.True(t, ok, "provider key should be a map")
 
-	kimchiProvider, ok := providers[tools.ProviderName].(map[string]any)
+	kimchiProvider, ok := providers[tools.ProviderName()].(map[string]any)
 	require.True(t, ok, "kimchi provider should be present")
 
 	assert.Equal(t, "Kimchi by Cast AI", kimchiProvider["name"])
@@ -39,15 +39,15 @@ func TestEnv_GeneratesConfig(t *testing.T) {
 
 	options, ok := kimchiProvider["options"].(map[string]any)
 	require.True(t, ok, "options should be a map")
-	assert.Equal(t, tools.BaseURL, options["baseURL"])
+	assert.Equal(t, tools.BaseURL(), options["baseURL"])
 	assert.Equal(t, "test-key", options["apiKey"])
 	assert.Equal(t, true, options["litellmProxy"])
 
 	models, ok := kimchiProvider["models"].(map[string]any)
 	require.True(t, ok, "models should be a map")
-	assert.Contains(t, models, tools.ReasoningModel.Slug)
+	assert.Contains(t, models, tools.MainModel.Slug)
 	assert.Contains(t, models, tools.CodingModel.Slug)
-	assert.Contains(t, models, tools.ImageModel.Slug)
+	assert.Contains(t, models, tools.SubModel.Slug)
 
 	_ = env
 }
@@ -98,7 +98,7 @@ func TestEnv_MergesExistingConfig(t *testing.T) {
 
 	providers, ok := mergedCfg["provider"].(map[string]any)
 	require.True(t, ok, "kimchi provider should be injected")
-	assert.Contains(t, providers, tools.ProviderName)
+	assert.Contains(t, providers, tools.ProviderName())
 }
 
 func TestEnv_WritesCompactionConfig(t *testing.T) {

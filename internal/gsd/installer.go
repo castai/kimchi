@@ -127,7 +127,6 @@ func getClaudeCodeGSDPath(scope string) (string, error) { return getGSDPath("cla
 func getCodexGSDPath(scope string) (string, error)      { return getGSDPath("codex", scope) }
 
 func (i *Installer) IsInstalledFor(installType InstallationType, scope string) bool {
-	// Check kimchi-managed path.
 	var basePath string
 	var err error
 

@@ -7,7 +7,6 @@ type ToolID string
 const (
 	ToolOpenCode   ToolID = "opencode"
 	ToolClaudeCode ToolID = "claude-code"
-	ToolCursor     ToolID = "cursor"
 	ToolContinue   ToolID = "continue"
 	ToolWindsurf   ToolID = "windsurf"
 	ToolZed        ToolID = "zed"

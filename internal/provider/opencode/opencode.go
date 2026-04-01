@@ -45,7 +45,7 @@ func Env(apiKey string) (map[string]string, error) {
 	if providers == nil {
 		providers = make(map[string]any)
 	}
-	providers[tools.ProviderName] = tools.OpenCodeProviderConfig(apiKey)
+	providers[tools.ProviderName()] = tools.OpenCodeProviderConfig(apiKey)
 	existing["provider"] = providers
 
 	if _, ok := existing["compaction"]; !ok {

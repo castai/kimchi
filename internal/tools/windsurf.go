@@ -89,50 +89,50 @@ func writeWindsurf(scope config.ConfigScope) error {
 		apiConfigs = make(map[string]any)
 	}
 
-	castaiConfig := map[string]any{
+	kimiConfig := map[string]any{
 		"apiProvider": "openai-native",
 		"apiKey":      apiKey,
-		"baseUrl":     BaseURL,
+		"baseUrl":     baseURL,
+		"modelId":     MainModel.Slug,
+		"modelInfo": map[string]any{
+			"maxTokens":           MainModel.limits.maxOutputTokens,
+			"contextWindow":       MainModel.limits.contextWindow,
+			"supportsImages":      MainModel.supportsImages,
+			"supportsPromptCache": false,
+		},
+	}
+
+	codingConfig := map[string]any{
+		"apiProvider": "openai-native",
+		"apiKey":      apiKey,
+		"baseUrl":     baseURL,
 		"modelId":     CodingModel.Slug,
 		"modelInfo": map[string]any{
-			"maxTokens":           CodingModel.Limits.MaxOutputTokens,
-			"contextWindow":       CodingModel.Limits.ContextWindow,
-			"supportsImages":      CodingModel.SupportsImages,
+			"maxTokens":           CodingModel.limits.maxOutputTokens,
+			"contextWindow":       CodingModel.limits.contextWindow,
+			"supportsImages":      CodingModel.supportsImages,
 			"supportsPromptCache": false,
 		},
 	}
 
-	reasoningConfig := map[string]any{
+	subConfig := map[string]any{
 		"apiProvider": "openai-native",
 		"apiKey":      apiKey,
-		"baseUrl":     BaseURL,
-		"modelId":     ReasoningModel.Slug,
+		"baseUrl":     baseURL,
+		"modelId":     SubModel.Slug,
 		"modelInfo": map[string]any{
-			"maxTokens":           ReasoningModel.Limits.MaxOutputTokens,
-			"contextWindow":       ReasoningModel.Limits.ContextWindow,
-			"supportsImages":      ReasoningModel.SupportsImages,
+			"maxTokens":           SubModel.limits.maxOutputTokens,
+			"contextWindow":       SubModel.limits.contextWindow,
+			"supportsImages":      SubModel.supportsImages,
 			"supportsPromptCache": false,
 		},
 	}
 
-	imageConfig := map[string]any{
-		"apiProvider": "openai-native",
-		"apiKey":      apiKey,
-		"baseUrl":     BaseURL,
-		"modelId":     ImageModel.Slug,
-		"modelInfo": map[string]any{
-			"maxTokens":           ImageModel.Limits.MaxOutputTokens,
-			"contextWindow":       ImageModel.Limits.ContextWindow,
-			"supportsImages":      ImageModel.SupportsImages,
-			"supportsPromptCache": false,
-		},
-	}
-
-	apiConfigs["castai-coding"] = castaiConfig
-	apiConfigs["castai-reasoning"] = reasoningConfig
-	apiConfigs["castai-image"] = imageConfig
+	apiConfigs["castai-kimi"] = kimiConfig
+	apiConfigs["castai-coding"] = codingConfig
+	apiConfigs["castai-sub"] = subConfig
 	state["apiConfigs"] = apiConfigs
-	state["currentApiConfigName"] = "castai-coding"
+	state["currentApiConfigName"] = "castai-kimi"
 	storage[stateKey] = state
 
 	newData, err := json.MarshalIndent(storage, "", "    ")

@@ -94,7 +94,7 @@ func writeKimchiProvider(configPath string) error {
 	}
 
 	cfg["model"] = tools.CodingModel.Slug
-	cfg["model_provider"] = tools.ProviderName
+	cfg["model_provider"] = tools.ProviderName()
 	cfg["suppress_unstable_features_warning"] = true
 
 	providers, ok := cfg["model_providers"].(map[string]any)
@@ -105,9 +105,9 @@ func writeKimchiProvider(configPath string) error {
 
 	providers["kimchi"] = map[string]any{
 		"name":                 "Kimchi by Cast AI",
-		"base_url":             tools.BaseURL,
+		"base_url":             tools.BaseURL(),
 		"env_key":              tools.APIKeyEnv,
-		"env_key_instructions": tools.CodexEnvKeyInstructions,
+		"env_key_instructions": tools.EnvKeyInstructions(),
 		"wire_api":             "responses",
 	}
 
