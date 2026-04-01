@@ -8,6 +8,8 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+
+	"github.com/castai/kimchi/internal/tools"
 )
 
 type Installer struct{}
@@ -22,23 +24,51 @@ type InstallResult struct {
 	Installed []string
 }
 
+// gsdInstallSpec describes how to install a GSD package for a specific tool.
+type gsdInstallSpec struct {
+	installType InstallationType
+	npxArgs     []string
+	tmpSubDir   string // relative to tmp home, e.g. ".config/opencode"
+	destPath    func(scope string) (string, error)
+	rewriteFile string // config file containing temp paths to rewrite, empty if none
+	pkgName     string // npm package name for the result
+}
+
+var gsdSpecs = map[InstallationType]gsdInstallSpec{
+	InstallationOpenCode: {
+		installType: InstallationOpenCode,
+		npxArgs:     []string{"--yes", "gsd-opencode@latest", "install", "--global", "--config-dir"},
+		tmpSubDir:   filepath.Join(".config", "opencode"),
+		destPath:    getOpenCodeGSDPath,
+		pkgName:     "gsd-opencode",
+	},
+	InstallationClaudeCode: {
+		installType: InstallationClaudeCode,
+		npxArgs:     []string{"--yes", "get-shit-done-cc@latest", "--claude", "--global", "--config-dir"},
+		tmpSubDir:   ".claude",
+		destPath:    getClaudeCodeGSDPath,
+		rewriteFile: "settings.json",
+		pkgName:     "get-shit-done-cc",
+	},
+	InstallationCodex: {
+		installType: InstallationCodex,
+		npxArgs:     []string{"--yes", "get-shit-done-cc@latest", "--codex", "--global", "--config-dir"},
+		tmpSubDir:   ".codex",
+		destPath:    getCodexGSDPath,
+		rewriteFile: "config.toml",
+		pkgName:     "get-shit-done-cc",
+	},
+}
+
 func (i *Installer) Install(installType InstallationType, scope string) (*InstallResult, error) {
-	switch installType {
-	case InstallationOpenCode:
-		return i.installOpenCode(scope)
-	case InstallationClaudeCode:
-		return i.installClaudeCode(scope)
-	case InstallationCodex:
-		return i.installCodex(scope)
-	default:
+	spec, ok := gsdSpecs[installType]
+	if !ok {
 		return nil, fmt.Errorf("unsupported tool for GSD: %s", installType)
 	}
-}
 
-func (i *Installer) installOpenCode(scope string) (*InstallResult, error) {
-	destPath, err := getOpenCodeGSDPath(scope)
+	destPath, err := spec.destPath(scope)
 	if err != nil {
-		return nil, fmt.Errorf("get opencode GSD path: %w", err)
+		return nil, fmt.Errorf("get %s GSD path: %w", installType, err)
 	}
 
 	tmpHome, err := os.MkdirTemp("", "kimchi-gsd-*")
@@ -47,164 +77,54 @@ func (i *Installer) installOpenCode(scope string) (*InstallResult, error) {
 	}
 	defer os.RemoveAll(tmpHome)
 
-	tmpOCDir := filepath.Join(tmpHome, ".config", "opencode")
+	tmpToolDir := filepath.Join(tmpHome, spec.tmpSubDir)
 
-	// Use --config-dir with --global to explicitly tell gsd-opencode where to install.
-	// Without --global, the installer may enter interactive mode.
-	args := []string{"--yes", "gsd-opencode@latest", "install", "--global", "--config-dir", tmpOCDir}
+	// Append the temp tool dir as the --config-dir value.
+	args := append(spec.npxArgs, tmpToolDir)
 
 	cmd := exec.Command("npx", args...)
-	// Suppress npm installer output — errors are captured via cmd.Run() return.
 	cmd.Env = sandboxedEnv(tmpHome)
 
 	if err := cmd.Run(); err != nil {
-		return nil, fmt.Errorf("run gsd-opencode installer: %w", err)
+		return nil, fmt.Errorf("run %s installer: %w", spec.pkgName, err)
 	}
 
-	if err := copyDir(tmpOCDir, destPath); err != nil {
+	if err := copyDir(tmpToolDir, destPath); err != nil {
 		return nil, fmt.Errorf("copy GSD files to kimchi dir: %w", err)
 	}
 
-	return &InstallResult{
-		Type:      InstallationOpenCode,
-		Path:      destPath,
-		Installed: []string{"gsd-opencode"},
-	}, nil
-}
-
-func (i *Installer) installClaudeCode(scope string) (*InstallResult, error) {
-	destPath, err := getClaudeCodeGSDPath(scope)
-	if err != nil {
-		return nil, fmt.Errorf("get claude-code GSD path: %w", err)
-	}
-
-	tmpHome, err := os.MkdirTemp("", "kimchi-gsd-*")
-	if err != nil {
-		return nil, fmt.Errorf("create temp home: %w", err)
-	}
-	defer os.RemoveAll(tmpHome)
-
-	tmpClaudeDir := filepath.Join(tmpHome, ".claude")
-
-	// Use --config-dir with --global to explicitly tell get-shit-done-cc where to install.
-	// Without --global, the installer enters interactive mode.
-	args := []string{"--yes", "get-shit-done-cc@latest", "--claude", "--global", "--config-dir", tmpClaudeDir}
-
-	cmd := exec.Command("npx", args...)
-	// Suppress npm installer output — errors are captured via cmd.Run() return.
-	cmd.Env = sandboxedEnv(tmpHome)
-
-	if err := cmd.Run(); err != nil {
-		return nil, fmt.Errorf("run get-shit-done-cc installer: %w", err)
-	}
-
-	if err := copyDir(tmpClaudeDir, destPath); err != nil {
-		return nil, fmt.Errorf("copy GSD files to kimchi dir: %w", err)
-	}
-
-	// The GSD installer writes absolute paths (to the temp dir) in settings.json
-	// for hook commands. Rewrite them to point to the managed dir.
-	if err := rewritePaths(filepath.Join(destPath, "settings.json"), tmpClaudeDir, destPath); err != nil {
-		return nil, fmt.Errorf("rewrite config paths: %w", err)
+	// Some installers write absolute temp paths into config files.
+	if spec.rewriteFile != "" {
+		if err := rewritePaths(filepath.Join(destPath, spec.rewriteFile), tmpToolDir, destPath); err != nil {
+			return nil, fmt.Errorf("rewrite config paths: %w", err)
+		}
 	}
 
 	return &InstallResult{
-		Type:      InstallationClaudeCode,
+		Type:      spec.installType,
 		Path:      destPath,
-		Installed: []string{"get-shit-done-cc"},
+		Installed: []string{spec.pkgName},
 	}, nil
 }
 
-func (i *Installer) installCodex(scope string) (*InstallResult, error) {
-	destPath, err := getCodexGSDPath(scope)
-	if err != nil {
-		return nil, fmt.Errorf("get codex GSD path: %w", err)
-	}
-
-	tmpHome, err := os.MkdirTemp("", "kimchi-gsd-*")
-	if err != nil {
-		return nil, fmt.Errorf("create temp home: %w", err)
-	}
-	defer os.RemoveAll(tmpHome)
-
-	tmpCodexDir := filepath.Join(tmpHome, ".codex")
-
-	// Use --config-dir with --global to explicitly tell get-shit-done-cc where to install.
-	// Without --global, the installer enters interactive mode.
-	args := []string{"--yes", "get-shit-done-cc@latest", "--codex", "--global", "--config-dir", tmpCodexDir}
-
-	cmd := exec.Command("npx", args...)
-	// Suppress npm installer output — errors are captured via cmd.Run() return.
-	cmd.Env = sandboxedEnv(tmpHome)
-
-	if err := cmd.Run(); err != nil {
-		return nil, fmt.Errorf("run get-shit-done-cc installer: %w", err)
-	}
-
-	if err := copyDir(tmpCodexDir, destPath); err != nil {
-		return nil, fmt.Errorf("copy GSD files to kimchi dir: %w", err)
-	}
-
-	// The GSD installer writes absolute paths (to the temp dir) in config.toml
-	// for agent config_file references. Rewrite them to point to the managed dir.
-	if err := rewritePaths(filepath.Join(destPath, "config.toml"), tmpCodexDir, destPath); err != nil {
-		return nil, fmt.Errorf("rewrite config paths: %w", err)
-	}
-
-	return &InstallResult{
-		Type:      InstallationCodex,
-		Path:      destPath,
-		Installed: []string{"get-shit-done-cc"},
-	}, nil
-}
-
-func getOpenCodeGSDPath(scope string) (string, error) {
+func getGSDPath(toolName, scope string) (string, error) {
 	if scope == "project" {
 		cwd, err := os.Getwd()
 		if err != nil {
 			return "", err
 		}
-		return filepath.Join(cwd, ".kimchi", "opencode"), nil
+		return filepath.Join(cwd, ".kimchi", toolName), nil
 	}
 	homeDir, err := os.UserHomeDir()
 	if err != nil {
 		return "", err
 	}
-	// Install directly into the kimchi-managed opencode config dir.
-	// The wrapper sets XDG_CONFIG_HOME=~/.config/kimchi, so OpenCode reads
-	// from ~/.config/kimchi/opencode/ — no copy step needed at runtime.
-	return filepath.Join(homeDir, ".config", "kimchi", "opencode"), nil
+	return filepath.Join(homeDir, ".config", "kimchi", toolName), nil
 }
 
-func getClaudeCodeGSDPath(scope string) (string, error) {
-	if scope == "project" {
-		cwd, err := os.Getwd()
-		if err != nil {
-			return "", err
-		}
-		return filepath.Join(cwd, ".kimchi", "claude-code"), nil
-	}
-	homeDir, err := os.UserHomeDir()
-	if err != nil {
-		return "", err
-	}
-	return filepath.Join(homeDir, ".config", "kimchi", "claude-code"), nil
-}
-
-func getCodexGSDPath(scope string) (string, error) {
-	if scope == "project" {
-		cwd, err := os.Getwd()
-		if err != nil {
-			return "", err
-		}
-		return filepath.Join(cwd, ".kimchi", "codex"), nil
-	}
-	homeDir, err := os.UserHomeDir()
-	if err != nil {
-		return "", err
-	}
-	return filepath.Join(homeDir, ".config", "kimchi", "codex"), nil
-}
+func getOpenCodeGSDPath(scope string) (string, error)   { return getGSDPath("opencode", scope) }
+func getClaudeCodeGSDPath(scope string) (string, error) { return getGSDPath("claude-code", scope) }
+func getCodexGSDPath(scope string) (string, error)      { return getGSDPath("codex", scope) }
 
 func (i *Installer) IsInstalledFor(installType InstallationType, scope string) bool {
 	// Check kimchi-managed path.
@@ -280,23 +200,11 @@ func rewritePaths(filePath, oldPrefix, newPrefix string) error {
 // XDG_DATA_HOME redirected to tmpHome. This ensures npm installers write into
 // the temp directory regardless of which path convention they follow.
 func sandboxedEnv(tmpHome string) []string {
-	overrides := map[string]string{
+	return tools.MergeEnv(map[string]string{
 		"HOME":            tmpHome,
 		"XDG_CONFIG_HOME": filepath.Join(tmpHome, ".config"),
 		"XDG_DATA_HOME":   filepath.Join(tmpHome, ".local", "share"),
-	}
-	existing := os.Environ()
-	merged := make([]string, 0, len(existing)+len(overrides))
-	for _, e := range existing {
-		key, _, _ := strings.Cut(e, "=")
-		if _, ok := overrides[key]; !ok {
-			merged = append(merged, e)
-		}
-	}
-	for k, v := range overrides {
-		merged = append(merged, k+"="+v)
-	}
-	return merged
+	})
 }
 
 // copyDir recursively copies all files from src to dst, creating dst if needed.

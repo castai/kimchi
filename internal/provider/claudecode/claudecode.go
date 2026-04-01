@@ -60,12 +60,17 @@ func symlinkTree(src, dst string, created *[]string) error {
 		dstPath := filepath.Join(dst, entry.Name())
 
 		info, err := os.Lstat(dstPath)
-		if err == nil && info.IsDir() && info.Mode()&os.ModeSymlink == 0 {
-			// Target exists as a real directory — recurse to symlink children.
-			if err := symlinkTree(srcPath, dstPath, created); err != nil {
-				return err
+		if err == nil {
+			if info.Mode()&os.ModeSymlink != 0 {
+				// Existing symlink — remove and recreate to ensure it points to our source.
+				os.Remove(dstPath)
+			} else if info.IsDir() {
+				// Real directory — recurse to symlink children.
+				if err := symlinkTree(srcPath, dstPath, created); err != nil {
+					return err
+				}
+				continue
 			}
-			continue
 		}
 
 		if err := gsd.EnsureSymlink(srcPath, dstPath); err != nil {

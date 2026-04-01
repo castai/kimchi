@@ -166,7 +166,7 @@ func (s *ConfigureStep) View() string {
 
 	if s.mode == config.ModeInject {
 		b.WriteString(Styles.Desc.Render("Wrote:"))
-		b.WriteString(fmt.Sprintf("  ~/.config/kimchi/config.json\n\n"))
+		b.WriteString(fmt.Sprintf("  %s\n\n", config.ConfigPath()))
 		for _, toolID := range s.toolIDs {
 			tool, ok := tools.ByID(toolID)
 			if !ok {
@@ -180,7 +180,7 @@ func (s *ConfigureStep) View() string {
 		}
 	} else {
 		b.WriteString(Styles.Desc.Render("Wrote:"))
-		b.WriteString(fmt.Sprintf("  ~/.config/kimchi/config.json\n"))
+		b.WriteString(fmt.Sprintf("  %s\n", config.ConfigPath()))
 		for _, toolID := range s.toolIDs {
 			if tool, ok := tools.ByID(toolID); ok {
 				b.WriteString(fmt.Sprintf("  %s\n", tool.ConfigPath))

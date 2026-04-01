@@ -47,8 +47,10 @@ func writeOpenCode(scope config.ConfigScope) error {
 	providers[ProviderName] = OpenCodeProviderConfig(apiKey)
 	existing["provider"] = providers
 
-	existing["compaction"] = map[string]any{
-		"auto": true,
+	if _, ok := existing["compaction"]; !ok {
+		existing["compaction"] = map[string]any{
+			"auto": true,
+		}
 	}
 
 	if err := config.WriteJSON(path, existing); err != nil {

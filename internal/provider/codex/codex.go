@@ -51,8 +51,17 @@ func Env(apiKey string) (map[string]string, error) {
 		return nil, fmt.Errorf("create managed codex dir: %w", err)
 	}
 
-	// Write kimchi provider into the managed config.
+	// Copy the user's config.toml as a base so custom settings (sandbox policies,
+	// approval settings, other providers) are preserved during the wrapped run.
 	managedConfigPath := filepath.Join(managedCodexDir, "config.toml")
+	userConfigPath := filepath.Join(userCodexDir, "config.toml")
+	if data, err := os.ReadFile(userConfigPath); err == nil {
+		if err := config.WriteFile(managedConfigPath, data); err != nil {
+			return nil, fmt.Errorf("copy user codex config.toml: %w", err)
+		}
+	}
+
+	// Merge kimchi provider into the managed config (on top of user's settings).
 	if err := writeKimchiProvider(managedConfigPath); err != nil {
 		return nil, fmt.Errorf("write managed codex config: %w", err)
 	}

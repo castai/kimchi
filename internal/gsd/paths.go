@@ -28,18 +28,38 @@ func KimchiManagedPath(installType InstallationType) (string, error) {
 	}
 }
 
-// EnsureSymlink creates a symlink from target to src. If target already exists
-// (symlink or real directory), it is left untouched.
+// EnsureSymlink creates a symlink at target pointing to src. If target already
+// exists as a real file or directory, it is left untouched.
 func EnsureSymlink(src, target string) error {
 	if err := os.MkdirAll(filepath.Dir(target), 0755); err != nil {
 		return fmt.Errorf("create parent directory: %w", err)
 	}
 
 	err := os.Symlink(src, target)
-	if err == nil || errors.Is(err, fs.ErrExist) {
+	if err == nil {
 		return nil
 	}
-	return fmt.Errorf("create GSD symlink: %w", err)
+	if !errors.Is(err, fs.ErrExist) {
+		return fmt.Errorf("create GSD symlink: %w", err)
+	}
+
+	// Target exists. If it's a symlink pointing to the wrong place, update it.
+	existing, readErr := os.Readlink(target)
+	if readErr != nil {
+		// Not a symlink (real file/dir) — leave untouched.
+		return nil
+	}
+	if existing == src {
+		return nil
+	}
+	// Stale symlink — replace it.
+	if err := os.Remove(target); err != nil {
+		return fmt.Errorf("remove stale symlink: %w", err)
+	}
+	if err := os.Symlink(src, target); err != nil {
+		return fmt.Errorf("create GSD symlink: %w", err)
+	}
+	return nil
 }
 
 // CopyInstallation copies GSD files from src to dst.

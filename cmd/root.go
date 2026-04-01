@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"errors"
 	"flag"
 	"fmt"
 	"os"
@@ -8,6 +9,7 @@ import (
 	"github.com/spf13/cobra"
 	"k8s.io/klog/v2"
 
+	"github.com/castai/kimchi/internal/tools"
 	"github.com/castai/kimchi/internal/tui"
 	"github.com/castai/kimchi/internal/version"
 )
@@ -81,6 +83,10 @@ func runConfigure(cmd *cobra.Command, args []string) error {
 func Execute() {
 	root := NewRootCommand()
 	if err := root.Execute(); err != nil {
+		var exitErr *tools.ExitError
+		if errors.As(err, &exitErr) {
+			os.Exit(exitErr.Code)
+		}
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
 		os.Exit(1)
 	}
