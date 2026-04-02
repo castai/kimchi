@@ -25,9 +25,9 @@ func (i *Installer) Install(installType InstallationType, scope string) (*Instal
 	case InstallationOpenCode:
 		return i.installOpenCode(scope)
 	case InstallationClaudeCode:
-		return i.installClaudeCode(scope)
+		return i.installGetShitDone(scope, "--claude", InstallationClaudeCode)
 	case InstallationCodex:
-		return i.installCodex(scope)
+		return i.installGetShitDone(scope, "--codex", InstallationCodex)
 	default:
 		return nil, fmt.Errorf("unsupported tool for GSD: %s", installType)
 	}
@@ -39,160 +39,75 @@ func (i *Installer) installOpenCode(scope string) (*InstallResult, error) {
 		scopeFlag = "--local"
 	}
 
-	// If already installed, run the repair subcommand non-interactively.
-	// The repair command prompts "Proceed with repairs? (y/N)" which accepts
-	// a plain "y\n" on stdin even in non-TTY mode (uses @inquirer/prompts confirm).
 	if i.IsInstalledFor(InstallationOpenCode, scope) {
-		args := []string{"--yes", "gsd-opencode@latest", "repair", scopeFlag}
-		cmd := exec.Command("npx", args...)
-		// Pipe "y\n" to auto-confirm the repair prompt without blocking.
+		// Already installed: run the repair subcommand non-interactively.
+		// The repair prompt is a confirm (y/N) that accepts plain text on stdin.
+		cmd := exec.Command("npx", "--yes", "gsd-opencode@latest", "repair", scopeFlag)
 		cmd.Stdin = strings.NewReader("y\n")
 		if err := cmd.Run(); err != nil {
 			return nil, fmt.Errorf("run gsd-opencode repair: %w", err)
 		}
 	} else {
-		args := []string{"--yes", "gsd-opencode@latest", scopeFlag}
-		cmd := exec.Command("npx", args...)
-		// No stdin: non-TTY environment prevents interactive prompts.
+		// Fresh install: no stdin keeps the process non-interactive.
+		cmd := exec.Command("npx", "--yes", "gsd-opencode@latest", scopeFlag)
 		if err := cmd.Run(); err != nil {
 			return nil, fmt.Errorf("run gsd-opencode installer: %w", err)
 		}
 	}
 
-	basePath, err := getOpenCodeGSDPath(scope)
-	if err != nil {
-		basePath = "installed"
-	}
-
+	root, _ := configRoot(InstallationOpenCode, scope)
 	return &InstallResult{
 		Type:      InstallationOpenCode,
-		Path:      basePath,
+		Path:      filepath.Join(root, "commands", "gsd"),
 		Installed: []string{"gsd-opencode"},
 	}, nil
 }
 
-func (i *Installer) installClaudeCode(scope string) (*InstallResult, error) {
-	args := []string{"--yes", "get-shit-done-cc@latest", "--claude"}
+// installGetShitDone handles Claude Code and Codex, which both use the
+// get-shit-done-cc package and never prompt when runtime+scope flags are given.
+func (i *Installer) installGetShitDone(scope, runtimeFlag string, installType InstallationType) (*InstallResult, error) {
+	scopeFlag := "--global"
 	if scope == "project" {
-		args = append(args, "--local")
-	} else {
-		args = append(args, "--global")
+		scopeFlag = "--local"
 	}
 
-	cmd := exec.Command("npx", args...)
-	// No stdin: prevents interactive statusline/SDK prompts (both check isTTY).
-
+	// No stdin: the statusline and SDK prompts both guard on isTTY and skip
+	// when stdin is not a terminal.
+	cmd := exec.Command("npx", "--yes", "get-shit-done-cc@latest", runtimeFlag, scopeFlag)
 	if err := cmd.Run(); err != nil {
 		return nil, fmt.Errorf("run get-shit-done-cc installer: %w", err)
 	}
 
-	basePath, err := getClaudeCodeGSDPath(scope)
-	if err != nil {
-		basePath = "installed"
-	}
-
+	root, _ := configRoot(installType, scope)
 	return &InstallResult{
-		Type:      InstallationClaudeCode,
-		Path:      basePath,
+		Type:      installType,
+		Path:      filepath.Join(root, "commands", "gsd"),
 		Installed: []string{"get-shit-done-cc"},
 	}, nil
 }
 
-func getOpenCodeGSDPath(scope string) (string, error) {
-	if scope == "project" {
-		cwd, err := os.Getwd()
-		if err != nil {
-			return "", err
-		}
-		return filepath.Join(cwd, ".opencode", "commands", "gsd"), nil
-	}
-	homeDir, err := os.UserHomeDir()
-	if err != nil {
-		return "", err
-	}
-	return filepath.Join(homeDir, ".config", "opencode", "commands", "gsd"), nil
-}
-
-func getClaudeCodeGSDPath(scope string) (string, error) {
-	if scope == "project" {
-		cwd, err := os.Getwd()
-		if err != nil {
-			return "", err
-		}
-		return filepath.Join(cwd, ".claude", "commands", "gsd"), nil
-	}
-	homeDir, err := os.UserHomeDir()
-	if err != nil {
-		return "", err
-	}
-	return filepath.Join(homeDir, ".claude", "commands", "gsd"), nil
-}
-
-func (i *Installer) installCodex(scope string) (*InstallResult, error) {
-	args := []string{"--yes", "get-shit-done-cc@latest", "--codex"}
-	if scope == "project" {
-		args = append(args, "--local")
-	} else {
-		args = append(args, "--global")
-	}
-
-	cmd := exec.Command("npx", args...)
-	// No stdin: prevents interactive statusline/SDK prompts (both check isTTY).
-
-	if err := cmd.Run(); err != nil {
-		return nil, fmt.Errorf("run get-shit-done-cc installer: %w", err)
-	}
-
-	basePath, err := getCodexGSDPath(scope)
-	if err != nil {
-		basePath = "installed"
-	}
-
-	return &InstallResult{
-		Type:      InstallationCodex,
-		Path:      basePath,
-		Installed: []string{"get-shit-done-cc"},
-	}, nil
-}
-
-func getCodexGSDPath(scope string) (string, error) {
-	if scope == "project" {
-		cwd, err := os.Getwd()
-		if err != nil {
-			return "", err
-		}
-		return filepath.Join(cwd, ".codex", "commands", "gsd"), nil
-	}
-	homeDir, err := os.UserHomeDir()
-	if err != nil {
-		return "", err
-	}
-	return filepath.Join(homeDir, ".codex", "commands", "gsd"), nil
-}
-
+// IsInstalledFor reports whether GSD is already installed for the given tool
+// and scope, using the same signals the npm packages use internally so that
+// our routing (repair vs fresh install) agrees with theirs.
 func (i *Installer) IsInstalledFor(installType InstallationType, scope string) bool {
-	var basePath string
-	var err error
-
-	switch installType {
-	case InstallationOpenCode:
-		basePath, err = getOpenCodeGSDPath(scope)
-	case InstallationClaudeCode:
-		basePath, err = getClaudeCodeGSDPath(scope)
-	case InstallationCodex:
-		basePath, err = getCodexGSDPath(scope)
-	default:
-		return false
-	}
-
+	root, err := configRoot(installType, scope)
 	if err != nil {
 		return false
 	}
 
-	info, err := os.Stat(basePath)
-	if err != nil {
-		return false
+	if installType == InstallationOpenCode {
+		// Primary signal used by gsd-opencode: VERSION file.
+		versionFile := filepath.Join(root, "get-shit-done", "VERSION")
+		if _, err := os.Stat(versionFile); err == nil {
+			return true
+		}
 	}
 
-	return info.IsDir()
+	// Current (commands/gsd) and legacy (command/gsd) directory structures.
+	for _, dir := range gsdCommandDirs(root) {
+		if info, err := os.Stat(dir); err == nil && info.IsDir() {
+			return true
+		}
+	}
+	return false
 }
