@@ -22,7 +22,7 @@ func (m *Migrator) Migrate(installations []Installation) ([]string, error) {
 
 	for _, install := range installations {
 		for _, agentFile := range install.AgentFiles {
-			if err := m.updateAgentFile(agentFile); err != nil {
+			if err := m.updateAgentFile(agentFile, install.Type); err != nil {
 				return nil, fmt.Errorf("update %s: %w", agentFile.Name, err)
 			}
 			migrated = append(migrated, agentFile.Path)
@@ -32,7 +32,7 @@ func (m *Migrator) Migrate(installations []Installation) ([]string, error) {
 	return migrated, nil
 }
 
-func (m *Migrator) updateAgentFile(af AgentFile) error {
+func (m *Migrator) updateAgentFile(af AgentFile, installType InstallationType) error {
 	_, err := Backup(af.Path)
 	if err != nil {
 		return fmt.Errorf("backup: %w", err)
@@ -43,7 +43,7 @@ func (m *Migrator) updateAgentFile(af AgentFile) error {
 		return fmt.Errorf("parse frontmatter: %w", err)
 	}
 
-	model := m.determineModelForAgent(af.Name)
+	model := m.determineModelForAgent(af.Name, installType)
 	frontmatter["model"] = model
 
 	newContent, err := m.serializeFrontmatter(frontmatter, body)
@@ -121,18 +121,32 @@ func (m *Migrator) serializeFrontmatter(frontmatter map[string]any, body string)
 	return buf.String(), nil
 }
 
-func (m *Migrator) determineModelForAgent(agentName string) string {
+func (m *Migrator) determineModelForAgent(agentName string, installType InstallationType) string {
+	var model string
 	for _, name := range PlanningAgents {
 		if name == agentName {
-			return tools.MainModel.Slug
+			model = tools.MainModel.Slug
+			break
 		}
 	}
 
-	for _, name := range ExecutionAgents {
-		if name == agentName {
-			return tools.CodingModel.Slug
+	if model == "" {
+		for _, name := range ExecutionAgents {
+			if name == agentName {
+				model = tools.CodingModel.Slug
+				break
+			}
 		}
 	}
 
-	return tools.MainModel.Slug
+	if model == "" {
+		model = tools.MainModel.Slug
+	}
+
+	// For opencode, prefix the model with the provider name
+	if installType == InstallationOpenCode {
+		model = "kimchi/" + model
+	}
+
+	return model
 }
