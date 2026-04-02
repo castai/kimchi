@@ -24,8 +24,6 @@ func (i *Installer) Install(installType InstallationType, scope string) (*Instal
 	switch installType {
 	case InstallationOpenCode:
 		return i.installOpenCode(scope)
-	case InstallationClaudeCode:
-		return i.installGetShitDone(scope, "--claude", InstallationClaudeCode)
 	case InstallationCodex:
 		return i.installGetShitDone(scope, "--codex", InstallationCodex)
 	default:

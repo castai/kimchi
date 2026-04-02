@@ -26,14 +26,8 @@ func (d *Detector) Detect() ([]Installation, error) {
 		opencodeRoot = filepath.Join(homeDir, ".config", "opencode")
 	}
 
-	claudeRoot := filepath.Join(homeDir, ".claude")
-
 	var installations []Installation
-
 	if install := d.detectInRoot(opencodeRoot, InstallationOpenCode); install != nil {
-		installations = append(installations, *install)
-	}
-	if install := d.detectInRoot(claudeRoot, InstallationClaudeCode); install != nil {
 		installations = append(installations, *install)
 	}
 
