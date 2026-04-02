@@ -14,8 +14,8 @@ import (
 func NewCodexCommand() *cobra.Command {
 	return &cobra.Command{
 		Use:                "codex [flags and args for codex]",
-		Short:              "Launch Codex with Cast AI models",
-		Long:               "Wraps the Codex CLI, injecting Cast AI configuration via environment variables.\nAll arguments are passed through to the codex binary.",
+		Short:              "Launch Codex with Kimchi models",
+		Long:               "Wraps the Codex CLI, injecting Kimchi configuration via environment variables.\nAll arguments are passed through to the codex binary.",
 		DisableFlagParsing: true,
 		SilenceUsage:       true,
 		SilenceErrors:      true,

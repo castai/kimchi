@@ -99,17 +99,14 @@ func writeKimchiProvider(configPath string) error {
 
 	providers, ok := cfg["model_providers"].(map[string]any)
 	if !ok {
+		if cfg["model_providers"] != nil {
+			return fmt.Errorf("codex config %s is malformed: expected model_providers to be a TOML table", configPath)
+		}
 		providers = make(map[string]any)
 		cfg["model_providers"] = providers
 	}
 
-	providers["kimchi"] = map[string]any{
-		"name":                 "Kimchi by Cast AI",
-		"base_url":             tools.BaseURL(),
-		"env_key":              tools.APIKeyEnv,
-		"env_key_instructions": tools.EnvKeyInstructions(),
-		"wire_api":             "responses",
-	}
+	providers["kimchi"] = tools.CodexProviderBlock()
 
 	// Reference the catalog from the same managed directory.
 	cfg["model_catalog_json"] = filepath.Join(filepath.Dir(configPath), "kimchi-models.json")

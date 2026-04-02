@@ -22,12 +22,12 @@ var (
 func NewRootCommand() *cobra.Command {
 	root := &cobra.Command{
 		Use:   "kimchi",
-		Short: "Configure AI coding tools to use Cast AI open-source models",
-		Long: `Kimchi by Cast AI
+		Short: "Configure AI coding tools to use open-source models via Kimchi",
+		Long: `Kimchi
 Connect your AI tools to powerful open-source models
 
 This tool configures AI coding assistants (OpenCode, Claude Code, Cursor, etc.)
-to use Cast AI's serverless inference endpoints with optimal model selection:
+to use Kimchi's serverless inference endpoints with optimal model selection:
 
 Model Selection Strategy:
   • kimi-k2.5     - Primary model: reasoning, planning, code generation, and images

@@ -14,8 +14,8 @@ import (
 func NewOpenCodeCommand() *cobra.Command {
 	return &cobra.Command{
 		Use:                "opencode [flags and args for opencode]",
-		Short:              "Launch OpenCode with Cast AI models",
-		Long:               "Wraps the OpenCode CLI, injecting Cast AI configuration via environment variables.\nAll arguments are passed through to the opencode binary.",
+		Short:              "Launch OpenCode with Kimchi models",
+		Long:               "Wraps the OpenCode CLI, injecting Kimchi configuration via environment variables.\nAll arguments are passed through to the opencode binary.",
 		DisableFlagParsing: true,
 		SilenceUsage:       true,
 		SilenceErrors:      true,

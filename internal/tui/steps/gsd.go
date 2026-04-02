@@ -202,7 +202,7 @@ func (s *GSDStep) View() string {
 
 		var actionText string
 		if status.action == gsdActionMigrate {
-			actionText = Styles.Success.Render(" migrate to Cast AI models")
+			actionText = Styles.Success.Render(" migrate to Kimchi models")
 		} else if status.action == gsdActionInstall {
 			actionText = Styles.Success.Render(" install GSD agents")
 		} else if status.installed {

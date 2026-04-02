@@ -34,7 +34,7 @@ func TestEnv_GeneratesConfig(t *testing.T) {
 	kimchiProvider, ok := providers[tools.ProviderName()].(map[string]any)
 	require.True(t, ok, "kimchi provider should be present")
 
-	assert.Equal(t, "Kimchi by Cast AI", kimchiProvider["name"])
+	assert.Equal(t, "Kimchi", kimchiProvider["name"])
 	assert.Equal(t, "@ai-sdk/openai-compatible", kimchiProvider["npm"])
 
 	options, ok := kimchiProvider["options"].(map[string]any)

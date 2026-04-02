@@ -22,6 +22,10 @@ func colorEnabled() bool {
 	if _, set := os.LookupEnv("NO_COLOR"); set {
 		return false
 	}
+	// Windows Terminal and modern PowerShell support ANSI but don't set TERM.
+	if os.Getenv("WT_SESSION") != "" || os.Getenv("COLORTERM") != "" {
+		return true
+	}
 	term := os.Getenv("TERM")
 	return term != "" && term != "dumb"
 }
@@ -38,7 +42,7 @@ func printBanner(w io.Writer, wrapping string, cfg *config.Config) {
 	}
 
 	if colorEnabled() {
-		fmt.Fprintf(w, "\n  %s%s\U0001F96C\U0001F336  kimchi%s %s— powered by Cast AI%s\n", ansiBold, ansiRed, ansiReset, ansiOrange, ansiReset)
+		fmt.Fprintf(w, "\n  %s%s\U0001F96C\U0001F336  kimchi%s\n", ansiBold, ansiRed, ansiReset)
 		fmt.Fprintf(w, "  %s%s%s\n", ansiDim, line, ansiReset)
 		fmt.Fprintf(w, "  %sTarget:%s  %s\n", ansiDim, ansiReset, wrapping)
 		fmt.Fprintf(w, "  %sModels:%s  %s\n", ansiDim, ansiReset, models)
@@ -46,7 +50,7 @@ func printBanner(w io.Writer, wrapping string, cfg *config.Config) {
 		fmt.Fprintf(w, "  %sMode:%s    %s\n", ansiDim, ansiReset, cfg.Mode)
 		fmt.Fprintf(w, "  %s%s%s\n\n", ansiDim, line, ansiReset)
 	} else {
-		fmt.Fprintf(w, "\n  kimchi — powered by Cast AI\n")
+		fmt.Fprintf(w, "\n  kimchi\n")
 		fmt.Fprintf(w, "  %s\n", strings.Repeat("-", 45))
 		fmt.Fprintf(w, "  Target:  %s\n", wrapping)
 		fmt.Fprintf(w, "  Models:  %s\n", models)

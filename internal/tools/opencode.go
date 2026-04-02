@@ -66,7 +66,7 @@ func writeOpenCode(scope config.ConfigScope) error {
 func OpenCodeProviderConfig(apiKey string) map[string]any {
 	return map[string]any{
 		"npm":  "@ai-sdk/openai-compatible",
-		"name": "Kimchi by Cast AI",
+		"name": "Kimchi",
 		"options": map[string]any{
 			"baseURL":      baseURL,
 			"litellmProxy": true,

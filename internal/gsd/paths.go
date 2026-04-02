@@ -30,6 +30,8 @@ func KimchiManagedPath(installType InstallationType) (string, error) {
 
 // EnsureSymlink creates a symlink at target pointing to src. If target already
 // exists as a real file or directory, it is left untouched.
+// On Windows, if symlink creation fails (e.g. no Developer Mode), it falls back
+// to copying the directory contents.
 func EnsureSymlink(src, target string) error {
 	if err := os.MkdirAll(filepath.Dir(target), 0755); err != nil {
 		return fmt.Errorf("create parent directory: %w", err)
@@ -40,7 +42,12 @@ func EnsureSymlink(src, target string) error {
 		return nil
 	}
 	if !errors.Is(err, fs.ErrExist) {
-		return fmt.Errorf("create GSD symlink: %w", err)
+		// Symlink failed for a reason other than "already exists" — fall back
+		// to copying (handles Windows without Developer Mode / elevated perms).
+		if copyErr := CopyInstallation(src, target); copyErr != nil {
+			return fmt.Errorf("create GSD symlink: %w (copy fallback also failed: %v)", err, copyErr)
+		}
+		return nil
 	}
 
 	// Target exists. If it's a symlink pointing to the wrong place, update it.
@@ -57,7 +64,10 @@ func EnsureSymlink(src, target string) error {
 		return fmt.Errorf("remove stale symlink: %w", err)
 	}
 	if err := os.Symlink(src, target); err != nil {
-		return fmt.Errorf("create GSD symlink: %w", err)
+		// Fallback to copy if re-creating the symlink also fails.
+		if copyErr := CopyInstallation(src, target); copyErr != nil {
+			return fmt.Errorf("create GSD symlink: %w (copy fallback also failed: %v)", err, copyErr)
+		}
 	}
 	return nil
 }

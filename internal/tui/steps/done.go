@@ -278,9 +278,9 @@ func (s *DoneStep) sendDefaultMessage() {
 }
 
 func (s *DoneStep) sendDefaultMessageTo(ch chan string) {
-	ch <- "Welcome to Kimchi by Cast AI!\n\n"
+	ch <- "Welcome to Kimchi!\n\n"
 	ch <- "You've just unlocked access to powerful open-source models\n"
-	ch <- "via Cast AI's infrastructure!\n\n"
+	ch <- "via Kimchi's infrastructure!\n\n"
 	ch <- tools.MainModel.Slug + " is your primary model for reasoning, planning,\n"
 	ch <- "code generation, and image processing.\n\n"
 	ch <- tools.CodingModel.Slug + " is your coding subagent for writing,\n"

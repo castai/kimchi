@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 
 	"github.com/castai/kimchi/internal/tools"
@@ -195,15 +196,21 @@ func rewritePaths(filePath, oldPrefix, newPrefix string) error {
 	return os.WriteFile(filePath, []byte(updated), 0644)
 }
 
-// sandboxedEnv returns the current environment with HOME, XDG_CONFIG_HOME, and
-// XDG_DATA_HOME redirected to tmpHome. This ensures npm installers write into
-// the temp directory regardless of which path convention they follow.
+// sandboxedEnv returns the current environment with home directory variables
+// redirected to tmpHome. This ensures npm installers write into the temp
+// directory regardless of which path convention they follow.
 func sandboxedEnv(tmpHome string) []string {
-	return tools.MergeEnv(map[string]string{
+	env := map[string]string{
 		"HOME":            tmpHome,
 		"XDG_CONFIG_HOME": filepath.Join(tmpHome, ".config"),
 		"XDG_DATA_HOME":   filepath.Join(tmpHome, ".local", "share"),
-	})
+	}
+	if runtime.GOOS == "windows" {
+		env["USERPROFILE"] = tmpHome
+		env["APPDATA"] = filepath.Join(tmpHome, "AppData", "Roaming")
+		env["LOCALAPPDATA"] = filepath.Join(tmpHome, "AppData", "Local")
+	}
+	return tools.MergeEnv(env)
 }
 
 // copyDir recursively copies all files from src to dst, creating dst if needed.
@@ -214,7 +221,8 @@ func copyDir(src, dst string) error {
 
 	return filepath.WalkDir(src, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
-			return err
+			// Skip entries that can't be read (e.g. broken symlinks).
+			return nil
 		}
 
 		rel, err := filepath.Rel(src, path)
@@ -233,9 +241,17 @@ func copyDir(src, dst string) error {
 }
 
 func copyFile(src, dst string) error {
-	info, err := os.Stat(src)
+	// Use Lstat so broken symlinks don't cause an error — skip them instead.
+	info, err := os.Lstat(src)
 	if err != nil {
 		return fmt.Errorf("stat source file: %w", err)
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		// Resolve the symlink target; skip if broken.
+		info, err = os.Stat(src)
+		if err != nil {
+			return nil // broken symlink — skip silently
+		}
 	}
 
 	srcFile, err := os.Open(src)

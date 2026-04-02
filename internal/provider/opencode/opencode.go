@@ -48,6 +48,8 @@ func Env(apiKey string) (map[string]string, error) {
 	providers[tools.ProviderName()] = tools.OpenCodeProviderConfig(apiKey)
 	existing["provider"] = providers
 
+	existing["model"] = tools.ProviderName() + "/" + tools.MainModel.Slug
+
 	if _, ok := existing["compaction"]; !ok {
 		existing["compaction"] = map[string]any{
 			"auto": true,
@@ -59,6 +61,10 @@ func Env(apiKey string) (map[string]string, error) {
 		return nil, fmt.Errorf("write managed config: %w", err)
 	}
 
+	// NOTE: XDG_CONFIG_HOME redirect affects all XDG-aware tools spawned by
+	// OpenCode (e.g. git). In practice git uses ~/.gitconfig by default, not
+	// XDG, so the impact is minimal. OpenCode does not support a dedicated
+	// config dir env var, so XDG_CONFIG_HOME is the only mechanism available.
 	return map[string]string{
 		"XDG_CONFIG_HOME": filepath.Join(homeDir, ".config", "kimchi"),
 	}, nil

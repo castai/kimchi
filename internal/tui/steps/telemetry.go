@@ -49,7 +49,7 @@ func (s *TelemetryStep) View() string {
 	b.WriteString("Help us improve your experience by sharing anonymous usage metrics.\n")
 	b.WriteString("This data enhances your ")
 	b.WriteString(Styles.Success.Render("Coding Report"))
-	b.WriteString(" in the Cast AI console.\n\n")
+	b.WriteString(" in the Kimchi console.\n\n")
 
 	b.WriteString(Styles.Desc.Render("What we collect:"))
 	b.WriteString("\n")

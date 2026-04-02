@@ -15,8 +15,8 @@ import (
 func NewClaudeCommand() *cobra.Command {
 	return &cobra.Command{
 		Use:                "claude [flags and args for claude]",
-		Short:              "Launch Claude Code with Cast AI models",
-		Long:               "Wraps the Claude Code CLI, injecting Cast AI configuration via environment variables.\nAll arguments are passed through to the claude binary.",
+		Short:              "Launch Claude Code with Kimchi models",
+		Long:               "Wraps the Claude Code CLI, injecting Kimchi configuration via environment variables.\nAll arguments are passed through to the claude binary.",
 		DisableFlagParsing: true,
 		SilenceUsage:       true,
 		SilenceErrors:      true,

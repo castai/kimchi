@@ -17,7 +17,7 @@ type modeOption struct {
 
 var modeOptions = []modeOption{
 	{config.ModeInject, "Runtime wrapper (recommended)", "Launch via 'kimchi claude' / 'kimchi opencode'. Your existing tool configs are never modified."},
-	{config.ModeOverride, "Direct override", "Write Cast AI settings into tool config files (e.g. ~/.claude/settings.json, ~/.config/opencode/opencode.json). Then run tools directly."},
+	{config.ModeOverride, "Direct override", "Write Kimchi settings into tool config files (e.g. ~/.claude/settings.json, ~/.config/opencode/opencode.json). Then run tools directly."},
 }
 
 type ModeStep struct {

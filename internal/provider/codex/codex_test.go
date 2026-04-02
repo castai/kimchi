@@ -97,7 +97,7 @@ func TestEnv_WritesDefaultAgentsMD(t *testing.T) {
 	agentsPath := filepath.Join(tmpDir, ".config", "kimchi", "codex", "AGENTS.md")
 	data, err := os.ReadFile(agentsPath)
 	require.NoError(t, err)
-	assert.Contains(t, string(data), "Cast AI")
+	assert.Contains(t, string(data), "Kimchi")
 }
 
 func TestEnv_PreservesUserAgentsMD(t *testing.T) {

@@ -209,7 +209,7 @@ func (s *ConfigureStep) View() string {
 		} else {
 			b.WriteString(Styles.Success.Render("Configuration complete!"))
 			b.WriteString("\n\n")
-			b.WriteString("Your tools are now connected to Cast AI's inference endpoint:\n")
+			b.WriteString("Your tools are now connected to Kimchi's inference endpoint:\n")
 			b.WriteString(Styles.Success.Render("https://llm.cast.ai"))
 			b.WriteString("\n\n")
 			b.WriteString("Each tool has been configured with optimal models for its use case:")
@@ -256,7 +256,7 @@ func (s *ConfigureStep) getModelInfoForTool(toolID tools.ToolID) string {
 	case tools.ToolGSD2:
 		return fmt.Sprintf("→ %s (default) + %s (coding) + %s (sub)", m, c, s2)
 	case tools.ToolGeneric:
-		return "→ Environment variables for Cast AI endpoint"
+		return "→ Environment variables for Kimchi endpoint"
 	default:
 		return ""
 	}

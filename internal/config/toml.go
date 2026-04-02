@@ -33,11 +33,12 @@ func WriteTOML(path string, data map[string]any) error {
 	tmpPath := path + ".tmp"
 	f, err := os.Create(tmpPath)
 	if err != nil {
-		return fmt.Errorf("create temp file: %w", err)
+		return fmt.Errorf("create temp fzile: %w", err)
 	}
 
 	if err := toml.NewEncoder(f).Encode(data); err != nil {
 		f.Close()
+		os.Remove(tmpPath)
 		return fmt.Errorf("encode TOML: %w", err)
 	}
 

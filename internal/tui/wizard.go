@@ -210,16 +210,14 @@ func (w *wizard) collectStepResult() {
 	case *steps.ModeStep:
 		w.config.Mode = s.SelectedMode()
 		if w.config.Mode == config.ModeInject {
-			// Only skip the scope step if all selected tools are wrappable.
-			// IDE tools (Cursor, Zed, etc.) still need override and thus need scope.
-			if w.allToolsWrappable() {
-				w.config.Scope = config.ScopeGlobal
-				w.removePendingStep(func(step steps.Step) bool {
-					_, ok := step.(*steps.ScopeStep)
-					return ok
-				})
-				w.scheduleConfigureIfReady()
-			}
+			// Inject mode configures tools at launch time, not via on-disk
+			// config files, so scope (global vs project) is not needed.
+			w.config.Scope = config.ScopeGlobal
+			w.removePendingStep(func(step steps.Step) bool {
+				_, ok := step.(*steps.ScopeStep)
+				return ok
+			})
+			w.scheduleConfigureIfReady()
 		}
 	case *steps.ScopeStep:
 		w.config.Scope = s.SelectedScope()
