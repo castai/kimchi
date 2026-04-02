@@ -202,9 +202,8 @@ func (w *wizard) collectStepResult() {
 		}
 	case *steps.ToolsStep:
 		w.config.SelectedTools = s.SelectedTools()
-		if w.hasClaudeCode() {
-			w.pendingTelemetry = steps.NewTelemetryStep()
-		}
+		// TOOD: add this back once we have telemetry for opencode
+		// w.pendingTelemetry = steps.NewTelemetryStep()
 	case *steps.ScopeStep:
 		w.config.Scope = s.SelectedScope()
 		w.scheduleConfigureIfReady()
@@ -238,10 +237,6 @@ func (w *wizard) scheduleConfigureIfReady() {
 		TelemetryOptIn: w.config.TelemetryOptIn,
 		APIKey:         w.config.APIKey,
 	})
-}
-
-func (w *wizard) hasClaudeCode() bool {
-	return slices.Contains(w.config.SelectedTools, tools.ToolClaudeCode)
 }
 
 func RunWizard() (*WizardConfig, error) {

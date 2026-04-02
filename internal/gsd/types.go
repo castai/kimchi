@@ -3,9 +3,8 @@ package gsd
 type InstallationType string
 
 const (
-	InstallationOpenCode   InstallationType = "opencode"
-	InstallationClaudeCode InstallationType = "claude-code"
-	InstallationCodex      InstallationType = "codex"
+	InstallationOpenCode InstallationType = "opencode"
+	InstallationCodex    InstallationType = "codex"
 )
 
 var PlanningAgents = []string{

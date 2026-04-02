@@ -42,8 +42,6 @@ func configRoot(installType InstallationType, scope string) (string, error) {
 		switch installType {
 		case InstallationOpenCode:
 			return filepath.Join(cwd, ".opencode"), nil
-		case InstallationClaudeCode:
-			return filepath.Join(cwd, ".claude"), nil
 		case InstallationCodex:
 			return filepath.Join(cwd, ".codex"), nil
 		}
@@ -52,12 +50,6 @@ func configRoot(installType InstallationType, scope string) (string, error) {
 	switch installType {
 	case InstallationOpenCode:
 		return resolveOpenCodeGlobalRoot()
-	case InstallationClaudeCode:
-		homeDir, err := os.UserHomeDir()
-		if err != nil {
-			return "", err
-		}
-		return filepath.Join(homeDir, ".claude"), nil
 	case InstallationCodex:
 		homeDir, err := os.UserHomeDir()
 		if err != nil {

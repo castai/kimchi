@@ -5,15 +5,14 @@ import "github.com/castai/kimchi/internal/config"
 type ToolID string
 
 const (
-	ToolOpenCode   ToolID = "opencode"
-	ToolClaudeCode ToolID = "claude-code"
-	ToolContinue   ToolID = "continue"
-	ToolWindsurf   ToolID = "windsurf"
-	ToolZed        ToolID = "zed"
-	ToolCodex      ToolID = "codex"
-	ToolCline      ToolID = "cline"
-	ToolGSD2       ToolID = "gsd2"
-	ToolGeneric    ToolID = "generic"
+	ToolOpenCode ToolID = "opencode"
+	ToolContinue ToolID = "continue"
+	ToolWindsurf ToolID = "windsurf"
+	ToolZed      ToolID = "zed"
+	ToolCodex    ToolID = "codex"
+	ToolCline    ToolID = "cline"
+	ToolGSD2     ToolID = "gsd2"
+	ToolGeneric  ToolID = "generic"
 )
 
 type Tool struct {

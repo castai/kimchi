@@ -61,9 +61,8 @@ func (s *GSDStep) checkGSDStatus() tea.Cmd {
 		scopeStr := string(s.scope)
 
 		toolToGSDType := map[tools.ToolID]gsd.InstallationType{
-			tools.ToolOpenCode:   gsd.InstallationOpenCode,
-			tools.ToolClaudeCode: gsd.InstallationClaudeCode,
-			tools.ToolCodex:      gsd.InstallationCodex,
+			tools.ToolOpenCode: gsd.InstallationOpenCode,
+			tools.ToolCodex:    gsd.InstallationCodex,
 		}
 
 		for _, selectedID := range s.selectedTools {

@@ -6,9 +6,10 @@ import (
 	"sync"
 	"time"
 
+	tea "github.com/charmbracelet/bubbletea"
+
 	"github.com/castai/kimchi/internal/config"
 	"github.com/castai/kimchi/internal/tools"
-	tea "github.com/charmbracelet/bubbletea"
 )
 
 type ConfigureParams struct {
@@ -119,12 +120,7 @@ func (s *ConfigureStep) writeToolConfig(index int) tea.Cmd {
 			return writeCompleteMsg{index: index, status: "skipped", err: fmt.Errorf("no writer for tool")}
 		}
 
-		var err error
-		if tool.ID == tools.ToolClaudeCode {
-			err = tools.WriteClaudeCode(s.scope, s.telemetryOptIn)
-		} else {
-			err = tool.Write(s.scope)
-		}
+		err := tool.Write(s.scope)
 		if err != nil {
 			return writeCompleteMsg{index: index, status: "failed", err: err}
 		}
@@ -239,8 +235,6 @@ func (s *ConfigureStep) getModelInfoForTool(toolID tools.ToolID) string {
 	s2 := tools.SubModel.Slug
 
 	switch toolID {
-	case tools.ToolClaudeCode:
-		return fmt.Sprintf("→ %s (plan mode) + %s (execution mode)", m, c)
 	case tools.ToolOpenCode:
 		return fmt.Sprintf("→ %s (primary) + %s (coding) + %s (sub)", m, c, s2)
 	case tools.ToolContinue:
