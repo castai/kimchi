@@ -10,18 +10,25 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+func writeConfigFile(t *testing.T, homeDir string, content []byte) string {
+	t.Helper()
+	configDir := filepath.Join(homeDir, ".config", "kimchi")
+	require.NoError(t, os.MkdirAll(configDir, 0755))
+	configPath := filepath.Join(configDir, "config.json")
+	require.NoError(t, os.WriteFile(configPath, content, 0600))
+	return configPath
+}
+
 func TestExecute_DoesNotOverwriteCorruptedConfig(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 
-	configDir := filepath.Join(home, ".config", "kimchi")
-	require.NoError(t, os.MkdirAll(configDir, 0755))
 	corruptedContent := []byte(`{invalid json`)
-	configPath := filepath.Join(configDir, "config.json")
-	require.NoError(t, os.WriteFile(configPath, corruptedContent, 0600))
+	configPath := writeConfigFile(t, home, corruptedContent)
 
-	_ = Execute("version")
+	err := Execute("version")
 
+	require.NoError(t, err)
 	got, err := os.ReadFile(configPath)
 	require.NoError(t, err)
 	assert.Equal(t, corruptedContent, got, "corrupted config should not be overwritten")
@@ -38,4 +45,20 @@ func TestExecute_TelemetryEnabledByDefault(t *testing.T) {
 	require.NoError(t, err)
 	assert.True(t, cfg.TelemetryNoticeShown, "telemetry notice should have been shown")
 	assert.NotEmpty(t, cfg.DeviceID, "device ID should have been generated")
+}
+
+func TestExecute_LegacyConfigWithoutTelemetryFields(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	writeConfigFile(t, home, []byte(`{"api_key": "test-key"}`))
+
+	err := Execute("version")
+	require.NoError(t, err)
+
+	cfg, err := config.Load()
+	require.NoError(t, err)
+	assert.Equal(t, "test-key", cfg.APIKey, "existing API key should be preserved")
+	assert.NotEmpty(t, cfg.DeviceID, "device ID should have been generated")
+	assert.True(t, cfg.TelemetryNoticeShown, "telemetry notice should have been shown")
 }
