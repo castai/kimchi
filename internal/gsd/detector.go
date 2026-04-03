@@ -13,57 +13,57 @@ func NewDetector() *Detector {
 	return &Detector{}
 }
 
+// Detect scans the global install locations for all supported tools and returns
+// every Installation that has GSD agent files present.
 func (d *Detector) Detect() ([]Installation, error) {
-	var installations []Installation
-
 	homeDir, err := os.UserHomeDir()
 	if err != nil {
 		return nil, fmt.Errorf("get home directory: %w", err)
 	}
 
-	openCodeGSD := filepath.Join(homeDir, ".config", "opencode", "commands", "gsd")
-	if install, err := d.checkInstallation(openCodeGSD, InstallationOpenCode); err == nil && install != nil {
-		installations = append(installations, *install)
+	opencodeRoot, err := resolveOpenCodeGlobalRoot()
+	if err != nil {
+		opencodeRoot = filepath.Join(homeDir, ".config", "opencode")
 	}
 
-	claudeCodeGSD := filepath.Join(homeDir, ".claude", "commands", "gsd")
-	if install, err := d.checkInstallation(claudeCodeGSD, InstallationClaudeCode); err == nil && install != nil {
+	var installations []Installation
+	if install := d.detectInRoot(opencodeRoot, InstallationOpenCode); install != nil {
 		installations = append(installations, *install)
 	}
 
 	return installations, nil
 }
 
-func (d *Detector) checkInstallation(path string, installType InstallationType) (*Installation, error) {
-	info, err := os.Stat(path)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return nil, nil
+// detectInRoot looks for GSD agent files under root, checking both the current
+// (commands/gsd) and legacy (command/gsd) directory structures. If neither
+// directory has agent files but the gsd-opencode VERSION file exists, a bare
+// Installation is returned so the caller knows something is installed even
+// before any agent files are written.
+func (d *Detector) detectInRoot(root string, installType InstallationType) *Installation {
+	for _, dir := range gsdCommandDirs(root) {
+		info, err := os.Stat(dir)
+		if err != nil || !info.IsDir() {
+			continue
 		}
-		return nil, fmt.Errorf("stat %s: %w", path, err)
+		files, err := d.agentFiles(dir)
+		if err != nil || len(files) == 0 {
+			continue
+		}
+		return &Installation{Type: installType, Path: dir, AgentFiles: files}
 	}
 
-	if !info.IsDir() {
-		return nil, nil
+	// VERSION file present but command dir empty or absent (e.g. partial install).
+	if installType == InstallationOpenCode {
+		versionFile := filepath.Join(root, "get-shit-done", "VERSION")
+		if _, err := os.Stat(versionFile); err == nil {
+			return &Installation{Type: installType, Path: root}
+		}
 	}
 
-	agentFiles, err := d.getAgentFiles(path)
-	if err != nil {
-		return nil, fmt.Errorf("get agent files: %w", err)
-	}
-
-	if len(agentFiles) == 0 {
-		return nil, nil
-	}
-
-	return &Installation{
-		Type:       installType,
-		Path:       path,
-		AgentFiles: agentFiles,
-	}, nil
+	return nil
 }
 
-func (d *Detector) getAgentFiles(dir string) ([]AgentFile, error) {
+func (d *Detector) agentFiles(dir string) ([]AgentFile, error) {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		return nil, fmt.Errorf("read directory: %w", err)
@@ -71,28 +71,19 @@ func (d *Detector) getAgentFiles(dir string) ([]AgentFile, error) {
 
 	var files []AgentFile
 	for _, entry := range entries {
-		if entry.IsDir() {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".md") {
 			continue
 		}
-
-		name := entry.Name()
-		if !strings.HasSuffix(name, ".md") {
-			continue
-		}
-
-		fullPath := filepath.Join(dir, name)
+		fullPath := filepath.Join(dir, entry.Name())
 		content, err := os.ReadFile(fullPath)
 		if err != nil {
 			continue
 		}
-
-		agentName := strings.TrimSuffix(name, ".md")
 		files = append(files, AgentFile{
 			Path:       fullPath,
-			Name:       agentName,
+			Name:       strings.TrimSuffix(entry.Name(), ".md"),
 			RawContent: string(content),
 		})
 	}
-
 	return files, nil
 }

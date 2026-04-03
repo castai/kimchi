@@ -6,7 +6,82 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"strings"
 )
+
+// resolveOpenCodeGlobalRoot returns the global OpenCode configuration root
+// using the same priority chain as gsd-opencode and get-shit-done-cc:
+//
+//  1. OPENCODE_CONFIG_DIR – explicit override
+//  2. dirname(OPENCODE_CONFIG) – when a specific config file is pointed to
+//  3. XDG_CONFIG_HOME/opencode – XDG-compliant systems
+//  4. ~/.config/opencode – default
+func resolveOpenCodeGlobalRoot() (string, error) {
+	homeDir, err := os.UserHomeDir()
+	if err != nil {
+		return "", err
+	}
+	if v := os.Getenv("OPENCODE_CONFIG_DIR"); v != "" {
+		return expandTilde(v, homeDir), nil
+	}
+	if v := os.Getenv("OPENCODE_CONFIG"); v != "" {
+		return filepath.Dir(expandTilde(v, homeDir)), nil
+	}
+	if v := os.Getenv("XDG_CONFIG_HOME"); v != "" {
+		return filepath.Join(expandTilde(v, homeDir), "opencode"), nil
+	}
+	return filepath.Join(homeDir, ".config", "opencode"), nil
+}
+
+// configRoot returns the tool's configuration root for the given scope.
+// For project scope this is always a dotdir under cwd; for global scope
+// it uses the standard tool location (OpenCode respects env vars).
+func configRoot(installType InstallationType, scope string) (string, error) {
+	if scope == "project" {
+		cwd, err := os.Getwd()
+		if err != nil {
+			return "", err
+		}
+		switch installType {
+		case InstallationOpenCode:
+			return filepath.Join(cwd, ".opencode"), nil
+		case InstallationCodex:
+			return filepath.Join(cwd, ".codex"), nil
+		}
+	}
+
+	switch installType {
+	case InstallationOpenCode:
+		return resolveOpenCodeGlobalRoot()
+	case InstallationCodex:
+		homeDir, err := os.UserHomeDir()
+		if err != nil {
+			return "", err
+		}
+		return filepath.Join(homeDir, ".codex"), nil
+	}
+	return "", nil
+}
+
+// gsdCommandDirs returns the candidate GSD command directories under a config
+// root in preference order: current structure first, then legacy (no trailing s).
+func gsdCommandDirs(root string) []string {
+	return []string{
+		filepath.Join(root, "commands", "gsd"),
+		filepath.Join(root, "command", "gsd"),
+	}
+}
+
+// expandTilde replaces a leading ~ with homeDir.
+func expandTilde(path, homeDir string) string {
+	if path == "~" {
+		return homeDir
+	}
+	if strings.HasPrefix(path, "~/") {
+		return filepath.Join(homeDir, path[2:])
+	}
+	return path
+}
 
 // KimchiManagedPath returns the kimchi-managed GSD directory for the given
 // installation type (global scope only).
@@ -39,15 +114,12 @@ func EnsureSymlink(src, target string) error {
 		return nil
 	}
 	if !errors.Is(err, fs.ErrExist) {
-		// Symlink failed for a reason other than "already exists" — fall back
-		// to copying (handles Windows without Developer Mode / elevated perms).
 		if copyErr := CopyInstallation(src, target); copyErr != nil {
 			return fmt.Errorf("create GSD symlink: %w (copy fallback also failed: %v)", err, copyErr)
 		}
 		return nil
 	}
 
-	// Target exists. If it's a symlink pointing to the wrong place, update it.
 	existing, readErr := os.Readlink(target)
 	if readErr != nil {
 		// Not a symlink (real file/dir) — leave untouched.
@@ -61,7 +133,6 @@ func EnsureSymlink(src, target string) error {
 		return fmt.Errorf("remove stale symlink: %w", err)
 	}
 	if err := os.Symlink(src, target); err != nil {
-		// Fallback to copy if re-creating the symlink also fails.
 		if copyErr := CopyInstallation(src, target); copyErr != nil {
 			return fmt.Errorf("create GSD symlink: %w (copy fallback also failed: %v)", err, copyErr)
 		}
@@ -77,5 +148,5 @@ func CopyInstallation(src, dst string) error {
 // ReadAgentFiles reads all agent files from dir and returns them.
 func ReadAgentFiles(dir string) ([]AgentFile, error) {
 	d := &Detector{}
-	return d.getAgentFiles(dir)
+	return d.agentFiles(dir)
 }

@@ -25,7 +25,8 @@ type InstallResult struct {
 	Installed []string
 }
 
-// gsdInstallSpec describes how to install a GSD package for a specific tool.
+// gsdInstallSpec describes how to install a GSD package into a kimchi-managed
+// sandbox directory (used by inject mode).
 type gsdInstallSpec struct {
 	npxArgs     []string
 	tmpSubDir   string // relative to tmp home, e.g. ".config/opencode"
@@ -57,6 +58,9 @@ var gsdSpecs = map[InstallationType]gsdInstallSpec{
 	},
 }
 
+// Install runs the GSD installer for the given tool. It uses a sandboxed temp
+// directory so the user's real config is never modified, then copies the result
+// to the kimchi-managed path.
 func (i *Installer) Install(installType InstallationType, scope string) (*InstallResult, error) {
 	spec, ok := gsdSpecs[installType]
 	if !ok {
@@ -76,7 +80,6 @@ func (i *Installer) Install(installType InstallationType, scope string) (*Instal
 
 	tmpToolDir := filepath.Join(tmpHome, spec.tmpSubDir)
 
-	// Append the temp tool dir as the --config-dir value.
 	args := make([]string, len(spec.npxArgs)+1)
 	copy(args, spec.npxArgs)
 	args[len(spec.npxArgs)] = tmpToolDir
@@ -92,7 +95,6 @@ func (i *Installer) Install(installType InstallationType, scope string) (*Instal
 		return nil, fmt.Errorf("copy GSD files to kimchi dir: %w", err)
 	}
 
-	// Some installers write absolute temp paths into config files.
 	if spec.rewriteFile != "" {
 		if err := rewritePaths(filepath.Join(destPath, spec.rewriteFile), tmpToolDir, destPath); err != nil {
 			return nil, fmt.Errorf("rewrite config paths: %w", err)
@@ -125,66 +127,37 @@ func getOpenCodeGSDPath(scope string) (string, error)   { return getGSDPath("ope
 func getClaudeCodeGSDPath(scope string) (string, error) { return getGSDPath("claude-code", scope) }
 func getCodexGSDPath(scope string) (string, error)      { return getGSDPath("codex", scope) }
 
+// IsInstalledFor reports whether GSD is already installed for the given tool
+// and scope, using the same signals the npm packages use internally so that
+// our routing (repair vs fresh install) agrees with theirs.
 func (i *Installer) IsInstalledFor(installType InstallationType, scope string) bool {
-	homeDir, err := os.UserHomeDir()
+	// Check the kimchi-managed path first.
+	if path, err := KimchiManagedPath(installType); err == nil {
+		if info, err := os.Stat(path); err == nil && info.IsDir() {
+			return true
+		}
+	}
+
+	// Then check the real tool path via configRoot.
+	root, err := configRoot(installType, scope)
 	if err != nil {
 		return false
 	}
 
-	// Resolve the tool name to construct the kimchi-managed path inline.
-	var toolName string
-	switch installType {
-	case InstallationOpenCode:
-		toolName = "opencode"
-	case InstallationClaudeCode:
-		toolName = "claude-code"
-	case InstallationCodex:
-		toolName = "codex"
-	default:
-		return false
-	}
-
-	var basePath string
-	if scope == "project" {
-		cwd, err := os.Getwd()
-		if err == nil {
-			basePath = filepath.Join(cwd, ".kimchi", toolName)
-		}
-	} else {
-		basePath = filepath.Join(homeDir, ".config", "kimchi", toolName)
-	}
-
-	if basePath != "" {
-		if info, err := os.Stat(basePath); err == nil && info.IsDir() {
+	if installType == InstallationOpenCode {
+		// Primary signal used by gsd-opencode: VERSION file.
+		versionFile := filepath.Join(root, "get-shit-done", "VERSION")
+		if _, err := os.Stat(versionFile); err == nil {
 			return true
 		}
 	}
 
-	// Also check the real tool path (user may have installed GSD directly).
-	var realPaths []string
-	switch installType {
-	case InstallationOpenCode:
-		realPaths = []string{
-			filepath.Join(homeDir, ".config", "opencode", "get-shit-done"),
-			filepath.Join(homeDir, ".config", "opencode", "commands", "gsd"),
-		}
-	case InstallationClaudeCode:
-		realPaths = []string{
-			filepath.Join(homeDir, ".claude", "get-shit-done"),
-			filepath.Join(homeDir, ".claude", "commands", "gsd"),
-		}
-	case InstallationCodex:
-		realPaths = []string{
-			filepath.Join(homeDir, ".codex", "get-shit-done"),
-		}
-	}
-
-	for _, p := range realPaths {
-		if info, err := os.Stat(p); err == nil && info.IsDir() {
+	// Current (commands/gsd) and legacy (command/gsd) directory structures.
+	for _, dir := range gsdCommandDirs(root) {
+		if info, err := os.Stat(dir); err == nil && info.IsDir() {
 			return true
 		}
 	}
-
 	return false
 }
 
@@ -204,8 +177,7 @@ func rewritePaths(filePath, oldPrefix, newPrefix string) error {
 }
 
 // sandboxedEnv returns the current environment with home directory variables
-// redirected to tmpHome. This ensures npm installers write into the temp
-// directory regardless of which path convention they follow.
+// redirected to tmpHome so npm installers write into the temp directory.
 func sandboxedEnv(tmpHome string) []string {
 	env := map[string]string{
 		"HOME":            tmpHome,
@@ -248,7 +220,6 @@ func copyDir(src, dst string) error {
 }
 
 func copyFile(src, dst string) error {
-	// Use Lstat so broken symlinks don't cause an error — skip them instead.
 	info, err := os.Lstat(src)
 	if err != nil {
 		return fmt.Errorf("stat source file: %w", err)

@@ -204,9 +204,8 @@ func (w *wizard) collectStepResult() {
 		}
 	case *steps.ToolsStep:
 		w.config.SelectedTools = s.SelectedTools()
-		if w.hasClaudeCode() {
-			w.pendingTelemetry = steps.NewTelemetryStep()
-		}
+		// TODO: add this back once we have telemetry for opencode
+		// w.pendingTelemetry = steps.NewTelemetryStep()
 	case *steps.ModeStep:
 		w.config.Mode = s.SelectedMode()
 		if w.config.Mode == config.ModeInject {
@@ -262,9 +261,6 @@ func (w *wizard) removePendingStep(match func(steps.Step) bool) {
 	}
 }
 
-func (w *wizard) hasClaudeCode() bool {
-	return slices.Contains(w.config.SelectedTools, tools.ToolClaudeCode)
-}
 
 func RunWizard() (*WizardConfig, error) {
 	ctx := context.Background()

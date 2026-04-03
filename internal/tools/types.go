@@ -8,12 +8,12 @@ const (
 	ToolOpenCode   ToolID = "opencode"
 	ToolClaudeCode ToolID = "claude-code"
 	ToolContinue   ToolID = "continue"
-	ToolWindsurf   ToolID = "windsurf"
-	ToolZed        ToolID = "zed"
-	ToolCodex      ToolID = "codex"
-	ToolCline      ToolID = "cline"
-	ToolGSD2       ToolID = "gsd2"
-	ToolGeneric    ToolID = "generic"
+	ToolWindsurf ToolID = "windsurf"
+	ToolZed      ToolID = "zed"
+	ToolCodex    ToolID = "codex"
+	ToolCline    ToolID = "cline"
+	ToolGSD2     ToolID = "gsd2"
+	ToolGeneric  ToolID = "generic"
 )
 
 // IsWrappable returns true if the tool can be launched via `kimchi <tool>`

@@ -294,8 +294,6 @@ func (s *DoneStep) getToolTip(toolID tools.ToolID) string {
 	switch toolID {
 	case tools.ToolOpenCode:
 		return "Run 'opencode' in any project directory to start. Use Ctrl+K for quick actions."
-	case tools.ToolClaudeCode:
-		return fmt.Sprintf("Run 'claude' to start. Default model is Kimchi's %s. Use /models to switch to Opus/Haiku (actual Claude) if needed.", tools.MainModel.Slug)
 	case tools.ToolZed:
 		return "Open Zed and use Cmd+Enter to send prompts to the AI assistant."
 	case tools.ToolCodex:

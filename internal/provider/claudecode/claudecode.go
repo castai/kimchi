@@ -5,7 +5,6 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/castai/kimchi/internal/config"
 	"github.com/castai/kimchi/internal/gsd"
 	"github.com/castai/kimchi/internal/tools"
 )
@@ -88,8 +87,3 @@ func Env(apiKey string, telemetryOptIn bool) map[string]string {
 	return tools.ClaudeCodeEnvVars(apiKey, telemetryOptIn)
 }
 
-// WriteConfig writes the Claude Code settings file for the given scope.
-// Delegates to tools.WriteClaudeCode.
-func WriteConfig(scope config.ConfigScope, telemetryOptIn bool) error {
-	return tools.WriteClaudeCode(scope, telemetryOptIn)
-}
