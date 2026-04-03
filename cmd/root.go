@@ -45,44 +45,13 @@ Get your API key at: https://kimchi.console.cast.ai`,
 		SilenceUsage:  true,
 		SilenceErrors: true,
 		Version:       version.String(),
-		PersistentPreRun: func(cmd *cobra.Command, args []string) {
-			propagateKlogFlags(cmd)
+		RunE:          runConfigure,
+	}
 
-			cfg, loadErr := config.Load()
-			if loadErr != nil {
-				klog.V(1).ErrorS(loadErr, "failed to load config")
-				cfg = &config.Config{}
-			}
-			original := *cfg
-
-			enabled, err := config.IsTelemetryEnabledFromConfig(cfg)
-			if err != nil {
-				klog.V(1).ErrorS(err, "failed to check telemetry status, assuming disabled")
-				enabled = false
-			}
-
-			if cfg.DeviceID == "" {
-				cfg.DeviceID = uuid.NewString()
-			}
-
-			client := telemetry.New(telemetry.PostHogAPIKey, enabled, cfg.DeviceID)
-			cmd.SetContext(telemetry.WithCtx(cmd.Context(), client))
-			client.Track(telemetry.NewEvent("app_started", nil))
-
-			if !cfg.TelemetryNoticeShown && enabled {
-				fmt.Fprintln(cmd.ErrOrStderr(),
-					"INFO: Kimchi collects anonymous usage data to improve the product. "+
-						"Run 'kimchi config telemetry off' to disable.")
-				cfg.TelemetryNoticeShown = true
-			}
-
-			if !original.Equal(cfg) {
-				if saveErr := config.Save(cfg); saveErr != nil {
-					klog.V(1).ErrorS(saveErr, "failed to save config")
-				}
-			}
-		},
-		RunE: runConfigure,
+	root.PersistentPreRun = func(cmd *cobra.Command, _ []string) {
+		propagateKlogFlags(root)
+		initTelemetry(root)
+		cmd.SetContext(root.Context())
 	}
 
 	root.PersistentFlags().BoolVar(&debug, "debug", false, "Enable debug output")
@@ -103,6 +72,46 @@ func initKlogFlags(root *cobra.Command) {
 	fs := flag.NewFlagSet("klog", flag.ContinueOnError)
 	klog.InitFlags(fs)
 	root.PersistentFlags().AddGoFlagSet(fs)
+}
+
+func initTelemetry(root *cobra.Command) {
+	cfg, loadErr := config.Load()
+	if loadErr != nil {
+		klog.V(1).ErrorS(loadErr, "failed to load config")
+		cfg = &config.Config{}
+	}
+	original := *cfg
+
+	enabled, err := config.IsTelemetryEnabledFromConfig(cfg)
+	if err != nil {
+		klog.V(1).ErrorS(err, "failed to check telemetry status, assuming disabled")
+		enabled = false
+	}
+
+	if cfg.DeviceID == "" {
+		cfg.DeviceID = uuid.NewString()
+	}
+
+	client := telemetry.New(telemetry.PostHogAPIKey, enabled, cfg.DeviceID)
+	root.SetContext(telemetry.WithCtx(root.Context(), client))
+
+	if !cfg.TelemetryNoticeShown && enabled {
+		fmt.Fprintln(root.ErrOrStderr(),
+			"INFO: Kimchi collects anonymous usage data to improve the product. "+
+				"Run 'kimchi config telemetry off' to disable.")
+		cfg.TelemetryNoticeShown = true
+	}
+
+	if loadErr == nil && !original.Equal(cfg) {
+		if saveErr := config.Save(cfg); saveErr != nil {
+			klog.V(1).ErrorS(saveErr, "failed to save config")
+		}
+	}
+
+	// Note: app_started fires on all commands, including "config telemetry off".
+	// This is intentional — telemetry is still enabled at the time the event fires.
+	// The client is a noop when telemetry is already disabled.
+	client.Track(telemetry.NewEvent("app_started", nil))
 }
 
 // propagateKlogFlags applies the --debug or --verbose flag values to klog's -v verbosity level
@@ -128,8 +137,11 @@ func runConfigure(cmd *cobra.Command, args []string) error {
 }
 
 // Execute runs the root command.
-func Execute() error {
+func Execute(args ...string) error {
 	root := newRootCommand()
+	if len(args) > 0 {
+		root.SetArgs(args)
+	}
 	ctx := context.Background()
 	defer func() {
 		telemetry.FromCtx(root.Context()).Close()

@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"strconv"
 	"strings"
 )
 
@@ -123,10 +122,6 @@ func ParseSwitch(s string) (bool, error) {
 	case "off", "false", "0", "no":
 		return false, nil
 	default:
-		// Try strconv as fallback for other valid bool formats
-		if b, err := strconv.ParseBool(s); err == nil {
-			return b, nil
-		}
 		return false, fmt.Errorf("invalid switch value: %q (expected on/off, true/false, 1/0, yes/no)", s)
 	}
 }

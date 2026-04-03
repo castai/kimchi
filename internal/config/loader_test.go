@@ -24,17 +24,11 @@ func TestSetTelemetryEnabled_ClearsDeviceIDOnDisable(t *testing.T) {
 	cfg.DeviceID = "test-device-id"
 	require.NoError(t, Save(cfg))
 
-	if err := SetTelemetryEnabled(false); err != nil {
-		t.Fatalf("disable: %v", err)
-	}
+	require.NoError(t, SetTelemetryEnabled(false))
 
 	cfg, err = Load()
-	if err != nil {
-		t.Fatalf("load: %v", err)
-	}
-	if cfg.DeviceID != "" {
-		t.Errorf("expected empty device ID after disable, got %q", cfg.DeviceID)
-	}
+	require.NoError(t, err)
+	assert.Empty(t, cfg.DeviceID, "expected empty device ID after disable")
 }
 
 func TestSetTelemetryEnabled_PreservesDeviceIDOnEnable(t *testing.T) {
@@ -46,15 +40,9 @@ func TestSetTelemetryEnabled_PreservesDeviceIDOnEnable(t *testing.T) {
 	cfg.DeviceID = "test-device-id"
 	require.NoError(t, Save(cfg))
 
-	if err := SetTelemetryEnabled(true); err != nil {
-		t.Fatalf("enable: %v", err)
-	}
+	require.NoError(t, SetTelemetryEnabled(true))
 
 	cfg, err = Load()
-	if err != nil {
-		t.Fatalf("load: %v", err)
-	}
-	if cfg.DeviceID != "test-device-id" {
-		t.Errorf("expected device ID %q preserved, got %q", "test-device-id", cfg.DeviceID)
-	}
+	require.NoError(t, err)
+	assert.Equal(t, "test-device-id", cfg.DeviceID, "expected device ID preserved after enable")
 }
