@@ -19,9 +19,9 @@ func ExecTool(binary string, args []string, env map[string]string) error {
 // signals, waits for it to exit, then calls cleanup.
 // Returns an *ExitError with the child's exit code so the caller can propagate it.
 func RunTool(binary string, args []string, env map[string]string, cleanup func()) error {
-	binaryPath, err := exec.LookPath(binary)
+	binaryPath, err := FindBinary(binary)
 	if err != nil {
-		return fmt.Errorf("%s is not installed or not in PATH", binary)
+		return err
 	}
 
 	cmd := exec.Command(binaryPath, args...)

@@ -21,11 +21,11 @@ func TestPrintBanner_ContainsKimchi(t *testing.T) {
 	t.Setenv("NO_COLOR", "1")
 
 	var buf bytes.Buffer
-	printBanner(&buf, "Claude Code", testConfig())
+	printBanner(&buf, "opencode", testConfig())
 
 	output := buf.String()
 	assert.Contains(t, output, "kimchi")
-	assert.Contains(t, output, "Claude Code")
+	assert.Contains(t, output, "opencode")
 }
 
 func TestPrintBanner_NoColor(t *testing.T) {
@@ -33,7 +33,7 @@ func TestPrintBanner_NoColor(t *testing.T) {
 	t.Setenv("TERM", "")
 
 	var buf bytes.Buffer
-	printBanner(&buf, "Claude Code", testConfig())
+	printBanner(&buf, "opencode", testConfig())
 
 	output := buf.String()
 	assert.NotContains(t, output, "\033[", "output should not contain ANSI escape codes when NO_COLOR is set")
@@ -78,7 +78,7 @@ func TestPrintBanner_ShowsGSDNotInstalled(t *testing.T) {
 
 	cfg := &config.Config{Mode: config.ModeInject}
 	var buf bytes.Buffer
-	printBanner(&buf, "claude", cfg)
+	printBanner(&buf, "codex", cfg)
 
 	assert.Contains(t, buf.String(), "not installed")
 }
@@ -87,7 +87,7 @@ func TestPrintBanner_OutputEndsWithNewline(t *testing.T) {
 	t.Setenv("NO_COLOR", "1")
 
 	var buf bytes.Buffer
-	printBanner(&buf, "Claude Code", testConfig())
+	printBanner(&buf, "opencode", testConfig())
 
 	output := buf.String()
 	assert.True(t, strings.HasSuffix(output, "\n"), "banner output should end with a newline")

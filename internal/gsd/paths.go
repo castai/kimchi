@@ -88,8 +88,6 @@ func expandTilde(path, homeDir string) string {
 func KimchiManagedPath(installType InstallationType) (string, error) {
 	var toolName string
 	switch installType {
-	case InstallationClaudeCode:
-		toolName = "claude-code"
 	case InstallationOpenCode:
 		toolName = "opencode"
 	case InstallationCodex:

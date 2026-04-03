@@ -9,7 +9,7 @@ const (
 	ModeInject ConfigMode = "inject"
 
 	// ModeOverride writes configuration directly into each tool's config files
-	// (e.g. ~/.claude/settings.json). Tools can then be run directly.
+	// (e.g. ~/.config/opencode/opencode.json). Tools can then be run directly.
 	ModeOverride ConfigMode = "override"
 )
 

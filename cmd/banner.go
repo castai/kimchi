@@ -34,7 +34,7 @@ func printBanner(w io.Writer, wrapping string, cfg *config.Config) {
 	models := fmt.Sprintf("%s (reasoning) / %s (coding)", tools.MainModel.Slug, tools.CodingModel.Slug)
 	gsdStatus := "not installed"
 	for _, t := range cfg.GSDInstalledFor {
-		if strings.Contains(t, wrapping) || (wrapping == "claude" && t == "claude-code") {
+		if strings.Contains(t, wrapping) {
 			gsdStatus = "active"
 			break
 		}

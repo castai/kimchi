@@ -42,13 +42,6 @@ var gsdSpecs = map[InstallationType]gsdInstallSpec{
 		destPath:  getOpenCodeGSDPath,
 		pkgName:   "gsd-opencode",
 	},
-	InstallationClaudeCode: {
-		npxArgs:     []string{"--yes", "get-shit-done-cc@latest", "--claude", "--global", "--config-dir"},
-		tmpSubDir:   ".claude",
-		destPath:    getClaudeCodeGSDPath,
-		rewriteFile: "settings.json",
-		pkgName:     "get-shit-done-cc",
-	},
 	InstallationCodex: {
 		npxArgs:     []string{"--yes", "get-shit-done-cc@latest", "--codex", "--global", "--config-dir"},
 		tmpSubDir:   ".codex",
@@ -123,9 +116,8 @@ func getGSDPath(toolName, scope string) (string, error) {
 	return filepath.Join(homeDir, ".config", "kimchi", toolName), nil
 }
 
-func getOpenCodeGSDPath(scope string) (string, error)   { return getGSDPath("opencode", scope) }
-func getClaudeCodeGSDPath(scope string) (string, error) { return getGSDPath("claude-code", scope) }
-func getCodexGSDPath(scope string) (string, error)      { return getGSDPath("codex", scope) }
+func getOpenCodeGSDPath(scope string) (string, error) { return getGSDPath("opencode", scope) }
+func getCodexGSDPath(scope string) (string, error)    { return getGSDPath("codex", scope) }
 
 // IsInstalledFor reports whether GSD is already installed for the given tool
 // and scope, using the same signals the npm packages use internally so that

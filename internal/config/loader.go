@@ -41,6 +41,11 @@ func Load() (*Config, error) {
 		return nil, fmt.Errorf("parse config file: %w", err)
 	}
 
+	// Default to override mode for configs created before inject mode existed.
+	if cfg.Mode == "" {
+		cfg.Mode = ModeOverride
+	}
+
 	return &cfg, nil
 }
 
