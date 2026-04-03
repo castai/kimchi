@@ -50,3 +50,11 @@ var (
 
 	allModels = []model{MainModel, CodingModel, SubModel}
 )
+
+// Exported accessors for use by other packages (e.g. recipe export).
+
+func (m model) GetToolCall() bool        { return m.toolCall }
+func (m model) GetReasoning() bool       { return m.reasoning }
+func (m model) GetContextWindow() int    { return m.limits.contextWindow }
+func (m model) GetMaxOutputTokens() int  { return m.limits.maxOutputTokens }
+func (m model) GetDisplayName() string   { return m.displayName }

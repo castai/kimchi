@@ -60,6 +60,7 @@ Get your API key at: https://kimchi.console.cast.ai`,
 	root.AddCommand(NewVersionCommand())
 	root.AddCommand(NewCompletionCommand())
 	root.AddCommand(NewUpdateCommand())
+	root.AddCommand(NewRecipeCommand())
 
 	return root
 }
