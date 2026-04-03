@@ -48,7 +48,7 @@ func ExecTool(binary string, args []string, env map[string]string) error {
 		return fmt.Errorf("run %s: %w", binary, err)
 	}
 
-	return &ExitError{Code: 0}
+	return nil
 }
 
 // RunTool launches the binary as a child process with env overrides, forwards
@@ -96,5 +96,5 @@ func RunTool(binary string, args []string, env map[string]string, cleanup func()
 		return fmt.Errorf("run %s: %w", binary, err)
 	}
 
-	return &ExitError{Code: 0}
+	return nil
 }

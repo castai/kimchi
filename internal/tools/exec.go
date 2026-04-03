@@ -70,5 +70,5 @@ func RunTool(binary string, args []string, env map[string]string, cleanup func()
 		return fmt.Errorf("run %s: %w", binary, err)
 	}
 
-	return &ExitError{Code: 0}
+	return nil
 }

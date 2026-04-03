@@ -28,7 +28,7 @@ func Env(apiKey string) (map[string]string, error) {
 	// are preserved since copyDir does not delete existing files.
 	if info, err := os.Stat(userOCDir); err == nil && info.IsDir() {
 		if err := gsd.CopyInstallation(userOCDir, managedOCDir); err != nil {
-			return nil, fmt.Errorf("copy user opencode config: %w", err)
+			fmt.Fprintf(os.Stderr, "Warning: could not copy some opencode config files: %v\n", err)
 		}
 	}
 

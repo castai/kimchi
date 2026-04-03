@@ -18,6 +18,6 @@ type Config struct {
 	Mode            ConfigMode `json:"mode,omitempty"`
 	SelectedTools   []string   `json:"selected_tools,omitempty"`
 	Scope           string     `json:"scope,omitempty"`
-	TelemetryOptIn  bool       `json:"telemetry_opt_in,omitempty"`
+	TelemetryOptIn  bool       `json:"telemetry_opt_in"`
 	GSDInstalledFor []string   `json:"gsd_installed_for,omitempty"`
 }

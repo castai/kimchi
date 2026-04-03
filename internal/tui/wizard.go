@@ -253,15 +253,6 @@ func (w *wizard) scheduleConfigureIfReady() {
 	})
 }
 
-func (w *wizard) allToolsWrappable() bool {
-	for _, id := range w.config.SelectedTools {
-		if !id.IsWrappable() {
-			return false
-		}
-	}
-	return true
-}
-
 func (w *wizard) removePendingStep(match func(steps.Step) bool) {
 	for i := w.current + 1; i < len(w.stepList); i++ {
 		if match(w.stepList[i]) {

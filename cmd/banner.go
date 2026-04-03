@@ -11,11 +11,10 @@ import (
 )
 
 const (
-	ansiReset  = "\033[0m"
-	ansiRed    = "\033[38;5;196m"
-	ansiOrange = "\033[38;5;214m"
-	ansiBold   = "\033[1m"
-	ansiDim    = "\033[2m"
+	ansiReset = "\033[0m"
+	ansiRed   = "\033[38;5;196m"
+	ansiBold  = "\033[1m"
+	ansiDim   = "\033[2m"
 )
 
 func colorEnabled() bool {
