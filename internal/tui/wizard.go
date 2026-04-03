@@ -240,10 +240,6 @@ func (w *wizard) scheduleConfigureIfReady() {
 	})
 }
 
-func (w *wizard) hasClaudeCode() bool {
-	return slices.Contains(w.config.SelectedTools, tools.ToolClaudeCode)
-}
-
 func (w *wizard) currentStepName() string {
 	if w.current < len(w.stepList) {
 		return w.stepList[w.current].Info().Name
