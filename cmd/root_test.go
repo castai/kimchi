@@ -47,6 +47,20 @@ func TestExecute_TelemetryEnabledByDefault(t *testing.T) {
 	assert.NotEmpty(t, cfg.DeviceID, "device ID should have been generated")
 }
 
+func TestExecute_TelemetryDisabledViaEnvVar_DoesNotGenerateDeviceID(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv(config.EnvTelemetry, "false")
+
+	err := Execute("config", "telemetry", "off")
+	require.NoError(t, err)
+
+	cfg, err := config.Load()
+	require.NoError(t, err)
+	assert.Empty(t, cfg.DeviceID, "device ID should not be persisted when telemetry is disabled via env var")
+	assert.False(t, cfg.TelemetryNoticeShown, "telemetry notice should not be shown when disabled via env var")
+}
+
 func TestExecute_LegacyConfigWithoutTelemetryFields(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)

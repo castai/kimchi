@@ -7,6 +7,15 @@ type Config struct {
 	TelemetryNoticeShown bool   `json:"telemetry_notice_shown,omitempty"`
 }
 
+func (c *Config) Clone() Config {
+	clone := *c
+	if c.TelemetryEnabled != nil {
+		v := *c.TelemetryEnabled
+		clone.TelemetryEnabled = &v
+	}
+	return clone
+}
+
 func (c *Config) Equal(other *Config) bool {
 	if c.APIKey != other.APIKey ||
 		c.DeviceID != other.DeviceID ||

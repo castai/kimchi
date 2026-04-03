@@ -48,10 +48,10 @@ Get your API key at: https://kimchi.console.cast.ai`,
 		RunE:          runConfigure,
 	}
 
-	root.PersistentPreRun = func(cmd *cobra.Command, _ []string) {
+	root.PersistentPreRunE = func(cmd *cobra.Command, _ []string) error {
 		propagateKlogFlags(root)
 		initTelemetry(root)
-		cmd.SetContext(root.Context())
+		return nil
 	}
 
 	root.PersistentFlags().BoolVar(&debug, "debug", false, "Enable debug output")
@@ -80,7 +80,7 @@ func initTelemetry(root *cobra.Command) {
 		klog.V(1).ErrorS(loadErr, "failed to load config")
 		cfg = &config.Config{}
 	}
-	original := *cfg
+	original := cfg.Clone()
 
 	enabled, err := config.IsTelemetryEnabledFromConfig(cfg)
 	if err != nil {
@@ -88,12 +88,13 @@ func initTelemetry(root *cobra.Command) {
 		enabled = false
 	}
 
-	if cfg.DeviceID == "" {
+	if cfg.DeviceID == "" && enabled {
 		cfg.DeviceID = uuid.NewString()
 	}
 
 	client := telemetry.New(telemetry.PostHogAPIKey, enabled, cfg.DeviceID)
-	root.SetContext(telemetry.WithCtx(root.Context(), client))
+	ctx := telemetry.WithCtx(root.Context(), client)
+	root.SetContext(ctx)
 
 	if !cfg.TelemetryNoticeShown && enabled {
 		fmt.Fprintln(root.ErrOrStderr(),
@@ -136,7 +137,6 @@ func runConfigure(cmd *cobra.Command, args []string) error {
 	return err
 }
 
-// Execute runs the root command.
 func Execute(args ...string) error {
 	root := newRootCommand()
 	if len(args) > 0 {
