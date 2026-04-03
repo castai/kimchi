@@ -30,7 +30,6 @@ func writeClaudeCodeDefault(scope config.ConfigScope) error {
 	return WriteClaudeCode(scope, true)
 }
 
-// WriteClaudeCode writes the Claude Code settings file for the given scope.
 func WriteClaudeCode(scope config.ConfigScope, telemetryOptIn bool) error {
 	apiKey, err := config.GetAPIKey()
 	if err != nil {

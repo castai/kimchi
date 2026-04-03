@@ -8,6 +8,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/castai/kimchi/internal/config"
+	"github.com/castai/kimchi/internal/gsd"
 	"github.com/castai/kimchi/internal/provider/claudecode"
 	"github.com/castai/kimchi/internal/tools"
 )
@@ -36,7 +37,7 @@ func NewClaudeCommand() *cobra.Command {
 			env := claudecode.Env(apiKey, cfg.TelemetryOptIn)
 
 			var cleanup func()
-			if slices.Contains(cfg.GSDInstalledFor, "claude-code") {
+			if slices.Contains(cfg.GSDInstalledFor, string(gsd.InstallationClaudeCode)) {
 				created, err := claudecode.InjectGSD()
 				if err != nil {
 					fmt.Fprintf(os.Stderr, "Warning: could not inject GSD agents: %v\n", err)

@@ -11,21 +11,18 @@ import (
 // KimchiManagedPath returns the kimchi-managed GSD directory for the given
 // installation type (global scope only).
 func KimchiManagedPath(installType InstallationType) (string, error) {
-	homeDir, err := os.UserHomeDir()
-	if err != nil {
-		return "", fmt.Errorf("get home directory: %w", err)
-	}
-
+	var toolName string
 	switch installType {
 	case InstallationClaudeCode:
-		return filepath.Join(homeDir, ".config", "kimchi", "claude-code"), nil
+		toolName = "claude-code"
 	case InstallationOpenCode:
-		return filepath.Join(homeDir, ".config", "kimchi", "opencode"), nil
+		toolName = "opencode"
 	case InstallationCodex:
-		return filepath.Join(homeDir, ".config", "kimchi", "codex"), nil
+		toolName = "codex"
 	default:
 		return "", fmt.Errorf("unsupported installation type: %s", installType)
 	}
+	return getGSDPath(toolName, "global")
 }
 
 // EnsureSymlink creates a symlink at target pointing to src. If target already

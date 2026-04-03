@@ -27,7 +27,6 @@ type InstallResult struct {
 
 // gsdInstallSpec describes how to install a GSD package for a specific tool.
 type gsdInstallSpec struct {
-	installType InstallationType
 	npxArgs     []string
 	tmpSubDir   string // relative to tmp home, e.g. ".config/opencode"
 	destPath    func(scope string) (string, error)
@@ -37,14 +36,12 @@ type gsdInstallSpec struct {
 
 var gsdSpecs = map[InstallationType]gsdInstallSpec{
 	InstallationOpenCode: {
-		installType: InstallationOpenCode,
-		npxArgs:     []string{"--yes", "gsd-opencode@latest", "install", "--global", "--config-dir"},
-		tmpSubDir:   filepath.Join(".config", "opencode"),
-		destPath:    getOpenCodeGSDPath,
-		pkgName:     "gsd-opencode",
+		npxArgs:   []string{"--yes", "gsd-opencode@latest", "install", "--global", "--config-dir"},
+		tmpSubDir: filepath.Join(".config", "opencode"),
+		destPath:  getOpenCodeGSDPath,
+		pkgName:   "gsd-opencode",
 	},
 	InstallationClaudeCode: {
-		installType: InstallationClaudeCode,
 		npxArgs:     []string{"--yes", "get-shit-done-cc@latest", "--claude", "--global", "--config-dir"},
 		tmpSubDir:   ".claude",
 		destPath:    getClaudeCodeGSDPath,
@@ -52,7 +49,6 @@ var gsdSpecs = map[InstallationType]gsdInstallSpec{
 		pkgName:     "get-shit-done-cc",
 	},
 	InstallationCodex: {
-		installType: InstallationCodex,
 		npxArgs:     []string{"--yes", "get-shit-done-cc@latest", "--codex", "--global", "--config-dir"},
 		tmpSubDir:   ".codex",
 		destPath:    getCodexGSDPath,
@@ -81,7 +77,9 @@ func (i *Installer) Install(installType InstallationType, scope string) (*Instal
 	tmpToolDir := filepath.Join(tmpHome, spec.tmpSubDir)
 
 	// Append the temp tool dir as the --config-dir value.
-	args := append(spec.npxArgs, tmpToolDir)
+	args := make([]string, len(spec.npxArgs)+1)
+	copy(args, spec.npxArgs)
+	args[len(spec.npxArgs)] = tmpToolDir
 
 	cmd := exec.Command("npx", args...)
 	cmd.Env = sandboxedEnv(tmpHome)
@@ -102,7 +100,7 @@ func (i *Installer) Install(installType InstallationType, scope string) (*Instal
 	}
 
 	return &InstallResult{
-		Type:      spec.installType,
+		Type:      installType,
 		Path:      destPath,
 		Installed: []string{spec.pkgName},
 	}, nil
@@ -128,32 +126,41 @@ func getClaudeCodeGSDPath(scope string) (string, error) { return getGSDPath("cla
 func getCodexGSDPath(scope string) (string, error)      { return getGSDPath("codex", scope) }
 
 func (i *Installer) IsInstalledFor(installType InstallationType, scope string) bool {
-	var basePath string
-	var err error
+	homeDir, err := os.UserHomeDir()
+	if err != nil {
+		return false
+	}
 
+	// Resolve the tool name to construct the kimchi-managed path inline.
+	var toolName string
 	switch installType {
 	case InstallationOpenCode:
-		basePath, err = getOpenCodeGSDPath(scope)
+		toolName = "opencode"
 	case InstallationClaudeCode:
-		basePath, err = getClaudeCodeGSDPath(scope)
+		toolName = "claude-code"
 	case InstallationCodex:
-		basePath, err = getCodexGSDPath(scope)
+		toolName = "codex"
 	default:
 		return false
 	}
 
-	if err == nil {
+	var basePath string
+	if scope == "project" {
+		cwd, err := os.Getwd()
+		if err == nil {
+			basePath = filepath.Join(cwd, ".kimchi", toolName)
+		}
+	} else {
+		basePath = filepath.Join(homeDir, ".config", "kimchi", toolName)
+	}
+
+	if basePath != "" {
 		if info, err := os.Stat(basePath); err == nil && info.IsDir() {
 			return true
 		}
 	}
 
 	// Also check the real tool path (user may have installed GSD directly).
-	homeDir, err := os.UserHomeDir()
-	if err != nil {
-		return false
-	}
-
 	var realPaths []string
 	switch installType {
 	case InstallationOpenCode:

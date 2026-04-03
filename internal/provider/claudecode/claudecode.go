@@ -83,7 +83,7 @@ func symlinkTree(src, dst string, created *[]string) error {
 }
 
 // Env returns the environment variables needed to run Claude Code
-// with Cast AI configuration. Delegates to tools.ClaudeCodeEnvVars.
+// with Kimchi configuration. Delegates to tools.ClaudeCodeEnvVars.
 func Env(apiKey string, telemetryOptIn bool) map[string]string {
 	return tools.ClaudeCodeEnvVars(apiKey, telemetryOptIn)
 }

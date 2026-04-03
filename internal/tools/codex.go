@@ -74,7 +74,6 @@ type codexCatalog struct {
 }
 
 // WriteCodexModelCatalog writes the model catalog JSON to the given path.
-// Exported for use by the codex inject-mode provider.
 func WriteCodexModelCatalog(path string) error {
 	return writeModelCatalog(path)
 }
