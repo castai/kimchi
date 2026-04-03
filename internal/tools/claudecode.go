@@ -10,11 +10,8 @@ const (
 	logsExportInterval         = "5000"
 )
 
-// ClaudeCodeEnvVars is used by inject mode (cmd/claude.go) to configure
-// Claude Code at runtime without modifying on-disk settings.
-
 // ClaudeCodeEnvVars returns the environment variables needed to run Claude Code
-// with Cast AI configuration (used by inject mode).
+// with Kimchi configuration (used by inject mode).
 func ClaudeCodeEnvVars(apiKey string, telemetryOptIn bool) map[string]string {
 	env := map[string]string{
 		"ANTHROPIC_BASE_URL":                     anthropicBaseURL,

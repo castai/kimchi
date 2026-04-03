@@ -10,7 +10,7 @@ import (
 	"github.com/castai/kimchi/internal/tools"
 )
 
-// Env prepares the environment for launching OpenCode with Cast AI
+// Env prepares the environment for launching OpenCode with Kimchi
 // configuration. It writes a managed config file to ~/.config/kimchi/opencode/opencode.json
 // and returns environment variables that redirect OpenCode to use it.
 func Env(apiKey string) (map[string]string, error) {

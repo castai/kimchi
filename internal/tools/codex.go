@@ -194,11 +194,5 @@ func CodexProviderBlock() map[string]any {
 // ProviderName returns the kimchi provider name used in tool configs.
 func ProviderName() string { return providerName }
 
-// BaseURL returns the Cast AI inference endpoint URL.
-func BaseURL() string { return baseURL }
-
-// EnvKeyInstructions returns the human-readable instruction for setting the API key.
-func EnvKeyInstructions() string { return envKeyInstructions }
-
 // CodexAgentMD returns the default AGENTS.md content for Codex.
 func CodexAgentMD() string { return codexAgentMD() }

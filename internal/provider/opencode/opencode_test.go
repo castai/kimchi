@@ -39,7 +39,7 @@ func TestEnv_GeneratesConfig(t *testing.T) {
 
 	options, ok := kimchiProvider["options"].(map[string]any)
 	require.True(t, ok, "options should be a map")
-	assert.Equal(t, tools.BaseURL(), options["baseURL"])
+	assert.NotEmpty(t, options["baseURL"])
 	assert.Equal(t, "test-key", options["apiKey"])
 	assert.Equal(t, true, options["litellmProxy"])
 

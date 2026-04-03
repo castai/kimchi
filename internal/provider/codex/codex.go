@@ -10,7 +10,7 @@ import (
 	"github.com/castai/kimchi/internal/tools"
 )
 
-// Env prepares the environment for launching Codex with Cast AI configuration.
+// Env prepares the environment for launching Codex with Kimchi configuration.
 // It copies the user's ~/.codex/ to a kimchi-managed directory, merges the
 // kimchi provider config, and returns CODEX_HOME pointing to the managed copy
 // so the original user directory is never modified.

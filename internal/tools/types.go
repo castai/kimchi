@@ -5,9 +5,8 @@ import "github.com/castai/kimchi/internal/config"
 type ToolID string
 
 const (
-	ToolOpenCode   ToolID = "opencode"
-	ToolClaudeCode ToolID = "claude-code"
-	ToolContinue   ToolID = "continue"
+	ToolOpenCode ToolID = "opencode"
+	ToolContinue ToolID = "continue"
 	ToolWindsurf ToolID = "windsurf"
 	ToolZed      ToolID = "zed"
 	ToolCodex    ToolID = "codex"
@@ -15,17 +14,6 @@ const (
 	ToolGSD2     ToolID = "gsd2"
 	ToolGeneric  ToolID = "generic"
 )
-
-// IsWrappable returns true if the tool can be launched via `kimchi <tool>`
-// (CLI tools). IDE tools (Cursor, Zed, etc.) return false.
-func (id ToolID) IsWrappable() bool {
-	switch id {
-	case ToolClaudeCode, ToolOpenCode, ToolCodex:
-		return true
-	default:
-		return false
-	}
-}
 
 type Tool struct {
 	ID          ToolID
