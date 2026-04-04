@@ -6,11 +6,47 @@ import (
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
+
+	"github.com/castai/kimchi/internal/config"
 )
 
-// assetExists checks whether a given asset category has at least one file present
-// in the user's global OpenCode config directory. Inlined here to avoid import cycles.
-func assetExists(kind string) bool {
+// assetDef describes one selectable asset category.
+type assetDef struct {
+	id          string
+	label       string
+	desc        string
+	projectOnly bool // if true, hide when scope is global
+	globalOnly  bool // if true, hide when scope is project
+}
+
+var assetDefs = []assetDef{
+	{id: "agents_md", label: "AGENTS.md", desc: "System prompt and rules injected into every session"},
+	{id: "skills", label: "Skills", desc: "Reusable on-demand instruction sets (skills/<name>/SKILL.md)"},
+	{id: "custom_commands", label: "Custom Commands", desc: "Slash command templates (commands/**/*.md)"},
+	{id: "agents", label: "Custom Agents", desc: "Per-agent system prompts with their own models (agents/*.md)"},
+	{id: "tui", label: "TUI Config", desc: "Theme, keybinds and display settings (tui.json)", globalOnly: true},
+	{id: "theme_files", label: "Custom Themes", desc: "Custom theme JSON files (themes/*.json)", globalOnly: true},
+	{id: "plugin_files", label: "Plugin Files", desc: "Custom plugin source files (plugins/)", globalOnly: true},
+	{id: "tool_files", label: "Custom Tools", desc: "Custom tool definitions (tools/)", globalOnly: true},
+}
+
+type assetItem struct {
+	assetDef
+	found bool
+}
+
+// assetExistsForScope checks whether an asset category exists, searching the
+// correct paths for the given scope.
+func assetExistsForScope(kind string, scope config.ConfigScope) bool {
+	switch scope {
+	case config.ScopeProject:
+		return assetExistsProject(kind)
+	default:
+		return assetExistsGlobal(kind)
+	}
+}
+
+func assetExistsGlobal(kind string) bool {
 	homeDir, err := os.UserHomeDir()
 	if err != nil {
 		return false
@@ -24,16 +60,7 @@ func assetExists(kind string) bool {
 		entries, err := os.ReadDir(filepath.Join(base, "skills"))
 		return err == nil && len(entries) > 0
 	case "custom_commands":
-		entries, err := os.ReadDir(filepath.Join(base, "commands"))
-		if err != nil {
-			return false
-		}
-		for _, e := range entries {
-			if !e.IsDir() && strings.HasSuffix(e.Name(), ".md") {
-				return true
-			}
-		}
-		return false
+		return dirContainsMarkdown(filepath.Join(base, "commands"))
 	case "agents":
 		entries, err := os.ReadDir(filepath.Join(base, "agents"))
 		if err != nil {
@@ -45,22 +72,97 @@ func assetExists(kind string) bool {
 			}
 		}
 		return false
+	case "tui":
+		_, err := os.Stat(filepath.Join(base, "tui.json"))
+		return err == nil
+	case "theme_files":
+		return dirContainsExt(filepath.Join(base, "themes"), ".json")
+	case "plugin_files":
+		return dirHasFiles(filepath.Join(base, "plugins"))
+	case "tool_files":
+		return dirHasFiles(filepath.Join(base, "tools"))
 	}
 	return false
 }
 
-type assetItem struct {
-	id    string
-	label string
-	desc  string
-	found bool
+func assetExistsProject(kind string) bool {
+	cwd, err := os.Getwd()
+	if err != nil {
+		return false
+	}
+	dotOpenCode := filepath.Join(cwd, ".opencode")
+	switch kind {
+	case "agents_md":
+		_, err := os.Stat(filepath.Join(cwd, "AGENTS.md"))
+		return err == nil
+	case "skills":
+		entries, err := os.ReadDir(filepath.Join(dotOpenCode, "skills"))
+		return err == nil && len(entries) > 0
+	case "custom_commands":
+		return dirContainsMarkdown(filepath.Join(dotOpenCode, "commands"))
+	case "agents":
+		entries, err := os.ReadDir(filepath.Join(dotOpenCode, "agents"))
+		if err != nil {
+			return false
+		}
+		for _, e := range entries {
+			if !e.IsDir() && strings.HasSuffix(e.Name(), ".md") {
+				return true
+			}
+		}
+		return false
+	// global-only items never exist in project scope
+	case "tui", "theme_files", "plugin_files", "tool_files":
+		return false
+	}
+	return false
 }
 
-var assetDefs = []assetItem{
-	{id: "agents_md", label: "Global AGENTS.md", desc: "System prompt and rules injected into every session"},
-	{id: "skills", label: "Skills", desc: "Reusable on-demand instruction sets (skills/<name>/SKILL.md)"},
-	{id: "custom_commands", label: "Custom Commands", desc: "Slash command templates (commands/*.md)"},
-	{id: "agents", label: "Custom Agents", desc: "Per-agent system prompts with their own models (agents/*.md)"},
+// dirContainsMarkdown reports whether dir or any of its subdirectories
+// contains at least one *.md file.
+func dirContainsMarkdown(dir string) bool {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return false
+	}
+	for _, e := range entries {
+		if e.IsDir() {
+			if dirContainsMarkdown(filepath.Join(dir, e.Name())) {
+				return true
+			}
+		} else if strings.HasSuffix(e.Name(), ".md") {
+			return true
+		}
+	}
+	return false
+}
+
+// dirContainsExt reports whether dir contains at least one file with the given extension.
+func dirContainsExt(dir, ext string) bool {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return false
+	}
+	for _, e := range entries {
+		if !e.IsDir() && strings.HasSuffix(e.Name(), ext) {
+			return true
+		}
+	}
+	return false
+}
+
+// dirHasFiles reports whether dir exists and contains at least one file (any type).
+func dirHasFiles(dir string) bool {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return false
+	}
+	for _, e := range entries {
+		if !e.IsDir() {
+			return true
+		}
+	}
+	return false
 }
 
 type assetProbeCompleteMsg struct {
@@ -68,34 +170,43 @@ type assetProbeCompleteMsg struct {
 }
 
 // ExportAssetsStep is a checkbox list that lets the user choose which
-// OpenCode markdown assets to include in the exported recipe.
+// OpenCode assets to include in the exported recipe.
 type ExportAssetsStep struct {
+	scope    config.ConfigScope
 	items    []assetItem
 	selected map[string]bool
 	cursor   int
 	ready    bool
 }
 
-func NewExportAssetsStep() *ExportAssetsStep {
+func NewExportAssetsStep(scope config.ConfigScope) *ExportAssetsStep {
 	s := &ExportAssetsStep{
-		items:    make([]assetItem, len(assetDefs)),
+		scope:    scope,
 		selected: make(map[string]bool),
 	}
-	copy(s.items, assetDefs)
 	return s
 }
 
-func (s *ExportAssetsStep) IncludeAgentsMD() bool       { return s.selected["agents_md"] }
-func (s *ExportAssetsStep) IncludeSkills() bool          { return s.selected["skills"] }
-func (s *ExportAssetsStep) IncludeCustomCommands() bool  { return s.selected["custom_commands"] }
-func (s *ExportAssetsStep) IncludeAgents() bool          { return s.selected["agents"] }
+func (s *ExportAssetsStep) IncludeAgentsMD() bool      { return s.selected["agents_md"] }
+func (s *ExportAssetsStep) IncludeSkills() bool         { return s.selected["skills"] }
+func (s *ExportAssetsStep) IncludeCustomCommands() bool { return s.selected["custom_commands"] }
+func (s *ExportAssetsStep) IncludeAgents() bool         { return s.selected["agents"] }
+func (s *ExportAssetsStep) IncludeTUI() bool            { return s.selected["tui"] }
+func (s *ExportAssetsStep) IncludeThemeFiles() bool     { return s.selected["theme_files"] }
+func (s *ExportAssetsStep) IncludePluginFiles() bool    { return s.selected["plugin_files"] }
+func (s *ExportAssetsStep) IncludeToolFiles() bool      { return s.selected["tool_files"] }
 
 func (s *ExportAssetsStep) Init() tea.Cmd {
+	scope := s.scope
 	return func() tea.Msg {
-		items := make([]assetItem, len(assetDefs))
-		copy(items, assetDefs)
-		for i := range items {
-			items[i].found = assetExists(items[i].id)
+		var items []assetItem
+		for _, def := range assetDefs {
+			if def.globalOnly && scope == config.ScopeProject {
+				continue
+			}
+			item := assetItem{assetDef: def}
+			item.found = assetExistsForScope(def.id, scope)
+			items = append(items, item)
 		}
 		return assetProbeCompleteMsg{items: items}
 	}

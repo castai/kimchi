@@ -2,8 +2,6 @@ package recipe
 
 import (
 	"strings"
-
-	"github.com/castai/kimchi/internal/tools"
 )
 
 // ExportOptions carries the user's choices from the TUI wizard.
@@ -13,32 +11,54 @@ type ExportOptions struct {
 	Description string
 	UseCase     string
 
-	IncludeAgentsMD       bool
-	IncludeSkills         bool
-	IncludeCustomCommands bool
-	IncludeAgents         bool
+	IncludeAgentsMD        bool
+	IncludeSkills          bool
+	IncludeCustomCommands  bool
+	IncludeAgents          bool
+	IncludeTUI             bool
+	IncludeThemeFiles      bool
+	IncludePluginFiles     bool
+	IncludeToolFiles       bool
 }
 
 // Build assembles a Recipe from OpenCode assets and the user's export options.
-// It never includes API keys.
+// Secrets in provider and MCP configs are replaced with placeholder strings.
 func Build(assets *OpenCodeAssets, opts ExportOptions) (*Recipe, error) {
-	// Determine the active model slug from cfg["model"] which looks like "kimchi/kimi-k2.5".
-	modelSlug := tools.MainModel.Slug
-	if raw, ok := assets.Config["model"].(string); ok && raw != "" {
-		parts := strings.SplitN(raw, "/", 2)
-		if len(parts) == 2 {
-			modelSlug = parts[1]
-		} else {
-			modelSlug = raw
-		}
+	cfg := assets.Config
+
+	// Use the model from config as-is (e.g. "kimchi/kimi-k2.5" or "openai/gpt-4o").
+	model := strField(cfg, "model")
+
+	// Strip provider prefix for the recipe's top-level model field (human-readable slug).
+	displaySlug := model
+	if parts := strings.SplitN(model, "/", 2); len(parts) == 2 {
+		displaySlug = parts[1]
 	}
 
-	provider := buildProvider(assets.Config)
-
 	ocCfg := &OpenCodeConfig{
-		Provider:   provider,
-		Model:      tools.ProviderName + "/" + modelSlug,
-		Compaction: buildCompaction(assets.Config),
+		// Provider / model
+		Providers:         mapField(cfg, "provider"),
+		Model:             model,
+		SmallModel:        strField(cfg, "small_model"),
+		DefaultAgent:      strField(cfg, "default_agent"),
+		DisabledProviders: strSliceField(cfg, "disabled_providers"),
+		EnabledProviders:  strSliceField(cfg, "enabled_providers"),
+		Plugin:            strSliceField(cfg, "plugin"),
+		Snapshot:          boolPtrField(cfg, "snapshot"),
+
+		// Portable instruction URLs (local paths/globs are machine-specific and excluded)
+		Instructions: filterURLInstructions(cfg),
+
+		// Behavior
+		Compaction:     mapField(cfg, "compaction"),
+		AgentConfigs:   mapField(cfg, "agent"),
+		MCP:            mapField(cfg, "mcp"),
+		Permission:     cfg["permission"],
+		Tools:          mapField(cfg, "tools"),
+		Experimental:   mapField(cfg, "experimental"),
+		Formatter:      cfg["formatter"],
+		LSP:            cfg["lsp"],
+		InlineCommands: mapField(cfg, "command"),
 	}
 
 	if opts.IncludeAgentsMD {
@@ -53,12 +73,28 @@ func Build(assets *OpenCodeAssets, opts ExportOptions) (*Recipe, error) {
 	if opts.IncludeAgents {
 		ocCfg.Agents = assets.Agents
 	}
+	if opts.IncludeTUI {
+		ocCfg.TUI = assets.TUI
+	}
+	if opts.IncludeThemeFiles {
+		ocCfg.ThemeFiles = assets.ThemeFiles
+	}
+	if opts.IncludePluginFiles {
+		ocCfg.PluginFiles = assets.PluginFiles
+	}
+	if opts.IncludeToolFiles {
+		ocCfg.ToolFiles = assets.ToolFiles
+	}
+	// Include files that are @-referenced from any selected markdown content.
+	if opts.IncludeAgentsMD || opts.IncludeSkills || opts.IncludeCustomCommands || opts.IncludeAgents {
+		ocCfg.ReferencedFiles = assets.ReferencedFiles
+	}
 
 	r := &Recipe{
 		Name:        opts.Name,
 		Author:      opts.Author,
 		Description: opts.Description,
-		Model:       modelSlug,
+		Model:       displaySlug,
 		UseCase:     opts.UseCase,
 		Version:     "1",
 		Tools: ToolsMap{
@@ -69,121 +105,41 @@ func Build(assets *OpenCodeAssets, opts ExportOptions) (*Recipe, error) {
 	return r, nil
 }
 
-// buildProvider extracts the kimchi provider block from the raw config map,
-// constructing an OpenCodeProvider struct without any secret fields.
-func buildProvider(cfg map[string]any) OpenCodeProvider {
-	// Defaults from the known kimchi provider values.
-	p := OpenCodeProvider{
-		Name: "Kimchi by Cast AI",
-		NPM:  "@ai-sdk/openai-compatible",
-		Options: OpenCodeProviderOptions{
-			BaseURL:      tools.BaseURL,
-			LitellmProxy: true,
-		},
-		Models: buildDefaultModels(),
-	}
-
-	providers, ok := cfg["provider"].(map[string]any)
+// mapField extracts a map[string]any from cfg[key], returning nil if absent or wrong type.
+func mapField(cfg map[string]any, key string) map[string]any {
+	v, ok := cfg[key].(map[string]any)
 	if !ok {
-		return p
+		return nil
 	}
-	kimchi, ok := providers[tools.ProviderName].(map[string]any)
-	if !ok {
-		return p
-	}
-
-	if name, ok := kimchi["name"].(string); ok && name != "" {
-		p.Name = name
-	}
-	if npm, ok := kimchi["npm"].(string); ok && npm != "" {
-		p.NPM = npm
-	}
-	if opts, ok := kimchi["options"].(map[string]any); ok {
-		if u, ok := opts["baseURL"].(string); ok && u != "" {
-			p.Options.BaseURL = u
-		}
-		if lp, ok := opts["litellmProxy"].(bool); ok {
-			p.Options.LitellmProxy = lp
-		}
-		// apiKey is deliberately not read here
-	}
-	if models, ok := kimchi["models"].(map[string]any); ok {
-		p.Models = parseModels(models)
-	}
-
-	return p
+	return v
 }
 
-func buildDefaultModels() map[string]ModelDef {
-	return map[string]ModelDef{
-		tools.MainModel.Slug: {
-			Name:      tools.MainModel.Slug,
-			ToolCall:  tools.MainModel.GetToolCall(),
-			Reasoning: tools.MainModel.GetReasoning(),
-			Limit:     ModelLimit{Context: tools.MainModel.GetContextWindow(), Output: tools.MainModel.GetMaxOutputTokens()},
-		},
-		tools.CodingModel.Slug: {
-			Name:      tools.CodingModel.Slug,
-			ToolCall:  tools.CodingModel.GetToolCall(),
-			Reasoning: tools.CodingModel.GetReasoning(),
-			Limit:     ModelLimit{Context: tools.CodingModel.GetContextWindow(), Output: tools.CodingModel.GetMaxOutputTokens()},
-		},
-		tools.SubModel.Slug: {
-			Name:     tools.SubModel.Slug,
-			ToolCall: tools.SubModel.GetToolCall(),
-			Limit:    ModelLimit{Context: tools.SubModel.GetContextWindow(), Output: tools.SubModel.GetMaxOutputTokens()},
-		},
-	}
+// strField extracts a string from cfg[key], returning "" if absent or wrong type.
+func strField(cfg map[string]any, key string) string {
+	v, _ := cfg[key].(string)
+	return v
 }
 
-func parseModels(raw map[string]any) map[string]ModelDef {
-	result := make(map[string]ModelDef, len(raw))
-	for slug, v := range raw {
-		m, ok := v.(map[string]any)
-		if !ok {
-			continue
+// strSliceField extracts a []string from cfg[key], returning nil if absent or wrong type.
+func strSliceField(cfg map[string]any, key string) []string {
+	raw, ok := cfg[key].([]any)
+	if !ok {
+		return nil
+	}
+	result := make([]string, 0, len(raw))
+	for _, item := range raw {
+		if s, ok := item.(string); ok {
+			result = append(result, s)
 		}
-		def := ModelDef{}
-		if name, ok := m["name"].(string); ok {
-			def.Name = name
-		}
-		if tc, ok := m["tool_call"].(bool); ok {
-			def.ToolCall = tc
-		}
-		if r, ok := m["reasoning"].(bool); ok {
-			def.Reasoning = r
-		}
-		if limit, ok := m["limit"].(map[string]any); ok {
-			if ctx, ok := toInt(limit["context"]); ok {
-				def.Limit.Context = ctx
-			}
-			if out, ok := toInt(limit["output"]); ok {
-				def.Limit.Output = out
-			}
-		}
-		result[slug] = def
 	}
 	return result
 }
 
-func buildCompaction(cfg map[string]any) CompactionConfig {
-	c := CompactionConfig{Auto: true}
-	if comp, ok := cfg["compaction"].(map[string]any); ok {
-		if auto, ok := comp["auto"].(bool); ok {
-			c.Auto = auto
-		}
+// boolPtrField extracts a *bool from cfg[key], returning nil if absent or wrong type.
+func boolPtrField(cfg map[string]any, key string) *bool {
+	v, ok := cfg[key].(bool)
+	if !ok {
+		return nil
 	}
-	return c
-}
-
-func toInt(v any) (int, bool) {
-	switch n := v.(type) {
-	case int:
-		return n, true
-	case int64:
-		return int(n), true
-	case float64:
-		return int(n), true
-	}
-	return 0, false
+	return &v
 }

@@ -18,29 +18,31 @@ const (
 )
 
 type exportWriteCompleteMsg struct {
-	err error
+	err            error
+	unresolvedRefs []string
 }
 
 // ExportConfirmStep shows a summary of what will be exported, performs the
 // async write via writeFn, and shows the result.
 type ExportConfirmStep struct {
-	outputPath string
-	writeFn    func() error
-	state      exportConfirmState
-	err        error
-	spin       spinner.Model
+	outputPath     string
+	writeFn        func() ([]string, error)
+	state          exportConfirmState
+	err            error
+	spin           spinner.Model
+	unresolvedRefs []string
 
 	// summary fields for display
-	name        string
-	author      string
-	useCase     string
-	included    []string
+	name     string
+	author   string
+	useCase  string
+	included []string
 }
 
 // NewExportConfirmStep creates the final export step.
 // writeFn is called when the user confirms; it should read assets, build and
 // write the recipe. This avoids importing the recipe package from the steps package.
-func NewExportConfirmStep(outputPath string, writeFn func() error, name, author, useCase string, included []string) *ExportConfirmStep {
+func NewExportConfirmStep(outputPath string, writeFn func() ([]string, error), name, author, useCase string, included []string) *ExportConfirmStep {
 	sp := spinner.New()
 	sp.Spinner = spinner.Dot
 	return &ExportConfirmStep{
@@ -83,6 +85,7 @@ func (s *ExportConfirmStep) Update(msg tea.Msg) (Step, tea.Cmd) {
 			s.err = msg.err
 		} else {
 			s.state = exportConfirmDone
+			s.unresolvedRefs = msg.unresolvedRefs
 		}
 		return s, nil
 
@@ -99,7 +102,8 @@ func (s *ExportConfirmStep) Update(msg tea.Msg) (Step, tea.Cmd) {
 
 func (s *ExportConfirmStep) doWrite() tea.Cmd {
 	return func() tea.Msg {
-		return exportWriteCompleteMsg{err: s.writeFn()}
+		refs, err := s.writeFn()
+		return exportWriteCompleteMsg{err: err, unresolvedRefs: refs}
 	}
 }
 
@@ -126,6 +130,16 @@ func (s *ExportConfirmStep) View() string {
 		b.WriteString(Styles.Success.Render("✓ Recipe exported successfully"))
 		b.WriteString("\n\n")
 		b.WriteString(fmt.Sprintf("  %s\n", s.outputPath))
+		if len(s.unresolvedRefs) > 0 {
+			b.WriteString("\n")
+			b.WriteString(Styles.Warning.Render("⚠ The following @-references were not bundled (project-level or outside the OpenCode config dir):"))
+			b.WriteString("\n")
+			for _, ref := range s.unresolvedRefs {
+				b.WriteString(fmt.Sprintf("    %s\n", Styles.Desc.Render("@"+ref)))
+			}
+			b.WriteString(Styles.Desc.Render("These will still work at runtime — the AI will read them from the project directory."))
+			b.WriteString("\n")
+		}
 		b.WriteString("\n")
 		b.WriteString(Styles.Help.Render("Press enter to exit"))
 

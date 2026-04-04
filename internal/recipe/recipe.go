@@ -17,59 +17,78 @@ type ToolsMap struct {
 	OpenCode *OpenCodeConfig `yaml:"opencode,omitempty"`
 }
 
-// OpenCodeConfig captures the exportable OpenCode settings (no secrets).
+// OpenCodeConfig captures the exportable OpenCode settings.
+// Secrets in providers and MCP servers are replaced with placeholder strings.
 type OpenCodeConfig struct {
-	Provider       OpenCodeProvider `yaml:"provider"`
-	Model          string           `yaml:"model"`
-	Compaction     CompactionConfig `yaml:"compaction"`
-	AgentsMD       string           `yaml:"agents_md,omitempty"`
-	Skills         []SkillEntry     `yaml:"skills,omitempty"`
-	CustomCommands []CommandEntry   `yaml:"custom_commands,omitempty"`
-	Agents         []AgentEntry     `yaml:"agents,omitempty"`
+	// Provider / model (from opencode.json)
+	Providers         map[string]any `yaml:"providers,omitempty"`
+	Model             string         `yaml:"model,omitempty"`
+	SmallModel        string         `yaml:"small_model,omitempty"`
+	DefaultAgent      string         `yaml:"default_agent,omitempty"`
+	DisabledProviders []string       `yaml:"disabled_providers,omitempty"`
+	EnabledProviders  []string       `yaml:"enabled_providers,omitempty"`
+	Plugin            []string       `yaml:"plugin,omitempty"`
+	Snapshot          *bool          `yaml:"snapshot,omitempty"`
+
+	// Behavior (from opencode.json)
+	Compaction     map[string]any `yaml:"compaction,omitempty"`
+	AgentConfigs   map[string]any `yaml:"agent,omitempty"`
+	MCP            map[string]any `yaml:"mcp,omitempty"`
+	Permission     any            `yaml:"permission,omitempty"`
+	Tools          map[string]any `yaml:"tools,omitempty"`
+	Experimental   map[string]any `yaml:"experimental,omitempty"`
+	Formatter      any            `yaml:"formatter,omitempty"`
+	LSP            any            `yaml:"lsp,omitempty"`
+	InlineCommands map[string]any `yaml:"command,omitempty"`
+
+	// TUI config (from tui.json) — optional, user-selectable
+	TUI *TUIConfig `yaml:"tui,omitempty"`
+
+	// Portable URL entries from the opencode.json instructions field.
+	// Local path/glob entries are omitted — they are machine-specific.
+	Instructions []string `yaml:"instructions,omitempty"`
+
+	// Files discovered by resolving @path references inside exported markdown
+	// content against ~/.config/opencode/. Stored so the installer can
+	// recreate them in the right place.
+	ReferencedFiles []FileEntry `yaml:"referenced_files,omitempty"`
+
+	// File-based assets embedded into the recipe
+	AgentsMD       string         `yaml:"agents_md,omitempty"`
+	Skills         []SkillEntry   `yaml:"skills,omitempty"`
+	CustomCommands []CommandEntry `yaml:"custom_commands,omitempty"`
+	Agents         []AgentEntry   `yaml:"agents,omitempty"`
+	ThemeFiles     []FileEntry    `yaml:"theme_files,omitempty"`
+	PluginFiles    []FileEntry    `yaml:"plugin_files,omitempty"`
+	ToolFiles      []FileEntry    `yaml:"tool_files,omitempty"`
 }
 
-// OpenCodeProvider mirrors the provider block in opencode.json.
-// apiKey is deliberately absent — secrets are never exported.
-type OpenCodeProvider struct {
-	Name    string                 `yaml:"name"`
-	NPM     string                 `yaml:"npm"`
-	Options OpenCodeProviderOptions `yaml:"options"`
-	Models  map[string]ModelDef   `yaml:"models"`
+// TUIConfig captures the exportable OpenCode TUI settings (tui.json).
+type TUIConfig struct {
+	Theme              string            `yaml:"theme,omitempty"`
+	ScrollSpeed        float64           `yaml:"scroll_speed,omitempty"`
+	ScrollAcceleration map[string]any    `yaml:"scroll_acceleration,omitempty"`
+	DiffStyle          string            `yaml:"diff_style,omitempty"`
+	Keybinds           map[string]string `yaml:"keybinds,omitempty"`
 }
 
-// OpenCodeProviderOptions holds non-secret provider options.
-// apiKey is deliberately absent.
-type OpenCodeProviderOptions struct {
-	BaseURL      string `yaml:"baseURL"`
-	LitellmProxy bool   `yaml:"litellmProxy"`
-}
-
-// ModelDef describes a single model entry in the provider's models map.
-type ModelDef struct {
-	Name      string     `yaml:"name"`
-	ToolCall  bool       `yaml:"tool_call"`
-	Reasoning bool       `yaml:"reasoning,omitempty"`
-	Limit     ModelLimit `yaml:"limit"`
-}
-
-// ModelLimit holds the token window constraints for a model.
-type ModelLimit struct {
-	Context int `yaml:"context"`
-	Output  int `yaml:"output"`
-}
-
-// CompactionConfig holds context compaction settings.
-type CompactionConfig struct {
-	Auto bool `yaml:"auto"`
-}
-
-// SkillEntry is a named SKILL.md file from ~/.config/opencode/skills/<name>/.
+// SkillEntry is a skill directory from ~/.config/opencode/skills/<name>/.
+// Content holds SKILL.md; Files holds any additional assets (scripts, etc.).
 type SkillEntry struct {
-	Name    string `yaml:"name"`
+	Name    string      `yaml:"name"`
+	Content string      `yaml:"content"`
+	Files   []FileEntry `yaml:"files,omitempty"`
+}
+
+// FileEntry is a file embedded from a config subdirectory.
+// Path is relative to the containing directory (e.g. skill dir, themes/, plugins/).
+type FileEntry struct {
+	Path    string `yaml:"path"`
 	Content string `yaml:"content"`
 }
 
 // CommandEntry is a named *.md file from ~/.config/opencode/commands/.
+// Name may include a subdirectory prefix, e.g. "gsd/gsd-add-backlog".
 type CommandEntry struct {
 	Name    string `yaml:"name"`
 	Content string `yaml:"content"`

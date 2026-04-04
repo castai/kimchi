@@ -5,6 +5,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 
+	"github.com/castai/kimchi/internal/config"
 	"github.com/castai/kimchi/internal/recipe"
 	"github.com/castai/kimchi/internal/tools"
 	"github.com/castai/kimchi/internal/tui/steps"
@@ -21,9 +22,11 @@ type exportWizard struct {
 	aborted      bool
 	outputPath   string
 	selectedTool tools.ToolID
+	scope        config.ConfigScope
 
 	// typed references for result collection
 	toolStep    *steps.ExportToolStep
+	scopeStep   *steps.ExportScopeStep
 	metaStep    *steps.ExportMetaStep
 	useCaseStep *steps.ExportUseCaseStep
 	assetsStep  *steps.ExportAssetsStep
@@ -35,34 +38,45 @@ type exportWizard struct {
 // file step is skipped and that path is used directly.
 func newExportWizard(outputPath string) *exportWizard {
 	toolStep := steps.NewExportToolStep()
+	scopeStep := steps.NewExportScopeStep()
 	meta := steps.NewExportMetaStep()
 	useCase := steps.NewExportUseCaseStep()
-	assets := steps.NewExportAssetsStep()
 
 	w := &exportWizard{
 		outputPath:  outputPath,
+		scope:       config.ScopeGlobal, // default; updated when scope step completes
 		toolStep:    toolStep,
+		scopeStep:   scopeStep,
 		metaStep:    meta,
 		useCaseStep: useCase,
-		assetsStep:  assets,
 	}
 
+	// assetsStep is created lazily in collectStepResult once scope is known.
+
 	// writeFn is called by the confirm step when the user presses Enter.
-	// It reads opts, selectedTool, and outputPath from w at that point in time.
-	writeFn := func() error {
+	writeFn := func() ([]string, error) {
+		var (
+			a   *recipe.OpenCodeAssets
+			err error
+		)
 		switch w.selectedTool {
 		case tools.ToolOpenCode:
-			a, err := recipe.ReadOpenCodeAssets()
+			switch w.scope {
+			case config.ScopeProject:
+				a, err = recipe.ReadProjectOpenCodeAssets()
+			default:
+				a, err = recipe.ReadGlobalOpenCodeAssets()
+			}
 			if err != nil {
-				return fmt.Errorf("read opencode assets: %w", err)
+				return nil, fmt.Errorf("read opencode assets: %w", err)
 			}
 			r, err := recipe.Build(a, w.opts)
 			if err != nil {
-				return fmt.Errorf("build recipe: %w", err)
+				return nil, fmt.Errorf("build recipe: %w", err)
 			}
-			return recipe.WriteYAML(w.outputPath, r)
+			return a.UnresolvedRefs, recipe.WriteYAML(w.outputPath, r)
 		default:
-			return fmt.Errorf("unsupported tool: %s", w.selectedTool)
+			return nil, fmt.Errorf("unsupported tool: %s", w.selectedTool)
 		}
 	}
 
@@ -74,7 +88,12 @@ func newExportWizard(outputPath string) *exportWizard {
 	confirm := steps.NewExportConfirmStep(confirmOutputPath, writeFn, "", "", "", nil)
 	w.confirmStep = confirm
 
-	stepList := []steps.Step{toolStep, meta, useCase, assets}
+	// Assets step placeholder — replaced with a scope-aware instance after the
+	// scope step completes. Use global scope as the initial default.
+	assetsStep := steps.NewExportAssetsStep(config.ScopeGlobal)
+	w.assetsStep = assetsStep
+
+	stepList := []steps.Step{toolStep, scopeStep, meta, useCase, assetsStep}
 	if outputPath == "" {
 		outputStep := steps.NewExportOutputStep(defaultOutputPath)
 		w.outputStep = outputStep
@@ -136,21 +155,40 @@ func (w *exportWizard) collectStepResult() {
 	switch s := w.stepList[w.current].(type) {
 	case *steps.ExportToolStep:
 		w.selectedTool = s.SelectedTool()
+
+	case *steps.ExportScopeStep:
+		w.scope = s.SelectedScope()
+		// Replace the assets step with a scope-aware instance and update stepList.
+		assetsStep := steps.NewExportAssetsStep(w.scope)
+		w.assetsStep = assetsStep
+		for i, step := range w.stepList {
+			if _, ok := step.(*steps.ExportAssetsStep); ok {
+				w.stepList[i] = assetsStep
+				break
+			}
+		}
+
 	case *steps.ExportMetaStep:
 		w.opts.Name = s.RecipeName()
 		w.opts.Author = s.Author()
 		w.opts.Description = s.Description()
+
 	case *steps.ExportUseCaseStep:
 		w.opts.UseCase = s.SelectedUseCase()
+
 	case *steps.ExportAssetsStep:
 		w.opts.IncludeAgentsMD = s.IncludeAgentsMD()
 		w.opts.IncludeSkills = s.IncludeSkills()
 		w.opts.IncludeCustomCommands = s.IncludeCustomCommands()
 		w.opts.IncludeAgents = s.IncludeAgents()
+		w.opts.IncludeTUI = s.IncludeTUI()
+		w.opts.IncludeThemeFiles = s.IncludeThemeFiles()
+		w.opts.IncludePluginFiles = s.IncludePluginFiles()
+		w.opts.IncludeToolFiles = s.IncludeToolFiles()
 		if w.outputStep == nil {
-			// --output was provided; summary is complete now.
 			w.confirmStep.SetSummary(w.opts.Name, w.opts.Author, w.opts.UseCase, w.includedLabels())
 		}
+
 	case *steps.ExportOutputStep:
 		w.outputPath = s.OutputPath()
 		w.confirmStep.SetOutputPath(w.outputPath)
@@ -171,6 +209,18 @@ func (w *exportWizard) includedLabels() []string {
 	}
 	if w.opts.IncludeAgents {
 		labels = append(labels, "Agents")
+	}
+	if w.opts.IncludeTUI {
+		labels = append(labels, "TUI Config")
+	}
+	if w.opts.IncludeThemeFiles {
+		labels = append(labels, "Custom Themes")
+	}
+	if w.opts.IncludePluginFiles {
+		labels = append(labels, "Plugin Files")
+	}
+	if w.opts.IncludeToolFiles {
+		labels = append(labels, "Custom Tools")
 	}
 	return labels
 }
