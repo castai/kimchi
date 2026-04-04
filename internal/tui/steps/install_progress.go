@@ -22,7 +22,6 @@ const (
 type installProgressItem struct {
 	label  string
 	status installItemStatus
-	err    error
 }
 
 type installStartMsg struct{}
