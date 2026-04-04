@@ -12,11 +12,10 @@ import (
 
 // assetDef describes one selectable asset category.
 type assetDef struct {
-	id          string
-	label       string
-	desc        string
-	projectOnly bool // if true, hide when scope is global
-	globalOnly  bool // if true, hide when scope is project
+	id         string
+	label      string
+	desc       string
+	globalOnly bool // if true, hide when scope is project
 }
 
 var assetDefs = []assetDef{
@@ -187,7 +186,7 @@ func NewExportAssetsStep(scope config.ConfigScope) *ExportAssetsStep {
 	return s
 }
 
-func (s *ExportAssetsStep) IncludeAgentsMD() bool      { return s.selected["agents_md"] }
+func (s *ExportAssetsStep) IncludeAgentsMD() bool       { return s.selected["agents_md"] }
 func (s *ExportAssetsStep) IncludeSkills() bool         { return s.selected["skills"] }
 func (s *ExportAssetsStep) IncludeCustomCommands() bool { return s.selected["custom_commands"] }
 func (s *ExportAssetsStep) IncludeAgents() bool         { return s.selected["agents"] }
