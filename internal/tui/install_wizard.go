@@ -167,17 +167,35 @@ func (w *installWizard) buildItemLabels(r *recipe.Recipe, _ recipe.AssetDecision
 	if oc == nil {
 		return labels
 	}
+	if oc.TUI != nil {
+		labels = append(labels, "tui.json")
+	}
 	if oc.AgentsMD != "" {
 		labels = append(labels, "AGENTS.md")
 	}
 	for _, s := range oc.Skills {
 		labels = append(labels, fmt.Sprintf("skills/%s/SKILL.md", s.Name))
+		for _, f := range s.Files {
+			labels = append(labels, fmt.Sprintf("skills/%s/%s", s.Name, f.Path))
+		}
 	}
 	for _, c := range oc.CustomCommands {
 		labels = append(labels, fmt.Sprintf("commands/%s.md", c.Name))
 	}
 	for _, a := range oc.Agents {
 		labels = append(labels, fmt.Sprintf("agents/%s.md", a.Name))
+	}
+	for _, f := range oc.ThemeFiles {
+		labels = append(labels, fmt.Sprintf("themes/%s", f.Path))
+	}
+	for _, f := range oc.PluginFiles {
+		labels = append(labels, fmt.Sprintf("plugins/%s", f.Path))
+	}
+	for _, f := range oc.ToolFiles {
+		labels = append(labels, fmt.Sprintf("tools/%s", f.Path))
+	}
+	for _, f := range oc.ReferencedFiles {
+		labels = append(labels, f.Path)
 	}
 	return labels
 }

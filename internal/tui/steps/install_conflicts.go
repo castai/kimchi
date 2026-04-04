@@ -1,6 +1,7 @@
 package steps
 
 import (
+	"fmt"
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -8,12 +9,15 @@ import (
 	"github.com/castai/kimchi/internal/recipe"
 )
 
+const conflictsPageSize = 12
+
 // InstallConflictsStep lets the user decide per-file whether to overwrite or skip
 // files that already exist on disk.
 type InstallConflictsStep struct {
 	conflicts []recipe.Conflict
 	overwrite map[string]bool // path → overwrite?
 	cursor    int
+	offset    int // first visible item index
 }
 
 func NewInstallConflictsStep(conflicts []recipe.Conflict) *InstallConflictsStep {
@@ -49,10 +53,16 @@ func (s *InstallConflictsStep) Update(msg tea.Msg) (Step, tea.Cmd) {
 		case "up", "k":
 			if s.cursor > 0 {
 				s.cursor--
+				if s.cursor < s.offset {
+					s.offset = s.cursor
+				}
 			}
 		case "down", "j":
 			if s.cursor < len(s.conflicts)-1 {
 				s.cursor++
+				if s.cursor >= s.offset+conflictsPageSize {
+					s.offset = s.cursor - conflictsPageSize + 1
+				}
 			}
 		case " ":
 			path := s.conflicts[s.cursor].Path
@@ -67,9 +77,20 @@ func (s *InstallConflictsStep) Update(msg tea.Msg) (Step, tea.Cmd) {
 func (s *InstallConflictsStep) View() string {
 	var b strings.Builder
 
+	total := len(s.conflicts)
 	b.WriteString("The following files already exist. Choose what to do with each one.\n\n")
 
-	for i, c := range s.conflicts {
+	end := s.offset + conflictsPageSize
+	if end > total {
+		end = total
+	}
+
+	if s.offset > 0 {
+		b.WriteString(Styles.Desc.Render(fmt.Sprintf("  ↑ %d more above\n", s.offset)))
+	}
+
+	for i := s.offset; i < end; i++ {
+		c := s.conflicts[i]
 		cursor := "  "
 		if s.cursor == i {
 			cursor = Styles.Cursor.Render("► ")
@@ -87,6 +108,10 @@ func (s *InstallConflictsStep) View() string {
 			b.WriteString(line)
 		}
 		b.WriteString("\n")
+	}
+
+	if end < total {
+		b.WriteString(Styles.Desc.Render(fmt.Sprintf("  ↓ %d more below\n", total-end)))
 	}
 
 	return b.String()
