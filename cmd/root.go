@@ -8,7 +8,9 @@ import (
 	"github.com/spf13/cobra"
 	"k8s.io/klog/v2"
 
+	"github.com/castai/kimchi/internal/cookbook"
 	"github.com/castai/kimchi/internal/tui"
+	"github.com/castai/kimchi/internal/update"
 	"github.com/castai/kimchi/internal/version"
 )
 
@@ -42,13 +44,24 @@ Get your API key at: https://kimchi.console.cast.ai`,
 		SilenceUsage:  true,
 		SilenceErrors: true,
 		Version:       version.String(),
-		PersistentPreRun: func(cmd *cobra.Command, args []string) {
+		PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
 			if debug {
 				klog.SetLogger(klog.LoggerWithValues(klog.Background(), "debug", true))
 			}
 			if verbose {
 				klog.SetLogger(klog.LoggerWithValues(klog.Background(), "verbose", true))
 			}
+			// Skip auto-update for commands that manage cookbooks/upgrades themselves.
+			switch cmd.CommandPath() {
+			case "kimchi cookbook update", "kimchi cookbook add",
+				"kimchi upgrade", "kimchi update":
+				return nil
+			}
+			if err := cookbook.AutoUpdateIfStale(cmd.OutOrStdout(), cmd.ErrOrStderr()); err != nil {
+				return err
+			}
+			update.AutoSelfUpdateIfNeeded(cmd.Context(), version.Version, cmd.OutOrStdout(), cmd.ErrOrStderr())
+			return nil
 		},
 		RunE: runConfigure,
 	}
@@ -60,6 +73,9 @@ Get your API key at: https://kimchi.console.cast.ai`,
 	root.AddCommand(NewVersionCommand())
 	root.AddCommand(NewCompletionCommand())
 	root.AddCommand(NewUpdateCommand())
+	root.AddCommand(NewUpgradeCommand())
+	root.AddCommand(NewAuthCommand())
+	root.AddCommand(NewCookbookCommand())
 	root.AddCommand(NewRecipeCommand())
 
 	return root

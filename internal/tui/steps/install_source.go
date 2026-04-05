@@ -28,23 +28,23 @@ type parseCompleteMsg struct {
 
 type installSourceAdvanceMsg struct{}
 
-// InstallSourceStep collects the recipe file path and parses it asynchronously.
+// InstallSourceStep collects the recipe source and resolves it asynchronously.
+// Source may be a local file path, a recipe name, "cookbook/name", or "name@version".
 type InstallSourceStep struct {
-	input  textinput.Model
-	spin   spinner.Model
-	state  installSourceState
-	parsed *recipe.Recipe
-	errMsg string
-	// autoStart fires parsing immediately on Init when prefillPath is provided.
+	input     textinput.Model
+	spin      spinner.Model
+	state     installSourceState
+	parsed    *recipe.Recipe
+	errMsg    string
 	autoStart bool
 }
 
-func NewInstallSourceStep(prefillPath string) *InstallSourceStep {
+func NewInstallSourceStep(prefillSource string) *InstallSourceStep {
 	ti := textinput.New()
-	ti.Placeholder = "path/to/recipe.yaml"
+	ti.Placeholder = "path/to/recipe.yaml  or  name  or  name@version"
 	ti.Width = 60
-	if prefillPath != "" {
-		ti.SetValue(prefillPath)
+	if prefillSource != "" {
+		ti.SetValue(prefillSource)
 	}
 	ti.Focus()
 
@@ -55,7 +55,7 @@ func NewInstallSourceStep(prefillPath string) *InstallSourceStep {
 		input:     ti,
 		spin:      sp,
 		state:     installSourceIdle,
-		autoStart: prefillPath != "",
+		autoStart: prefillSource != "",
 	}
 }
 
@@ -63,7 +63,7 @@ func (s *InstallSourceStep) ParsedRecipe() *recipe.Recipe { return s.parsed }
 
 func (s *InstallSourceStep) Init() tea.Cmd {
 	if s.autoStart {
-		return tea.Batch(s.spin.Tick, s.parse(s.input.Value()))
+		return tea.Batch(s.spin.Tick, s.resolve(s.input.Value()))
 	}
 	return textinput.Blink
 }
@@ -80,15 +80,15 @@ func (s *InstallSourceStep) Update(msg tea.Msg) (Step, tea.Cmd) {
 			}
 		case "enter":
 			if s.state == installSourceIdle || s.state == installSourceInvalid {
-				path := strings.TrimSpace(s.input.Value())
-				if path == "" {
-					s.errMsg = "File path is required"
+				src := strings.TrimSpace(s.input.Value())
+				if src == "" {
+					s.errMsg = "Recipe source is required"
 					s.state = installSourceInvalid
 					return s, nil
 				}
 				s.state = installSourceParsing
 				s.errMsg = ""
-				return s, tea.Batch(s.spin.Tick, s.parse(path))
+				return s, tea.Batch(s.spin.Tick, s.resolve(src))
 			}
 			if s.state == installSourceValid {
 				return s, func() tea.Msg { return NextStepMsg{} }
@@ -126,9 +126,9 @@ func (s *InstallSourceStep) Update(msg tea.Msg) (Step, tea.Cmd) {
 	return s, nil
 }
 
-func (s *InstallSourceStep) parse(path string) tea.Cmd {
+func (s *InstallSourceStep) resolve(source string) tea.Cmd {
 	return func() tea.Msg {
-		r, err := recipe.ReadFromFile(path)
+		r, err := recipe.ResolveSource(source)
 		return parseCompleteMsg{r: r, err: err}
 	}
 }
@@ -136,17 +136,18 @@ func (s *InstallSourceStep) parse(path string) tea.Cmd {
 func (s *InstallSourceStep) View() string {
 	var b strings.Builder
 
-	b.WriteString("Enter the path to the recipe file to install.\n\n")
-	b.WriteString(Styles.Desc.Render("Recipe file:"))
+	b.WriteString("Enter the recipe to install.\n")
+	b.WriteString(Styles.Desc.Render("Supported: file path · name · cookbook/name · name@version") + "\n\n")
+	b.WriteString(Styles.Desc.Render("Source:"))
 	b.WriteString("\n")
 	b.WriteString(s.input.View())
 	b.WriteString("\n\n")
 
 	switch s.state {
 	case installSourceParsing:
-		b.WriteString(Styles.Spinner.Render(fmt.Sprintf("%s Reading recipe...", s.spin.View())))
+		b.WriteString(Styles.Spinner.Render(fmt.Sprintf("%s Resolving recipe…", s.spin.View())))
 	case installSourceValid:
-		b.WriteString(Styles.Success.Render(fmt.Sprintf("✓ Recipe \"%s\" loaded", s.parsed.Name)))
+		b.WriteString(Styles.Success.Render(fmt.Sprintf("✓ Recipe \"%s\" (%s) loaded", s.parsed.Name, s.parsed.Version)))
 	case installSourceInvalid:
 		b.WriteString(Styles.Error.Render(fmt.Sprintf("✗ %s", s.errMsg)))
 	}
@@ -155,11 +156,11 @@ func (s *InstallSourceStep) View() string {
 	return b.String()
 }
 
-func (s *InstallSourceStep) Name() string { return "Recipe File" }
+func (s *InstallSourceStep) Name() string { return "Recipe Source" }
 
 func (s *InstallSourceStep) Info() StepInfo {
 	return StepInfo{
-		Name:        "Recipe File",
+		Name:        "Recipe Source",
 		KeyBindings: []KeyBinding{BindingsConfirm, BindingsBack, BindingsQuit},
 	}
 }

@@ -68,6 +68,23 @@ func SetAPIKey(key string) error {
 	return Save(cfg)
 }
 
+func GetGitHubToken() (string, error) {
+	cfg, err := Load()
+	if err != nil {
+		return "", err
+	}
+	return cfg.GitHubToken, nil
+}
+
+func SetGitHubToken(token string) error {
+	cfg, err := Load()
+	if err != nil {
+		return fmt.Errorf("load existing config: %w", err)
+	}
+	cfg.GitHubToken = token
+	return Save(cfg)
+}
+
 func Save(cfg *Config) error {
 	path := ConfigPath()
 	if path == "" {

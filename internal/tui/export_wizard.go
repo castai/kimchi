@@ -2,6 +2,7 @@ package tui
 
 import (
 	"fmt"
+	"os"
 
 	tea "github.com/charmbracelet/bubbletea"
 
@@ -13,6 +14,14 @@ import (
 
 const defaultOutputPath = "kimchi-recipe.yaml"
 
+// ExportWizardOptions are the options for the export wizard, set from CLI flags.
+type ExportWizardOptions struct {
+	OutputPath string
+	Name       string   // pre-fills the recipe name prompt
+	Tags       []string // pre-fills tags; combined with any entered in the wizard
+	DryRun     bool     // print to stdout instead of writing a file
+}
+
 // exportWizard is a standalone bubbletea model for the recipe export flow.
 type exportWizard struct {
 	stepList     []steps.Step
@@ -21,6 +30,7 @@ type exportWizard struct {
 	finished     bool
 	aborted      bool
 	outputPath   string
+	dryRun       bool
 	selectedTool tools.ToolID
 	scope        config.ConfigScope
 
@@ -34,21 +44,24 @@ type exportWizard struct {
 	confirmStep *steps.ExportConfirmStep
 }
 
-// newExportWizard builds the wizard. If outputPath is non-empty the output
-// file step is skipped and that path is used directly.
-func newExportWizard(outputPath string) *exportWizard {
+// newExportWizard builds the wizard from the given options.
+func newExportWizard(wizOpts ExportWizardOptions) *exportWizard {
 	toolStep := steps.NewExportToolStep()
 	scopeStep := steps.NewExportScopeStep()
-	meta := steps.NewExportMetaStep()
+	meta := steps.NewExportMetaStep(wizOpts.Name)
 	useCase := steps.NewExportUseCaseStep()
 
 	w := &exportWizard{
-		outputPath:  outputPath,
+		outputPath:  wizOpts.OutputPath,
+		dryRun:      wizOpts.DryRun,
 		scope:       config.ScopeGlobal, // default; updated when scope step completes
 		toolStep:    toolStep,
 		scopeStep:   scopeStep,
 		metaStep:    meta,
 		useCaseStep: useCase,
+		opts: recipe.ExportOptions{
+			Tags: wizOpts.Tags,
+		},
 	}
 
 	// assetsStep is created lazily in collectStepResult once scope is known.
@@ -74,6 +87,9 @@ func newExportWizard(outputPath string) *exportWizard {
 			if err != nil {
 				return nil, fmt.Errorf("build recipe: %w", err)
 			}
+			if w.dryRun {
+				return a.UnresolvedRefs, recipe.WriteYAMLTo(os.Stdout, r)
+			}
 			return a.UnresolvedRefs, recipe.WriteYAML(w.outputPath, r)
 		default:
 			return nil, fmt.Errorf("unsupported tool: %s", w.selectedTool)
@@ -81,9 +97,12 @@ func newExportWizard(outputPath string) *exportWizard {
 	}
 
 	// Placeholder path for the confirm step — updated later in collectStepResult.
-	confirmOutputPath := outputPath
+	confirmOutputPath := wizOpts.OutputPath
 	if confirmOutputPath == "" {
 		confirmOutputPath = defaultOutputPath
+	}
+	if wizOpts.DryRun {
+		confirmOutputPath = "<stdout>"
 	}
 	confirm := steps.NewExportConfirmStep(confirmOutputPath, writeFn, "", "", "", nil)
 	w.confirmStep = confirm
@@ -94,7 +113,7 @@ func newExportWizard(outputPath string) *exportWizard {
 	w.assetsStep = assetsStep
 
 	stepList := []steps.Step{toolStep, scopeStep, meta, useCase, assetsStep}
-	if outputPath == "" {
+	if wizOpts.OutputPath == "" && !wizOpts.DryRun {
 		outputStep := steps.NewExportOutputStep(defaultOutputPath)
 		w.outputStep = outputStep
 		w.outputPath = defaultOutputPath
@@ -225,9 +244,9 @@ func (w *exportWizard) includedLabels() []string {
 	return labels
 }
 
-// RunExportWizard launches the recipe export TUI and writes to outputPath.
-func RunExportWizard(outputPath string) error {
-	w := newExportWizard(outputPath)
+// RunExportWizard launches the recipe export TUI.
+func RunExportWizard(wizOpts ExportWizardOptions) error {
+	w := newExportWizard(wizOpts)
 	p := tea.NewProgram(w, tea.WithAltScreen())
 	_, err := p.Run()
 	return err

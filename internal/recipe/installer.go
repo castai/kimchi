@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	"gopkg.in/yaml.v3"
@@ -107,10 +108,11 @@ func DetectConflicts(r *Recipe) ([]Conflict, error) {
 type AssetDecisions map[string]bool
 
 // InstallOpenCode writes the recipe's OpenCode config to opencode.json and all
-// embedded assets to the appropriate paths. apiKey is injected into the kimchi
-// provider's options block (it is never stored in a recipe). decisions controls
+// embedded assets to the appropriate paths. secretValues maps each
+// kimchi:secret: placeholder found in the recipe to its real value; all
+// placeholders are replaced before any file is written. decisions controls
 // overwrite behaviour for files that already exist on disk.
-func InstallOpenCode(r *Recipe, apiKey string, decisions AssetDecisions) error {
+func InstallOpenCode(r *Recipe, secretValues map[string]string, decisions AssetDecisions) error {
 	homeDir, err := os.UserHomeDir()
 	if err != nil {
 		return err
@@ -126,13 +128,9 @@ func InstallOpenCode(r *Recipe, apiKey string, decisions AssetDecisions) error {
 		return fmt.Errorf("read existing opencode config: %w", err)
 	}
 
-	// Providers — use the map from the recipe verbatim, but inject the kimchi API key.
 	if oc.Providers != nil {
-		providers := deepCopyMap(oc.Providers)
-		injectAPIKey(providers, tools.ProviderName, apiKey)
-		existing["provider"] = providers
+		existing["provider"] = oc.Providers
 	}
-
 	setIfNonZero(existing, "model", oc.Model)
 	setIfNonZero(existing, "small_model", oc.SmallModel)
 	setIfNonZero(existing, "default_agent", oc.DefaultAgent)
@@ -167,6 +165,11 @@ func InstallOpenCode(r *Recipe, apiKey string, decisions AssetDecisions) error {
 		existing["instructions"] = oc.Instructions
 	}
 	existing["$schema"] = "https://opencode.ai/config.json"
+
+	// Replace every kimchi:secret: placeholder with its real value in one pass.
+	if len(secretValues) > 0 {
+		existing = replaceSecretsInAny(existing, secretValues).(map[string]any)
+	}
 
 	if err := config.WriteJSON(jsonPath, existing); err != nil {
 		return fmt.Errorf("write opencode config: %w", err)
@@ -279,32 +282,118 @@ func InstallOpenCode(r *Recipe, apiKey string, decisions AssetDecisions) error {
 	return nil
 }
 
-// injectAPIKey replaces the kimchi:secret: placeholder in the named provider's
-// options.apiKey with the real API key.
-func injectAPIKey(providers map[string]any, providerName, apiKey string) {
-	prov, ok := providers[providerName].(map[string]any)
+// DetectExternalSecretPlaceholders returns all unique kimchi:secret: placeholder
+// strings found in the recipe that are NOT inside the kimchi provider's own
+// options block (those are auto-filled from the stored Kimchi API key).
+// The returned slice is sorted for stable display in the TUI.
+func DetectExternalSecretPlaceholders(r *Recipe) []string {
+	oc := r.Tools.OpenCode
+	if oc == nil {
+		return nil
+	}
+
+	// Collect every placeholder in the whole OpenCode config.
+	all := make(map[string]struct{})
+	collectSecretPlaceholders(oc.Providers, all)
+	collectSecretPlaceholders(oc.MCP, all)
+	collectSecretPlaceholders(oc.AgentConfigs, all)
+	collectSecretPlaceholders(oc.Tools, all)
+
+	// Placeholders that live inside the kimchi provider's options are handled
+	// automatically using the stored API key — exclude them.
+	for p := range kimchiProviderPlaceholders(oc.Providers) {
+		delete(all, p)
+	}
+
+	out := make([]string, 0, len(all))
+	for p := range all {
+		out = append(out, p)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// kimchiProviderPlaceholders returns the set of placeholder strings found in
+// the kimchi provider's options block.
+func kimchiProviderPlaceholders(providers map[string]any) map[string]struct{} {
+	out := make(map[string]struct{})
+	if providers == nil {
+		return out
+	}
+	prov, ok := providers[tools.ProviderName].(map[string]any)
 	if !ok {
-		return
+		return out
 	}
 	opts, ok := prov["options"].(map[string]any)
 	if !ok {
+		return out
+	}
+	for _, v := range opts {
+		if s, ok := v.(string); ok && strings.HasPrefix(s, SecretPlaceholderPrefix) {
+			out[s] = struct{}{}
+		}
+	}
+	return out
+}
+
+// CollectAllSecretPlaceholders populates out with every kimchi:secret: placeholder
+// found anywhere in the recipe's OpenCode config (providers, MCP, agents, tools).
+func CollectAllSecretPlaceholders(r *Recipe, out map[string]struct{}) {
+	oc := r.Tools.OpenCode
+	if oc == nil {
 		return
 	}
-	for _, key := range []string{"apiKey", "api_key", "token", "secret"} {
-		if v, ok := opts[key].(string); ok && strings.HasPrefix(v, SecretPlaceholderPrefix) {
-			opts[key] = apiKey
+	collectSecretPlaceholders(oc.Providers, out)
+	collectSecretPlaceholders(oc.MCP, out)
+	collectSecretPlaceholders(oc.AgentConfigs, out)
+	collectSecretPlaceholders(oc.Tools, out)
+}
+
+// collectSecretPlaceholders recursively walks v and adds any kimchi:secret:
+// prefixed string to out.
+func collectSecretPlaceholders(v any, out map[string]struct{}) {
+	switch v := v.(type) {
+	case string:
+		if strings.HasPrefix(v, SecretPlaceholderPrefix) {
+			out[v] = struct{}{}
+		}
+	case map[string]any:
+		for _, val := range v {
+			collectSecretPlaceholders(val, out)
+		}
+	case []any:
+		for _, item := range v {
+			collectSecretPlaceholders(item, out)
 		}
 	}
 }
 
-// deepCopyMap returns a shallow copy of m so the recipe struct is not mutated.
-func deepCopyMap(m map[string]any) map[string]any {
-	out := make(map[string]any, len(m))
-	for k, v := range m {
-		out[k] = v
+// replaceSecretsInAny recursively walks v and replaces any string that is a
+// key in secrets with its corresponding value. New maps/slices are returned so
+// the original data is never mutated.
+func replaceSecretsInAny(v any, secrets map[string]string) any {
+	switch v := v.(type) {
+	case string:
+		if replacement, ok := secrets[v]; ok {
+			return replacement
+		}
+		return v
+	case map[string]any:
+		out := make(map[string]any, len(v))
+		for k, val := range v {
+			out[k] = replaceSecretsInAny(val, secrets)
+		}
+		return out
+	case []any:
+		out := make([]any, len(v))
+		for i, item := range v {
+			out[i] = replaceSecretsInAny(item, secrets)
+		}
+		return out
 	}
-	return out
+	return v
 }
+
 
 // setIfNonZero writes key=value to m only when value is not the zero string.
 func setIfNonZero(m map[string]any, key, value string) {

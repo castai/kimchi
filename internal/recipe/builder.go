@@ -2,6 +2,7 @@ package recipe
 
 import (
 	"strings"
+	"time"
 )
 
 // ExportOptions carries the user's choices from the TUI wizard.
@@ -9,6 +10,7 @@ type ExportOptions struct {
 	Name        string
 	Author      string
 	Description string
+	Tags        []string
 	UseCase     string
 
 	IncludeAgentsMD        bool
@@ -90,13 +92,17 @@ func Build(assets *OpenCodeAssets, opts ExportOptions) (*Recipe, error) {
 		ocCfg.ReferencedFiles = assets.ReferencedFiles
 	}
 
+	now := time.Now().UTC().Format(time.RFC3339)
 	r := &Recipe{
 		Name:        opts.Name,
+		Version:     "0.1.0",
 		Author:      opts.Author,
 		Description: opts.Description,
+		Tags:        opts.Tags,
+		CreatedAt:   now,
+		UpdatedAt:   now,
 		Model:       displaySlug,
 		UseCase:     opts.UseCase,
-		Version:     "1",
 		Tools: ToolsMap{
 			OpenCode: ocCfg,
 		},

@@ -14,7 +14,9 @@ type ExportMetaStep struct {
 	err     string
 }
 
-func NewExportMetaStep() *ExportMetaStep {
+// NewExportMetaStep creates the metadata step. initialName pre-fills the name
+// field when provided via the --name flag, so the wizard can skip the prompt.
+func NewExportMetaStep(initialName string) *ExportMetaStep {
 	labels := []string{"Recipe name", "Author", "Description (optional)"}
 	s := &ExportMetaStep{}
 	for i, label := range labels {
@@ -22,6 +24,9 @@ func NewExportMetaStep() *ExportMetaStep {
 		ti.Placeholder = label
 		ti.Width = 50
 		s.inputs[i] = ti
+	}
+	if initialName != "" {
+		s.inputs[0].SetValue(initialName)
 	}
 	s.inputs[0].Focus()
 	return s

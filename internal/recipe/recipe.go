@@ -1,15 +1,31 @@
 package recipe
 
 // Recipe is the top-level portable snapshot of an AI tool configuration.
-// Version 1 supports OpenCode only.
 type Recipe struct {
-	Name        string   `yaml:"name"`
-	Author      string   `yaml:"author"`
-	Description string   `yaml:"description,omitempty"`
-	Model       string   `yaml:"model"`
-	UseCase     string   `yaml:"use_case"`
-	Version     string   `yaml:"version"`
-	Tools       ToolsMap `yaml:"tools"`
+	// Header — identity and routing metadata
+	Name      string `yaml:"name"`
+	Version   string `yaml:"version"` // semver, e.g. "0.1.0"
+	Cookbook  string `yaml:"cookbook,omitempty"`
+	Author    string `yaml:"author,omitempty"`
+	Description string      `yaml:"description,omitempty"`
+	Tags        []string    `yaml:"tags,omitempty"`
+	CreatedAt   string      `yaml:"created_at,omitempty"`
+	UpdatedAt   string      `yaml:"updated_at,omitempty"`
+	ForkedFrom  *ForkedFrom `yaml:"forked_from,omitempty"`
+
+	// Convenience summary fields
+	Model   string `yaml:"model,omitempty"`
+	UseCase string `yaml:"use_case,omitempty"`
+
+	// Tool-specific config blocks
+	Tools ToolsMap `yaml:"tools"`
+}
+
+// ForkedFrom records the origin of a recipe that was created via `recipe fork`.
+type ForkedFrom struct {
+	Author   string `yaml:"author"`
+	Cookbook string `yaml:"cookbook"`
+	Version  string `yaml:"version"`
 }
 
 // ToolsMap holds per-tool configuration blocks. Fields are omitted when nil.

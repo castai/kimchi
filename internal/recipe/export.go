@@ -2,6 +2,7 @@ package recipe
 
 import (
 	"fmt"
+	"io"
 
 	"gopkg.in/yaml.v3"
 
@@ -26,4 +27,18 @@ func WriteYAML(outputPath string, r *Recipe) error {
 	}
 
 	return nil
+}
+
+// WriteYAMLTo marshals r to YAML and writes it to w (e.g. os.Stdout for --dry-run).
+func WriteYAMLTo(w io.Writer, r *Recipe) error {
+	data, err := yaml.Marshal(r)
+	if err != nil {
+		return fmt.Errorf("marshal recipe: %w", err)
+	}
+	_, err = fmt.Fprint(w, fileHeader)
+	if err != nil {
+		return err
+	}
+	_, err = w.Write(data)
+	return err
 }
