@@ -7,6 +7,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/castai/kimchi/internal/config"
+	"github.com/castai/kimchi/internal/cookbook"
 	"github.com/castai/kimchi/internal/recipe"
 	"github.com/castai/kimchi/internal/tools"
 	"github.com/castai/kimchi/internal/tui/steps"
@@ -16,10 +17,12 @@ const defaultOutputPath = "kimchi-recipe.yaml"
 
 // ExportWizardOptions are the options for the export wizard, set from CLI flags.
 type ExportWizardOptions struct {
-	OutputPath string
-	Name       string   // pre-fills the recipe name prompt
-	Tags       []string // pre-fills tags; combined with any entered in the wizard
-	DryRun     bool     // print to stdout instead of writing a file
+	OutputPath     string
+	Name           string         // pre-fills the recipe name prompt
+	Tags           []string       // pre-fills tags; combined with any entered in the wizard
+	DryRun         bool           // print to stdout instead of writing a file
+	Seed           *recipe.Recipe // pre-fills metadata from an existing recipe
+	GitHubUsername string         // forces the author field to the authenticated GitHub identity
 }
 
 // exportWizard is a standalone bubbletea model for the recipe export flow.
@@ -48,7 +51,39 @@ type exportWizard struct {
 func newExportWizard(wizOpts ExportWizardOptions) *exportWizard {
 	toolStep := steps.NewExportToolStep()
 	scopeStep := steps.NewExportScopeStep()
-	meta := steps.NewExportMetaStep(wizOpts.Name)
+
+	// Derive initial meta values: flags > GitHub identity > seed.
+	initialName := wizOpts.Name
+	initialAuthor := wizOpts.GitHubUsername // always use GitHub username when available
+	initialDescription := ""
+	initialTags := wizOpts.Tags
+	if wizOpts.Seed != nil {
+		if initialName == "" {
+			initialName = wizOpts.Seed.Name
+		}
+		if initialAuthor == "" {
+			initialAuthor = wizOpts.Seed.Author
+		}
+		initialDescription = wizOpts.Seed.Description
+		if len(initialTags) == 0 {
+			initialTags = wizOpts.Seed.Tags
+		}
+	}
+
+	meta := steps.NewExportMetaStep(initialName, initialAuthor, initialDescription)
+	githubUsername := wizOpts.GitHubUsername
+	meta.SetSeedLookupFn(func(name string) (string, string, []string) {
+		if ref, _ := recipe.FindRecipe(name); ref != nil {
+			if seed, _ := recipe.ReadFromFile(ref.Path); seed != nil {
+				author := seed.Author
+				if githubUsername != "" {
+					author = githubUsername
+				}
+				return author, seed.Description, seed.Tags
+			}
+		}
+		return githubUsername, "", nil
+	})
 	useCase := steps.NewExportUseCaseStep()
 
 	w := &exportWizard{
@@ -60,7 +95,8 @@ func newExportWizard(wizOpts ExportWizardOptions) *exportWizard {
 		metaStep:    meta,
 		useCaseStep: useCase,
 		opts: recipe.ExportOptions{
-			Tags: wizOpts.Tags,
+			Tags: initialTags,
+			Seed: wizOpts.Seed,
 		},
 	}
 
@@ -191,6 +227,25 @@ func (w *exportWizard) collectStepResult() {
 		w.opts.Name = s.RecipeName()
 		w.opts.Author = s.Author()
 		w.opts.Description = s.Description()
+		// If no seed yet and the name matches an installed recipe, load it now
+		// so Build() preserves its lineage (version, cookbook, forked_from, created_at)
+		// and fills in any fields the user left blank.
+		if w.opts.Seed == nil && w.opts.Name != "" {
+			if ref, _ := recipe.FindRecipe(w.opts.Name); ref != nil {
+				if seed, _ := recipe.ReadFromFile(ref.Path); seed != nil {
+					w.opts.Seed = seed
+					if w.opts.Author == "" {
+						w.opts.Author = seed.Author
+					}
+					if w.opts.Description == "" {
+						w.opts.Description = seed.Description
+					}
+					if len(w.opts.Tags) == 0 {
+						w.opts.Tags = seed.Tags
+					}
+				}
+			}
+		}
 
 	case *steps.ExportUseCaseStep:
 		w.opts.UseCase = s.SelectedUseCase()
@@ -246,6 +301,36 @@ func (w *exportWizard) includedLabels() []string {
 
 // RunExportWizard launches the recipe export TUI.
 func RunExportWizard(wizOpts ExportWizardOptions) error {
+	// Pre-fill author from stored GitHub identity so the recipe always uses
+	// the GitHub username rather than a free-form string.
+	if wizOpts.GitHubUsername == "" {
+		if token, _ := config.GetGitHubToken(); token != "" {
+			if username, _ := cookbook.GetUsername(token); username != "" {
+				wizOpts.GitHubUsername = username
+			}
+		}
+	}
+	// If a name was provided and no seed was explicitly set, try to load the
+	// existing recipe from any registered cookbook to pre-fill metadata.
+	if wizOpts.Name != "" && wizOpts.Seed == nil {
+		if ref, _ := recipe.FindRecipe(wizOpts.Name); ref != nil {
+			if seed, _ := recipe.ReadFromFile(ref.Path); seed != nil {
+				wizOpts.Seed = seed
+			}
+		}
+	}
+	// No name provided — pre-fill from the last installed recipe so the user
+	// can re-export without retyping everything.
+	if wizOpts.Name == "" && wizOpts.Seed == nil {
+		if last, _ := recipe.GetLastInstalled(); last != nil {
+			if ref, _ := recipe.FindRecipe(last.Name); ref != nil {
+				if seed, _ := recipe.ReadFromFile(ref.Path); seed != nil {
+					wizOpts.Name = seed.Name
+					wizOpts.Seed = seed
+				}
+			}
+		}
+	}
 	w := newExportWizard(wizOpts)
 	p := tea.NewProgram(w, tea.WithAltScreen())
 	_, err := p.Run()

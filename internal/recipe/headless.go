@@ -4,6 +4,7 @@ import (
 	"fmt"
 
 	"github.com/castai/kimchi/internal/config"
+	"github.com/castai/kimchi/internal/tools"
 )
 
 // HeadlessInstallOptions controls non-interactive recipe installation.
@@ -65,6 +66,6 @@ func InstallHeadless(opts HeadlessInstallOptions) error {
 	if err := InstallOpenCode(r, secretValues, decisions); err != nil {
 		return err
 	}
-	_ = RecordInstall(r.Name, r.Version, r.Cookbook)
+	_ = RecordInstall(r.Name, r.Version, r.Cookbook, tools.ToolOpenCode)
 	return nil
 }

@@ -33,6 +33,15 @@ type ToolsMap struct {
 	OpenCode *OpenCodeConfig `yaml:"opencode,omitempty"`
 }
 
+// SupportedToolNames returns the names of tools that have config blocks in this recipe.
+func (t ToolsMap) SupportedToolNames() []string {
+	var names []string
+	if t.OpenCode != nil {
+		names = append(names, "opencode")
+	}
+	return names
+}
+
 // OpenCodeConfig captures the exportable OpenCode settings.
 // Secrets in providers and MCP servers are replaced with placeholder strings.
 type OpenCodeConfig struct {

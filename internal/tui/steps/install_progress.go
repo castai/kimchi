@@ -69,6 +69,16 @@ func (s *InstallProgressStep) SetWriteFn(fn func() error) {
 	s.writeFn = fn
 }
 
+// SetItems replaces the checklist labels. Called when the asset selection
+// changes so the progress step reflects only the chosen assets.
+func (s *InstallProgressStep) SetItems(labels []string) {
+	items := make([]installProgressItem, len(labels))
+	for i, l := range labels {
+		items[i] = installProgressItem{label: l, status: installItemPending}
+	}
+	s.items = items
+}
+
 func (s *InstallProgressStep) Init() tea.Cmd {
 	return tea.Tick(50*time.Millisecond, func(t time.Time) tea.Msg {
 		return installStartMsg{}

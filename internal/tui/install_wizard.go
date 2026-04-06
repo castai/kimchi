@@ -8,6 +8,7 @@ import (
 
 	"github.com/castai/kimchi/internal/config"
 	"github.com/castai/kimchi/internal/recipe"
+	"github.com/castai/kimchi/internal/tools"
 	"github.com/castai/kimchi/internal/tui/steps"
 )
 
@@ -27,13 +28,15 @@ type installWizard struct {
 	noApply  bool
 
 	// collected across steps
-	parsedRecipe *recipe.Recipe
-	apiKey       string
-	secretValues map[string]string // placeholder → real value, built up incrementally
-	decisions    recipe.AssetDecisions
+	parsedRecipe   *recipe.Recipe
+	filteredRecipe *recipe.Recipe // recipe after user's asset selection
+	apiKey         string
+	secretValues   map[string]string // placeholder → real value, built up incrementally
+	decisions      recipe.AssetDecisions
 
 	// typed refs for dynamic injection and result collection
 	sourceStep      *steps.InstallSourceStep
+	assetsStep      *steps.InstallAssetsStep
 	secretsStep     *steps.InstallSecretsStep
 	progressStep    *steps.InstallProgressStep
 }
@@ -96,7 +99,13 @@ func (w *installWizard) collectStepResult() {
 	switch s := w.stepList[w.current].(type) {
 	case *steps.InstallSourceStep:
 		w.parsedRecipe = s.ParsedRecipe()
+		w.filteredRecipe = w.parsedRecipe
 		w.injectRemainingSteps()
+
+	case *steps.InstallAssetsStep:
+		w.filteredRecipe = s.FilteredRecipe()
+		w.applyKimchiSecrets()
+		w.rebuildWriteFn()
 
 	case *steps.AuthStep:
 		w.apiKey = s.APIKey()
@@ -123,7 +132,22 @@ func (w *installWizard) injectRemainingSteps() {
 	// Preview is always shown.
 	preview := steps.NewInstallPreviewStep(r)
 
+	// Assets selection step — always shown so the user can pick a subset.
+	assetsStep := steps.NewInstallAssetsStep(r)
+	w.assetsStep = assetsStep
+
+	// Assemble step list starting after the source step (index 0).
+	tail := []steps.Step{preview, assetsStep}
+
+	// When --no-apply is set, stop after the preview — no auth, conflicts, or install.
+	if w.noApply {
+		w.stepList = append(w.stepList[:1], tail...)
+		return
+	}
+
 	// Auth step only if no Kimchi API key is stored yet.
+	// NOTE: auth / secrets / conflicts are based on the full recipe at this point;
+	// they are re-evaluated after the assets step in rebuildWriteFn.
 	var authStep *steps.AuthStep
 	if key, _ := config.GetAPIKey(); key == "" {
 		authStep = steps.NewAuthStep()
@@ -146,15 +170,6 @@ func (w *installWizard) injectRemainingSteps() {
 		conflictsStep = steps.NewInstallConflictsStep(conflicts)
 	}
 
-	// Assemble step list starting after the source step (index 0).
-	tail := []steps.Step{preview}
-
-	// When --no-apply is set, stop after the preview — no auth, conflicts, or install.
-	if w.noApply {
-		w.stepList = append(w.stepList[:1], tail...)
-		return
-	}
-
 	// Progress step — always last. writeFn is a placeholder until all data is known.
 	itemLabels := w.buildItemLabels(r, nil)
 	progress := steps.NewInstallProgressStep(itemLabels, func() error {
@@ -174,9 +189,10 @@ func (w *installWizard) injectRemainingSteps() {
 	tail = append(tail, progress)
 	w.stepList = append(w.stepList[:1], tail...)
 
-	// If no interactive steps are pending, writeFn can be built immediately.
+	// If no interactive steps are pending after assets, writeFn will be built
+	// once the assets step completes (in collectStepResult).
 	if authStep == nil && secretsStep == nil && conflictsStep == nil {
-		w.rebuildWriteFn()
+		// writeFn will be set after assetsStep completes.
 	}
 }
 
@@ -184,20 +200,21 @@ func (w *installWizard) injectRemainingSteps() {
 // stored API key. Called as soon as apiKey is known (either from storage or
 // after the auth step completes).
 func (w *installWizard) applyKimchiSecrets() {
-	if w.parsedRecipe == nil || w.parsedRecipe.Tools.OpenCode == nil {
+	r := w.filteredRecipe
+	if r == nil {
+		r = w.parsedRecipe
+	}
+	if r == nil || r.Tools.OpenCode == nil {
 		return
 	}
-	providers := w.parsedRecipe.Tools.OpenCode.Providers
-	// kimchiProviderPlaceholders is unexported; use DetectExternalSecretPlaceholders
-	// complement: collect ALL placeholders, subtract external ones.
+	// Collect ALL placeholders, subtract external ones — the remainder are kimchi secrets.
 	all := make(map[string]struct{})
-	recipe.CollectAllSecretPlaceholders(w.parsedRecipe, all)
-	external := recipe.DetectExternalSecretPlaceholders(w.parsedRecipe)
+	recipe.CollectAllSecretPlaceholders(r, all)
+	external := recipe.DetectExternalSecretPlaceholders(r)
 	externalSet := make(map[string]struct{}, len(external))
 	for _, p := range external {
 		externalSet[p] = struct{}{}
 	}
-	_ = providers // used implicitly via the recipe
 	for p := range all {
 		if _, isExternal := externalSet[p]; !isExternal {
 			w.secretValues[p] = w.apiKey
@@ -207,18 +224,28 @@ func (w *installWizard) applyKimchiSecrets() {
 
 // rebuildWriteFn assembles the final writeFn once all secrets and decisions are known.
 func (w *installWizard) rebuildWriteFn() {
-	if w.progressStep == nil || w.parsedRecipe == nil {
+	if w.progressStep == nil {
 		return
 	}
-	r := w.parsedRecipe
+	r := w.filteredRecipe
+	if r == nil {
+		r = w.parsedRecipe
+	}
+	if r == nil {
+		return
+	}
+	// Update the progress checklist to reflect the filtered asset selection.
+	w.progressStep.SetItems(w.buildItemLabels(r, nil))
+
 	secretValues := w.secretValues
 	decisions := w.decisions
+	orig := w.parsedRecipe // for RecordInstall (name/version/cookbook from original)
 
 	w.progressStep.SetWriteFn(func() error {
 		if err := recipe.InstallOpenCode(r, secretValues, decisions); err != nil {
 			return err
 		}
-		_ = recipe.RecordInstall(r.Name, r.Version, r.Cookbook) // best-effort
+		_ = recipe.RecordInstall(orig.Name, orig.Version, orig.Cookbook, tools.ToolOpenCode) // best-effort
 		return nil
 	})
 }

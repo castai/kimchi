@@ -7,16 +7,22 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 )
 
+// SeedLookupFn returns pre-fill values for author, description, and tags
+// given a recipe name. Called when the cursor leaves the name field.
+// Return empty strings / nil slice to leave fields as-is.
+type SeedLookupFn func(name string) (author, description string, tags []string)
+
 // ExportMetaStep collects recipe metadata: name, author, description.
 type ExportMetaStep struct {
-	inputs  [3]textinput.Model
-	focused int
-	err     string
+	inputs       [3]textinput.Model
+	focused      int
+	err          string
+	seedLookupFn SeedLookupFn
 }
 
-// NewExportMetaStep creates the metadata step. initialName pre-fills the name
-// field when provided via the --name flag, so the wizard can skip the prompt.
-func NewExportMetaStep(initialName string) *ExportMetaStep {
+// NewExportMetaStep creates the metadata step. Initial values pre-fill the
+// corresponding fields; empty strings leave them blank.
+func NewExportMetaStep(initialName, initialAuthor, initialDescription string) *ExportMetaStep {
 	labels := []string{"Recipe name", "Author", "Description (optional)"}
 	s := &ExportMetaStep{}
 	for i, label := range labels {
@@ -25,11 +31,17 @@ func NewExportMetaStep(initialName string) *ExportMetaStep {
 		ti.Width = 50
 		s.inputs[i] = ti
 	}
-	if initialName != "" {
-		s.inputs[0].SetValue(initialName)
-	}
+	s.inputs[0].SetValue(initialName)
+	s.inputs[1].SetValue(initialAuthor)
+	s.inputs[2].SetValue(initialDescription)
 	s.inputs[0].Focus()
 	return s
+}
+
+// SetSeedLookupFn attaches a function that pre-fills author/description/tags
+// when the user moves away from the name field.
+func (s *ExportMetaStep) SetSeedLookupFn(fn SeedLookupFn) {
+	s.seedLookupFn = fn
 }
 
 func (s *ExportMetaStep) RecipeName() string   { return strings.TrimSpace(s.inputs[0].Value()) }
@@ -38,6 +50,25 @@ func (s *ExportMetaStep) Description() string   { return strings.TrimSpace(s.inp
 
 func (s *ExportMetaStep) Init() tea.Cmd {
 	return textinput.Blink
+}
+
+// applySeedIfLeavingName pre-fills author/description from the seed lookup
+// function when the cursor is leaving field 0 (the name field).
+func (s *ExportMetaStep) applySeedIfLeavingName() {
+	if s.focused != 0 || s.seedLookupFn == nil {
+		return
+	}
+	name := s.RecipeName()
+	if name == "" {
+		return
+	}
+	author, description, _ := s.seedLookupFn(name)
+	if s.inputs[1].Value() == "" && author != "" {
+		s.inputs[1].SetValue(author)
+	}
+	if s.inputs[2].Value() == "" && description != "" {
+		s.inputs[2].SetValue(description)
+	}
 }
 
 func (s *ExportMetaStep) Update(msg tea.Msg) (Step, tea.Cmd) {
@@ -55,6 +86,7 @@ func (s *ExportMetaStep) Update(msg tea.Msg) (Step, tea.Cmd) {
 			}
 			return s, func() tea.Msg { return PrevStepMsg{} }
 		case "tab", "down":
+			s.applySeedIfLeavingName()
 			s.inputs[s.focused].Blur()
 			s.focused = (s.focused + 1) % len(s.inputs)
 			s.inputs[s.focused].Focus()
@@ -67,6 +99,7 @@ func (s *ExportMetaStep) Update(msg tea.Msg) (Step, tea.Cmd) {
 		case "enter":
 			if s.focused < len(s.inputs)-1 {
 				// Advance to next field.
+				s.applySeedIfLeavingName()
 				s.inputs[s.focused].Blur()
 				s.focused++
 				s.inputs[s.focused].Focus()

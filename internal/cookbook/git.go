@@ -64,10 +64,11 @@ func TagExists(dir, tag string) bool {
 	return err == nil && strings.TrimSpace(out) == tag
 }
 
-// Push pushes commits and tags to origin. Returns (false, nil) when auth fails
-// (indicating the caller should fall back to a GitHub fork/PR flow).
+// Push pushes commits (but not tags) to origin. Returns (false, nil) when the
+// caller should fall back to a GitHub fork/PR flow. Tags are intentionally
+// excluded so they are only pushed after a successful direct push via PushTag.
 func Push(dir string) (hasAccess bool, err error) {
-	out, err := run(dir, "git", "push", "--follow-tags")
+	out, err := run(dir, "git", "push")
 	if err != nil {
 		if isAuthError(out) {
 			return false, nil
@@ -75,6 +76,15 @@ func Push(dir string) (hasAccess bool, err error) {
 		return false, fmt.Errorf("git push: %s", out)
 	}
 	return true, nil
+}
+
+// PushTag pushes a single named tag to origin.
+func PushTag(dir, tag string) error {
+	out, err := run(dir, "git", "push", "origin", tag)
+	if err != nil {
+		return fmt.Errorf("git push tag %s: %s", tag, out)
+	}
+	return nil
 }
 
 // CreateBranch creates and checks out a new branch.
@@ -86,9 +96,10 @@ func CreateBranch(dir, branch string) error {
 	return nil
 }
 
-// PushBranch pushes a named branch to origin.
+// PushBranch pushes a named branch to origin. Force-push is used because
+// kimchi-managed branches may already exist from a previous interrupted push.
 func PushBranch(dir, branch string) (hasAccess bool, err error) {
-	out, err := run(dir, "git", "push", "-u", "origin", branch)
+	out, err := run(dir, "git", "push", "-u", "origin", branch, "--force")
 	if err != nil {
 		if isAuthError(out) {
 			return false, nil
@@ -128,6 +139,41 @@ func HasUncommitted(dir string) bool {
 	return err == nil && strings.TrimSpace(out) != ""
 }
 
+// HasUnpushedCommits reports whether the local branch is ahead of its remote tracking branch.
+func HasUnpushedCommits(dir string) bool {
+	out, err := run(dir, "git", "log", "@{u}..HEAD", "--oneline")
+	return err == nil && strings.TrimSpace(out) != ""
+}
+
+// SyncToRemote fetches from origin and hard-resets the working tree to
+// origin's default branch. Safe to call on kimchi-managed cookbook clones
+// where local divergence is always from a previous interrupted push.
+func SyncToRemote(dir string) error {
+	return syncToRef(dir, "origin")
+}
+
+// SyncForkToUpstream fetches from the "upstream" remote and hard-resets the
+// working tree to it, so fork branches are always based on the latest upstream.
+func SyncForkToUpstream(dir string) error {
+	return syncToRef(dir, "upstream")
+}
+
+func syncToRef(dir, remote string) error {
+	if out, err := run(dir, "git", "fetch", remote); err != nil {
+		return fmt.Errorf("git fetch %s: %s", remote, out)
+	}
+	// Resolve the remote HEAD to handle repos with non-main default branches.
+	out, err := run(dir, "git", "rev-parse", "--abbrev-ref", remote+"/HEAD")
+	if err != nil {
+		out = remote + "/main"
+	}
+	ref := strings.TrimSpace(out)
+	if out2, err := run(dir, "git", "reset", "--hard", ref); err != nil {
+		return fmt.Errorf("git reset --hard %s: %s", ref, out2)
+	}
+	return nil
+}
+
 func isAuthError(output string) bool {
 	lower := strings.ToLower(output)
 	for _, s := range []string{
@@ -139,6 +185,10 @@ func isAuthError(output string) bool {
 		"401",
 		"repository not found",
 		"remote: error: access denied",
+		// Protected branch — must go through a pull request.
+		"protected branch",
+		"gh006",
+		"changes must be made through a pull request",
 	} {
 		if strings.Contains(lower, s) {
 			return true

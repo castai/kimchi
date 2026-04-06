@@ -204,13 +204,13 @@ func NewRecipeListCommand() *cobra.Command {
 			}
 
 			w := tabwriter.NewWriter(cmd.OutOrStdout(), 0, 0, 2, ' ', 0)
-			fmt.Fprintln(w, "NAME\tVERSION\tCOOKBOOK\tAUTHOR")
-			fmt.Fprintln(w, "----\t-------\t--------\t------")
+			fmt.Fprintln(w, "NAME\tVERSION\tCOOKBOOK\tAUTHOR\tTOOLS")
+			fmt.Fprintln(w, "----\t-------\t--------\t------\t-----")
 			for _, r := range refs {
 				if cookbookFilter != "" && r.Cookbook != cookbookFilter {
 					continue
 				}
-				fmt.Fprintf(w, "%s\t%s\t%s\t%s\n", r.Name, r.Version, r.Cookbook, r.Author)
+				fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\n", r.Name, r.Version, r.Cookbook, r.Author, r.Tools)
 			}
 			return w.Flush()
 		},
@@ -238,10 +238,10 @@ func NewRecipeSearchCommand() *cobra.Command {
 			}
 
 			w := tabwriter.NewWriter(cmd.OutOrStdout(), 0, 0, 2, ' ', 0)
-			fmt.Fprintln(w, "NAME\tVERSION\tCOOKBOOK\tAUTHOR")
-			fmt.Fprintln(w, "----\t-------\t--------\t------")
+			fmt.Fprintln(w, "NAME\tVERSION\tCOOKBOOK\tAUTHOR\tTOOLS")
+			fmt.Fprintln(w, "----\t-------\t--------\t------\t-----")
 			for _, r := range refs {
-				fmt.Fprintf(w, "%s\t%s\t%s\t%s\n", r.Name, r.Version, r.Cookbook, r.Author)
+				fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\n", r.Name, r.Version, r.Cookbook, r.Author, r.Tools)
 			}
 			return w.Flush()
 		},
@@ -269,6 +269,9 @@ func NewRecipeInfoCommand() *cobra.Command {
 			}
 			if r.Cookbook != "" {
 				fmt.Fprintf(w, "Cookbook:    %s\n", r.Cookbook)
+			}
+			if tools := strings.Join(r.Tools.SupportedToolNames(), ", "); tools != "" {
+				fmt.Fprintf(w, "Tools:       %s\n", tools)
 			}
 			if r.Description != "" {
 				fmt.Fprintf(w, "Description: %s\n", r.Description)

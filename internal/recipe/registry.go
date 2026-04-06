@@ -17,6 +17,7 @@ type RecipeRef struct {
 	Version  string
 	Cookbook string // cookbook name
 	Author   string
+	Tools    string // comma-joined list of supported tool names
 	Path     string // absolute path to recipe.yaml
 }
 
@@ -76,6 +77,7 @@ func FindRecipe(source string) (*RecipeRef, error) {
 				Version:  r.Version,
 				Cookbook: cb.Name,
 				Author:   r.Author,
+				Tools:    strings.Join(r.Tools.SupportedToolNames(), ", "),
 				Path:     p,
 			}, nil
 		}
@@ -137,6 +139,7 @@ func listCookbook(cb cookbook.Cookbook) ([]RecipeRef, error) {
 			Version:  r.Version,
 			Cookbook: cb.Name,
 			Author:   r.Author,
+			Tools:    strings.Join(r.Tools.SupportedToolNames(), ", "),
 			Path:     p,
 		})
 	}

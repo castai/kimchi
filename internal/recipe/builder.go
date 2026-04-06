@@ -21,6 +21,11 @@ type ExportOptions struct {
 	IncludeThemeFiles      bool
 	IncludePluginFiles     bool
 	IncludeToolFiles       bool
+
+	// Seed is the previously-installed recipe for this name. When set, Build
+	// preserves its version, cookbook, forked_from, and created_at so that
+	// re-exporting an installed recipe doesn't lose its lineage metadata.
+	Seed *Recipe
 }
 
 // Build assembles a Recipe from OpenCode assets and the user's export options.
@@ -93,16 +98,40 @@ func Build(assets *OpenCodeAssets, opts ExportOptions) (*Recipe, error) {
 	}
 
 	now := time.Now().UTC().Format(time.RFC3339)
+
+	version := "0.1.0"
+	createdAt := now
+	cookbook := ""
+	var forkedFrom *ForkedFrom
+
+	if opts.Seed != nil {
+		version = opts.Seed.Version
+		createdAt = opts.Seed.CreatedAt
+		cookbook = opts.Seed.Cookbook
+		forkedFrom = opts.Seed.ForkedFrom
+		if opts.Author == "" {
+			opts.Author = opts.Seed.Author
+		}
+		if opts.Description == "" {
+			opts.Description = opts.Seed.Description
+		}
+		if len(opts.Tags) == 0 {
+			opts.Tags = opts.Seed.Tags
+		}
+	}
+
 	r := &Recipe{
 		Name:        opts.Name,
-		Version:     "0.1.0",
+		Version:     version,
+		Cookbook:    cookbook,
 		Author:      opts.Author,
 		Description: opts.Description,
 		Tags:        opts.Tags,
-		CreatedAt:   now,
+		CreatedAt:   createdAt,
 		UpdatedAt:   now,
 		Model:       displaySlug,
 		UseCase:     opts.UseCase,
+		ForkedFrom:  forkedFrom,
 		Tools: ToolsMap{
 			OpenCode: ocCfg,
 		},

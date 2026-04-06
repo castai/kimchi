@@ -53,6 +53,14 @@ func Push(opts PushOptions, logFn func(string)) error {
 		r.Cookbook = cb.Name
 	}
 
+	// ── 2a. Sync cookbook with remote ─────────────────────────────────────
+	// Always reset to the remote state before doing any work. This handles
+	// both the stale-clone case and the diverged-after-failed-push case.
+
+	if syncErr := cookbook.SyncToRemote(cb.Path); syncErr != nil {
+		logFn("warning: could not sync cookbook: " + syncErr.Error())
+	}
+
 	// ── 3. Check for version bump requirement ──────────────────────────────
 
 	existingPath := cb.RecipePath(r.Name)
@@ -64,7 +72,29 @@ func Push(opts PushOptions, logFn func(string)) error {
 		}
 	}
 
-	if existing != nil {
+	// ── 3a. Compute the tag for the current version ────────────────────────
+	// Do this before the "nothing changed" check so we can detect a previous
+	// interrupted push (local tag exists but remote push failed).
+
+	bumpedVersion := r.Version
+	switch {
+	case opts.Major:
+		bumpedVersion, err = BumpMajor(r.Version)
+	case opts.Minor:
+		bumpedVersion, err = BumpMinor(r.Version)
+	case opts.Patch:
+		bumpedVersion, err = BumpPatch(r.Version)
+	}
+	if err != nil {
+		return fmt.Errorf("bump version: %w", err)
+	}
+	tag := r.Name + "@" + bumpedVersion
+
+	// If the local tag already exists a previous push was interrupted after
+	// tagging but before a successful push — skip the "nothing changed" guard.
+	previouslyInterrupted := cookbook.TagExists(cb.Path, tag)
+
+	if existing != nil && !previouslyInterrupted {
 		bodyChanged := recipeBodyChanged(existing, r)
 		if bodyChanged && !opts.Patch && !opts.Minor && !opts.Major {
 			return fmt.Errorf(
@@ -79,22 +109,10 @@ func Push(opts PushOptions, logFn func(string)) error {
 		}
 	}
 
-	// ── 4. Bump version ────────────────────────────────────────────────────
+	// ── 4. Apply the pre-computed version bump ─────────────────────────────
 
-	switch {
-	case opts.Major:
-		r.Version, err = BumpMajor(r.Version)
-	case opts.Minor:
-		r.Version, err = BumpMinor(r.Version)
-	case opts.Patch:
-		r.Version, err = BumpPatch(r.Version)
-	}
-	if err != nil {
-		return fmt.Errorf("bump version: %w", err)
-	}
+	r.Version = bumpedVersion
 	r.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
-
-	tag := r.Name + "@" + r.Version
 	logFn(fmt.Sprintf("pushing %s as %s", r.Name, tag))
 
 	if opts.DryRun {
@@ -149,17 +167,22 @@ func Push(opts PushOptions, logFn func(string)) error {
 		return err
 	}
 	if hasAccess {
+		// Push the tag only after confirming direct write access — avoids
+		// leaking tags to the upstream repo when branch protection forces a PR.
+		if err := cookbook.PushTag(cb.Path, tag); err != nil {
+			return err
+		}
 		logFn("✓ pushed " + tag)
 		return nil
 	}
 
 	// No write access → GitHub fork + PR flow
 	logFn("no write access — starting GitHub fork flow")
-	return pushViaGitHubPR(r, cb, tag, relPath, logFn)
+	return pushViaGitHubPR(r, cb, tag, relPath, opts.File, logFn)
 }
 
 // pushViaGitHubPR forks the cookbook on GitHub, pushes a branch, and opens a PR.
-func pushViaGitHubPR(r *Recipe, cb *cookbook.Cookbook, tag, relPath string, logFn func(string)) error {
+func pushViaGitHubPR(r *Recipe, cb *cookbook.Cookbook, tag, relPath, sourceFile string, logFn func(string)) error {
 	// Load stored GitHub token, or run device flow now.
 	token, err := config.GetGitHubToken()
 	if err != nil || token == "" {
@@ -176,6 +199,15 @@ func pushViaGitHubPR(r *Recipe, cb *cookbook.Cookbook, tag, relPath string, logF
 	username, err := cookbook.GetUsername(token)
 	if err != nil {
 		return fmt.Errorf("get GitHub username: %w", err)
+	}
+
+	// Force the author to match the authenticated GitHub username.
+	if r.Author != username {
+		r.Author = username
+		if err := WriteYAML(sourceFile, r); err != nil {
+			return fmt.Errorf("update author in recipe file: %w", err)
+		}
+		logFn(fmt.Sprintf("author set to %s", username))
 	}
 
 	owner, repo, err := cookbook.ParseGitHubURL(cb.URL)
@@ -201,6 +233,16 @@ func pushViaGitHubPR(r *Recipe, cb *cookbook.Cookbook, tag, relPath string, logF
 	logFn("cloning fork…")
 	if err := cookbook.Clone(cloneURL, tmp); err != nil {
 		return fmt.Errorf("clone fork: %w", err)
+	}
+
+	// Sync the fork clone to the upstream so the branch has no conflicts.
+	upstreamURL := cookbook.TokenCloneURL(token, cb.URL)
+	logFn("syncing fork with upstream…")
+	if err := cookbook.AddRemote(tmp, "upstream", upstreamURL); err != nil {
+		return fmt.Errorf("add upstream remote: %w", err)
+	}
+	if err := cookbook.SyncForkToUpstream(tmp); err != nil {
+		return fmt.Errorf("sync fork to upstream: %w", err)
 	}
 
 	branch := "add/" + tag
