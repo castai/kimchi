@@ -88,6 +88,7 @@ The interactive wizard will guide you through:
 | [Codex](https://github.com/openai/codex) | OpenAI's coding CLI | `~/.codex/.env` |
 | [Zed](https://zed.dev) | High-performance editor | `~/.zed/settings.json` |
 | [Cline](https://cline.bot) | VS Code extension | `~/.cline/data/globalState.json` |
+| [OpenClaw](https://openclaw.ai) | AI agent framework | `~/.openclaw/openclaw.json` |
 | Generic | Environment variables | Prints to stdout |
 
 ---
