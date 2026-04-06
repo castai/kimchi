@@ -34,7 +34,6 @@ type wizard struct {
 	pendingGSD       *steps.GSDStep
 	pendingTelemetry *steps.TelemetryStep
 	pendingConfigure *steps.ConfigureStep
-	pendingDone      *steps.DoneStep
 	viewport         viewport.Model
 	ready            bool
 }
@@ -91,11 +90,6 @@ func (w *wizard) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if w.pendingConfigure != nil {
 			w.stepList = append(w.stepList, w.pendingConfigure)
 			w.pendingConfigure = nil
-		}
-
-		if w.pendingDone != nil {
-			w.stepList = append(w.stepList, w.pendingDone)
-			w.pendingDone = nil
 		}
 
 		if w.current >= len(w.stepList)-1 {
@@ -214,11 +208,7 @@ func (w *wizard) collectStepResult() {
 		w.config.GSDMigrateFrom = s.GetMigrateInstallations()
 		w.config.GSDInstallFor = s.GetInstallTypes()
 	case *steps.ConfigureStep:
-		w.pendingDone = steps.NewDoneStep(steps.DoneParams{
-			APIKey:           w.config.APIKey,
-			ToolIDs:          w.config.SelectedTools,
-			ShellProfilePath: s.ShellProfilePath(),
-		})
+		// ConfigureStep is the final step; no DoneStep needed.
 	}
 }
 

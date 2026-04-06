@@ -26,7 +26,7 @@ func (v *validator) ValidateAPIKey(ctx context.Context, apiKey string) (Validate
 			Valid: false,
 			Error: "API key is required",
 			Suggestions: []string{
-				"Get your API key at https://kimchi.console.cast.ai",
+				"Get your API key at https://app.kimchi.dev",
 				"Set it via KIMCHI_API_KEY environment variable or run 'kimchi'",
 			},
 		}, nil
@@ -62,7 +62,7 @@ func (v *validator) ValidateAPIKey(ctx context.Context, apiKey string) (Validate
 			Valid: false,
 			Error: "Invalid API key",
 			Suggestions: []string{
-				"Verify your API key at https://kimchi.console.cast.ai",
+				"Verify your API key at https://app.kimchi.dev",
 				"Ensure the key has not been revoked",
 				"Check for typos or extra whitespace",
 			},
@@ -72,7 +72,7 @@ func (v *validator) ValidateAPIKey(ctx context.Context, apiKey string) (Validate
 			Valid: false,
 			Error: "API key lacks required permissions",
 			Suggestions: []string{
-				"Verify your API key has the required scopes at https://kimchi.console.cast.ai",
+				"Verify your API key has the required scopes at https://app.kimchi.dev",
 				"Contact support if the issue persists",
 			},
 		}, nil
