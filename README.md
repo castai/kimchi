@@ -166,6 +166,17 @@ Yes. Simply remove the `kimchi` provider from your tool's config file, or re-run
 - **Config file**: `~/.config/kimchi/config.json` (permissions: 600)
 - **Environment variable**: `KIMCHI_API_KEY`
 
+### How does telemetry work?
+
+Kimchi collects anonymous usage data to help improve the tool, i.e., the CLI version running and the fact that the tool has been used. You can disable telemetry at any time:
+
+```bash
+kimchi config telemetry off         # disable via CLI
+export KIMCHI_TELEMETRY=false       # disable via env var
+```
+
+To check your current telemetry status: `kimchi config telemetry`
+
 ---
 
 ## Development
