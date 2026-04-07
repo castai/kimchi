@@ -112,20 +112,24 @@ type AssetDecisions map[string]bool
 // kimchi:secret: placeholder found in the recipe to its real value; all
 // placeholders are replaced before any file is written. decisions controls
 // overwrite behaviour for files that already exist on disk.
-func InstallOpenCode(r *Recipe, secretValues map[string]string, decisions AssetDecisions) error {
+// Returns the list of absolute paths that were actually written.
+func InstallOpenCode(r *Recipe, secretValues map[string]string, decisions AssetDecisions) ([]string, error) {
 	homeDir, err := os.UserHomeDir()
 	if err != nil {
-		return err
+		return nil, err
 	}
 	base := filepath.Join(homeDir, ".config", "opencode")
 	oc := r.Tools.OpenCode
+
+	var written []string
+	record := func(p string) { written = append(written, p) }
 
 	// ── opencode.json ────────────────────────────────────────────────────────
 
 	jsonPath := filepath.Join(base, "opencode.json")
 	existing, err := config.ReadJSON(jsonPath)
 	if err != nil {
-		return fmt.Errorf("read existing opencode config: %w", err)
+		return nil, fmt.Errorf("read existing opencode config: %w", err)
 	}
 
 	if oc.Providers != nil {
@@ -172,8 +176,9 @@ func InstallOpenCode(r *Recipe, secretValues map[string]string, decisions AssetD
 	}
 
 	if err := config.WriteJSON(jsonPath, existing); err != nil {
-		return fmt.Errorf("write opencode config: %w", err)
+		return nil, fmt.Errorf("write opencode config: %w", err)
 	}
+	record(jsonPath)
 
 	// ── tui.json ─────────────────────────────────────────────────────────────
 
@@ -181,8 +186,9 @@ func InstallOpenCode(r *Recipe, secretValues map[string]string, decisions AssetD
 		tuiPath := filepath.Join(base, "tui.json")
 		if shouldWrite(tuiPath, decisions) {
 			if err := config.WriteJSON(tuiPath, tuiConfigToMap(oc.TUI)); err != nil {
-				return fmt.Errorf("write tui.json: %w", err)
+				return nil, fmt.Errorf("write tui.json: %w", err)
 			}
+			record(tuiPath)
 		}
 	}
 
@@ -192,8 +198,9 @@ func InstallOpenCode(r *Recipe, secretValues map[string]string, decisions AssetD
 		p := filepath.Join(base, "AGENTS.md")
 		if shouldWrite(p, decisions) {
 			if err := config.WriteFile(p, []byte(oc.AgentsMD)); err != nil {
-				return fmt.Errorf("write AGENTS.md: %w", err)
+				return nil, fmt.Errorf("write AGENTS.md: %w", err)
 			}
+			record(p)
 		}
 	}
 
@@ -204,15 +211,17 @@ func InstallOpenCode(r *Recipe, secretValues map[string]string, decisions AssetD
 		p := filepath.Join(skillDir, "SKILL.md")
 		if shouldWrite(p, decisions) {
 			if err := config.WriteFile(p, []byte(s.Content)); err != nil {
-				return fmt.Errorf("write skill %s: %w", s.Name, err)
+				return nil, fmt.Errorf("write skill %s: %w", s.Name, err)
 			}
+			record(p)
 		}
 		for _, f := range s.Files {
 			fp := filepath.Join(skillDir, filepath.FromSlash(f.Path))
 			if shouldWrite(fp, decisions) {
 				if err := config.WriteFile(fp, []byte(f.Content)); err != nil {
-					return fmt.Errorf("write skill file %s/%s: %w", s.Name, f.Path, err)
+					return nil, fmt.Errorf("write skill file %s/%s: %w", s.Name, f.Path, err)
 				}
+				record(fp)
 			}
 		}
 	}
@@ -223,8 +232,9 @@ func InstallOpenCode(r *Recipe, secretValues map[string]string, decisions AssetD
 		p := filepath.Join(base, "commands", c.Name+".md")
 		if shouldWrite(p, decisions) {
 			if err := config.WriteFile(p, []byte(c.Content)); err != nil {
-				return fmt.Errorf("write command %s: %w", c.Name, err)
+				return nil, fmt.Errorf("write command %s: %w", c.Name, err)
 			}
+			record(p)
 		}
 	}
 
@@ -234,8 +244,9 @@ func InstallOpenCode(r *Recipe, secretValues map[string]string, decisions AssetD
 		p := filepath.Join(base, "agents", a.Name+".md")
 		if shouldWrite(p, decisions) {
 			if err := config.WriteFile(p, []byte(a.Content)); err != nil {
-				return fmt.Errorf("write agent %s: %w", a.Name, err)
+				return nil, fmt.Errorf("write agent %s: %w", a.Name, err)
 			}
+			record(p)
 		}
 	}
 
@@ -245,8 +256,9 @@ func InstallOpenCode(r *Recipe, secretValues map[string]string, decisions AssetD
 		p := filepath.Join(base, "themes", f.Path)
 		if shouldWrite(p, decisions) {
 			if err := config.WriteFile(p, []byte(f.Content)); err != nil {
-				return fmt.Errorf("write theme %s: %w", f.Path, err)
+				return nil, fmt.Errorf("write theme %s: %w", f.Path, err)
 			}
+			record(p)
 		}
 	}
 
@@ -254,8 +266,9 @@ func InstallOpenCode(r *Recipe, secretValues map[string]string, decisions AssetD
 		p := filepath.Join(base, "plugins", filepath.FromSlash(f.Path))
 		if shouldWrite(p, decisions) {
 			if err := config.WriteFile(p, []byte(f.Content)); err != nil {
-				return fmt.Errorf("write plugin file %s: %w", f.Path, err)
+				return nil, fmt.Errorf("write plugin file %s: %w", f.Path, err)
 			}
+			record(p)
 		}
 	}
 
@@ -263,8 +276,9 @@ func InstallOpenCode(r *Recipe, secretValues map[string]string, decisions AssetD
 		p := filepath.Join(base, "tools", filepath.FromSlash(f.Path))
 		if shouldWrite(p, decisions) {
 			if err := config.WriteFile(p, []byte(f.Content)); err != nil {
-				return fmt.Errorf("write tool file %s: %w", f.Path, err)
+				return nil, fmt.Errorf("write tool file %s: %w", f.Path, err)
 			}
+			record(p)
 		}
 	}
 
@@ -274,12 +288,63 @@ func InstallOpenCode(r *Recipe, secretValues map[string]string, decisions AssetD
 		p := filepath.Join(base, filepath.FromSlash(f.Path))
 		if shouldWrite(p, decisions) {
 			if err := config.WriteFile(p, []byte(f.Content)); err != nil {
-				return fmt.Errorf("write referenced file %s: %w", f.Path, err)
+				return nil, fmt.Errorf("write referenced file %s: %w", f.Path, err)
 			}
+			record(p)
 		}
 	}
 
-	return nil
+	return written, nil
+}
+
+// PredictAssetPaths returns the absolute paths that InstallOpenCode would touch
+// for the given recipe. Used to determine backup capture scope before installing.
+func PredictAssetPaths(r *Recipe) ([]string, error) {
+	homeDir, err := os.UserHomeDir()
+	if err != nil {
+		return nil, err
+	}
+	base := filepath.Join(homeDir, ".config", "opencode")
+	oc := r.Tools.OpenCode
+	if oc == nil {
+		return nil, nil
+	}
+	var paths []string
+	add := func(p string) { paths = append(paths, p) }
+
+	add(filepath.Join(base, "opencode.json"))
+	if oc.TUI != nil {
+		add(filepath.Join(base, "tui.json"))
+	}
+	if oc.AgentsMD != "" {
+		add(filepath.Join(base, "AGENTS.md"))
+	}
+	for _, s := range oc.Skills {
+		skillDir := filepath.Join(base, "skills", s.Name)
+		add(filepath.Join(skillDir, "SKILL.md"))
+		for _, f := range s.Files {
+			add(filepath.Join(skillDir, filepath.FromSlash(f.Path)))
+		}
+	}
+	for _, c := range oc.CustomCommands {
+		add(filepath.Join(base, "commands", c.Name+".md"))
+	}
+	for _, a := range oc.Agents {
+		add(filepath.Join(base, "agents", a.Name+".md"))
+	}
+	for _, f := range oc.ThemeFiles {
+		add(filepath.Join(base, "themes", f.Path))
+	}
+	for _, f := range oc.PluginFiles {
+		add(filepath.Join(base, "plugins", filepath.FromSlash(f.Path)))
+	}
+	for _, f := range oc.ToolFiles {
+		add(filepath.Join(base, "tools", filepath.FromSlash(f.Path)))
+	}
+	for _, f := range oc.ReferencedFiles {
+		add(filepath.Join(base, filepath.FromSlash(f.Path)))
+	}
+	return paths, nil
 }
 
 // DetectExternalSecretPlaceholders returns all unique kimchi:secret: placeholder

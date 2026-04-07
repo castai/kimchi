@@ -2,6 +2,8 @@ package recipe
 
 import (
 	"fmt"
+	"path/filepath"
+	"time"
 
 	"github.com/castai/kimchi/internal/config"
 	"github.com/castai/kimchi/internal/tools"
@@ -11,9 +13,6 @@ import (
 type HeadlessInstallOptions struct {
 	// Source is the recipe path, name, cookbook/name, or name@version.
 	Source string
-	// OverwriteConflicts controls whether existing files are overwritten.
-	// When false, conflicting assets are skipped.
-	OverwriteConflicts bool
 }
 
 // InstallHeadless installs a recipe without a TUI. It uses the stored Kimchi
@@ -53,19 +52,38 @@ func InstallHeadless(opts HeadlessInstallOptions) error {
 		)
 	}
 
-	// Build conflict decisions: all overwrite or all skip.
-	conflicts, err := DetectConflicts(r)
+	filesToCapture, err := PredictAssetPaths(r)
 	if err != nil {
-		return fmt.Errorf("detect conflicts: %w", err)
+		return fmt.Errorf("predict asset paths: %w", err)
 	}
-	decisions := make(AssetDecisions, len(conflicts))
-	for _, c := range conflicts {
-		decisions[c.Path] = opts.OverwriteConflicts
+	if err := EnsureBaseline(tools.ToolOpenCode, filesToCapture); err != nil {
+		return fmt.Errorf("backup baseline: %w", err)
+	}
+	if err := SnapshotCurrentlyInstalled(tools.ToolOpenCode); err != nil {
+		return fmt.Errorf("backup current recipes: %w", err)
+	}
+	if err := UninstallByManifest(tools.ToolOpenCode, r.Name); err != nil {
+		return fmt.Errorf("uninstall prior recipe: %w", err)
 	}
 
-	if err := InstallOpenCode(r, secretValues, decisions); err != nil {
+	written, err := InstallOpenCode(r, secretValues, nil)
+	if err != nil {
 		return err
 	}
+
+	// Save manifest (exclude opencode.json — it's a merge target, not verbatim).
+	var assetFiles []string
+	for _, p := range written {
+		if filepath.Base(p) != "opencode.json" {
+			assetFiles = append(assetFiles, p)
+		}
+	}
+	_ = SaveManifest(&RecipeManifest{
+		RecipeName:  r.Name,
+		Tool:        tools.ToolOpenCode,
+		InstalledAt: time.Now(),
+		AssetFiles:  assetFiles,
+	})
 	_ = RecordInstall(r.Name, r.Version, r.Cookbook, tools.ToolOpenCode)
 	return nil
 }

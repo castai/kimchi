@@ -105,8 +105,7 @@ Pinned recipes are never upgraded.`,
 			for _, c := range candidates {
 				fmt.Fprintf(w, "  %s@%s… ", c.latest.Name, c.latest.Version)
 				err := recipe.InstallHeadless(recipe.HeadlessInstallOptions{
-					Source:             c.latest.Path,
-					OverwriteConflicts: true,
+					Source: c.latest.Path,
 				})
 				if err != nil {
 					fmt.Fprintf(cmd.ErrOrStderr(), "skipped: %v\n", err)

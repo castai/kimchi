@@ -1,10 +1,10 @@
 package recipe
 
 import (
-	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/castai/kimchi/internal/tools"
@@ -20,74 +20,53 @@ type InstalledRecipe struct {
 	Pinned      bool         `json:"pinned"`
 }
 
-func installedPath() (string, error) {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return "", err
-	}
-	return filepath.Join(home, ".kimchi", "installed.json"), nil
-}
-
-// LoadInstalled returns all installed recipes.
+// LoadInstalled returns all installed recipes across all tools.
 func LoadInstalled() ([]InstalledRecipe, error) {
-	p, err := installedPath()
+	if err := migrateInstalledIfNeeded(); err != nil {
+		return nil, err
+	}
+	home, err := os.UserHomeDir()
 	if err != nil {
 		return nil, err
 	}
-	data, err := os.ReadFile(p)
+	dir := filepath.Join(home, ".kimchi", "installed")
+	entries, err := os.ReadDir(dir)
 	if os.IsNotExist(err) {
 		return nil, nil
 	}
 	if err != nil {
-		return nil, fmt.Errorf("read installed: %w", err)
+		return nil, err
 	}
-	var list []InstalledRecipe
-	if err := json.Unmarshal(data, &list); err != nil {
-		return nil, fmt.Errorf("parse installed: %w", err)
-	}
-	return list, nil
-}
-
-func saveInstalled(list []InstalledRecipe) error {
-	p, err := installedPath()
-	if err != nil {
-		return err
-	}
-	if err := os.MkdirAll(filepath.Dir(p), 0755); err != nil {
-		return err
-	}
-	data, err := json.MarshalIndent(list, "", "  ")
-	if err != nil {
-		return err
-	}
-	return os.WriteFile(p, data, 0644)
-}
-
-// RecordInstall adds or updates the install record for a recipe.
-func RecordInstall(name, version, cookbook string, tool tools.ToolID) error {
-	list, err := LoadInstalled()
-	if err != nil {
-		return err
-	}
-	for i, r := range list {
-		if r.Name == name && r.Tool == tool {
-			list[i].Version = version
-			list[i].Cookbook = cookbook
-			list[i].InstalledAt = time.Now()
-			return saveInstalled(list)
+	var all []InstalledRecipe
+	for _, e := range entries {
+		if e.IsDir() || filepath.Ext(e.Name()) != ".json" {
+			continue
 		}
+		toolID := tools.ToolID(strings.TrimSuffix(e.Name(), ".json"))
+		recs, err := loadInstalledForTool(toolID)
+		if err != nil {
+			continue
+		}
+		all = append(all, recs...)
 	}
-	list = append(list, InstalledRecipe{
-		Name:        name,
-		Version:     version,
-		Cookbook:    cookbook,
-		Tool:        tool,
-		InstalledAt: time.Now(),
-	})
-	return saveInstalled(list)
+	return all, nil
 }
 
-// GetLastInstalled returns the most recently installed recipe, or nil if none.
+// RecordInstall saves the install record for a recipe, replacing any previously
+// installed recipe for the same tool (only one recipe per tool at a time).
+func RecordInstall(name, version, cookbook string, tool tools.ToolID) error {
+	return saveInstalledForTool(tool, []InstalledRecipe{
+		{
+			Name:        name,
+			Version:     version,
+			Cookbook:    cookbook,
+			Tool:        tool,
+			InstalledAt: time.Now(),
+		},
+	})
+}
+
+// GetLastInstalled returns the most recently installed recipe across all tools, or nil if none.
 func GetLastInstalled() (*InstalledRecipe, error) {
 	list, err := LoadInstalled()
 	if err != nil {
@@ -102,7 +81,7 @@ func GetLastInstalled() (*InstalledRecipe, error) {
 	return latest, nil
 }
 
-// GetInstalled returns the install record for a recipe, or nil if not installed.
+// GetInstalled returns the install record for a recipe by name, or nil if not installed.
 func GetInstalled(name string) (*InstalledRecipe, error) {
 	list, err := LoadInstalled()
 	if err != nil {
@@ -131,10 +110,18 @@ func setPinned(name string, pinned bool) error {
 	if err != nil {
 		return err
 	}
-	for i, r := range list {
+	for _, r := range list {
 		if r.Name == name {
-			list[i].Pinned = pinned
-			return saveInstalled(list)
+			toolList, err := loadInstalledForTool(r.Tool)
+			if err != nil {
+				return err
+			}
+			for i, tr := range toolList {
+				if tr.Name == name {
+					toolList[i].Pinned = pinned
+					return saveInstalledForTool(r.Tool, toolList)
+				}
+			}
 		}
 	}
 	return fmt.Errorf("recipe %q is not installed", name)

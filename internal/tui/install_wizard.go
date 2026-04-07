@@ -2,7 +2,9 @@ package tui
 
 import (
 	"fmt"
+	"path/filepath"
 	"strings"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 
@@ -35,10 +37,10 @@ type installWizard struct {
 	decisions      recipe.AssetDecisions
 
 	// typed refs for dynamic injection and result collection
-	sourceStep      *steps.InstallSourceStep
-	assetsStep      *steps.InstallAssetsStep
-	secretsStep     *steps.InstallSecretsStep
-	progressStep    *steps.InstallProgressStep
+	sourceStep   *steps.InstallSourceStep
+	assetsStep   *steps.InstallAssetsStep
+	secretsStep  *steps.InstallSecretsStep
+	progressStep *steps.InstallProgressStep
 }
 
 func newInstallWizard(wizOpts InstallWizardOptions) *installWizard {
@@ -163,13 +165,6 @@ func (w *installWizard) injectRemainingSteps() {
 		w.secretsStep = secretsStep
 	}
 
-	// Conflict step only if any assets clash with existing files.
-	var conflictsStep *steps.InstallConflictsStep
-	conflicts, _ := recipe.DetectConflicts(r)
-	if len(conflicts) > 0 {
-		conflictsStep = steps.NewInstallConflictsStep(conflicts)
-	}
-
 	// Progress step — always last. writeFn is a placeholder until all data is known.
 	itemLabels := w.buildItemLabels(r, nil)
 	progress := steps.NewInstallProgressStep(itemLabels, func() error {
@@ -183,17 +178,8 @@ func (w *installWizard) injectRemainingSteps() {
 	if secretsStep != nil {
 		tail = append(tail, secretsStep)
 	}
-	if conflictsStep != nil {
-		tail = append(tail, conflictsStep)
-	}
 	tail = append(tail, progress)
 	w.stepList = append(w.stepList[:1], tail...)
-
-	// If no interactive steps are pending after assets, writeFn will be built
-	// once the assets step completes (in collectStepResult).
-	if authStep == nil && secretsStep == nil && conflictsStep == nil {
-		// writeFn will be set after assetsStep completes.
-	}
 }
 
 // applyKimchiSecrets maps the kimchi provider's secret placeholders to the
@@ -242,10 +228,39 @@ func (w *installWizard) rebuildWriteFn() {
 	orig := w.parsedRecipe // for RecordInstall (name/version/cookbook from original)
 
 	w.progressStep.SetWriteFn(func() error {
-		if err := recipe.InstallOpenCode(r, secretValues, decisions); err != nil {
+		filesToCapture, err := recipe.PredictAssetPaths(orig)
+		if err != nil {
+			return fmt.Errorf("predict asset paths: %w", err)
+		}
+		if err := recipe.EnsureBaseline(tools.ToolOpenCode, filesToCapture); err != nil {
+			return fmt.Errorf("backup baseline: %w", err)
+		}
+		if err := recipe.SnapshotCurrentlyInstalled(tools.ToolOpenCode); err != nil {
+			return fmt.Errorf("backup current recipes: %w", err)
+		}
+		if err := recipe.UninstallByManifest(tools.ToolOpenCode, orig.Name); err != nil {
+			return fmt.Errorf("uninstall prior recipe: %w", err)
+		}
+
+		written, err := recipe.InstallOpenCode(r, secretValues, decisions)
+		if err != nil {
 			return err
 		}
-		_ = recipe.RecordInstall(orig.Name, orig.Version, orig.Cookbook, tools.ToolOpenCode) // best-effort
+
+		// Save manifest (exclude opencode.json — merge target, not verbatim).
+		var assetFiles []string
+		for _, p := range written {
+			if filepath.Base(p) != "opencode.json" {
+				assetFiles = append(assetFiles, p)
+			}
+		}
+		_ = recipe.SaveManifest(&recipe.RecipeManifest{
+			RecipeName:  orig.Name,
+			Tool:        tools.ToolOpenCode,
+			InstalledAt: time.Now(),
+			AssetFiles:  assetFiles,
+		})
+		_ = recipe.RecordInstall(orig.Name, orig.Version, orig.Cookbook, tools.ToolOpenCode)
 		return nil
 	})
 }

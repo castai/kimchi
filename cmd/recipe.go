@@ -26,6 +26,7 @@ func NewRecipeCommand() *cobra.Command {
 	cmd.AddCommand(NewRecipeUpgradeCommand())
 	cmd.AddCommand(NewRecipePinCommand())
 	cmd.AddCommand(NewRecipeUnpinCommand())
+	cmd.AddCommand(NewRecipeRestoreCommand())
 	return cmd
 }
 
@@ -189,11 +190,16 @@ Source may be a file path, recipe name, cookbook/name, or name@version.`,
 
 func NewRecipeListCommand() *cobra.Command {
 	var cookbookFilter string
+	var installed bool
 
 	cmd := &cobra.Command{
 		Use:   "list",
 		Short: "List available recipes from registered cookbooks",
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if installed {
+				return runRecipeListInstalled(cmd, cookbookFilter)
+			}
+
 			refs, err := recipe.ListAll()
 			if err != nil {
 				return err
@@ -203,21 +209,67 @@ func NewRecipeListCommand() *cobra.Command {
 				return nil
 			}
 
+			// Build a set of installed recipe names for the INSTALLED column.
+			installedSet := map[string]bool{}
+			if list, err := recipe.LoadInstalled(); err == nil {
+				for _, r := range list {
+					installedSet[r.Name] = true
+				}
+			}
+
 			w := tabwriter.NewWriter(cmd.OutOrStdout(), 0, 0, 2, ' ', 0)
-			fmt.Fprintln(w, "NAME\tVERSION\tCOOKBOOK\tAUTHOR\tTOOLS")
-			fmt.Fprintln(w, "----\t-------\t--------\t------\t-----")
+			fmt.Fprintln(w, "NAME\tVERSION\tCOOKBOOK\tAUTHOR\tTOOLS\tINSTALLED")
+			fmt.Fprintln(w, "----\t-------\t--------\t------\t-----\t---------")
 			for _, r := range refs {
 				if cookbookFilter != "" && r.Cookbook != cookbookFilter {
 					continue
 				}
-				fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\n", r.Name, r.Version, r.Cookbook, r.Author, r.Tools)
+				installed := ""
+				if installedSet[r.Name] {
+					installed = "✓"
+				}
+				fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\n", r.Name, r.Version, r.Cookbook, r.Author, r.Tools, installed)
 			}
 			return w.Flush()
 		},
 	}
 
 	cmd.Flags().StringVar(&cookbookFilter, "cookbook", "", "Filter by cookbook name")
+	cmd.Flags().BoolVar(&installed, "installed", false, "Show only installed recipes")
 	return cmd
+}
+
+func runRecipeListInstalled(cmd *cobra.Command, cookbookFilter string) error {
+	list, err := recipe.LoadInstalled()
+	if err != nil {
+		return err
+	}
+	if len(list) == 0 {
+		fmt.Fprintln(cmd.OutOrStdout(), "No recipes installed.")
+		return nil
+	}
+
+	w := tabwriter.NewWriter(cmd.OutOrStdout(), 0, 0, 2, ' ', 0)
+	fmt.Fprintln(w, "NAME\tVERSION\tCOOKBOOK\tTOOL\tPINNED\tINSTALLED AT")
+	fmt.Fprintln(w, "----\t-------\t--------\t----\t------\t------------")
+	for _, r := range list {
+		if cookbookFilter != "" && r.Cookbook != cookbookFilter {
+			continue
+		}
+		pinned := ""
+		if r.Pinned {
+			pinned = "✓"
+		}
+		tool := string(r.Tool)
+		if tool == "" {
+			tool = "unknown"
+		}
+		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\n",
+			r.Name, r.Version, r.Cookbook, tool, pinned,
+			r.InstalledAt.Format("2006-01-02 15:04"),
+		)
+	}
+	return w.Flush()
 }
 
 // ── search ───────────────────────────────────────────────────────────────────
@@ -374,8 +426,7 @@ overwritten and recipes requiring external secrets are skipped with a warning.`,
 				for _, u := range upgrades {
 					fmt.Fprintf(w, "\nUpgrading %s@%s…\n", u.latest.Name, u.latest.Version)
 					err := recipe.InstallHeadless(recipe.HeadlessInstallOptions{
-						Source:             u.latest.Path,
-						OverwriteConflicts: true,
+						Source: u.latest.Path,
 					})
 					if err != nil {
 						fmt.Fprintf(cmd.ErrOrStderr(), "  skipped: %v\n", err)
@@ -432,6 +483,21 @@ func NewRecipeUnpinCommand() *cobra.Command {
 			}
 			fmt.Fprintf(cmd.OutOrStdout(), "✓ %s unpinned\n", args[0])
 			return nil
+		},
+	}
+}
+
+// ── restore ───────────────────────────────────────────────────────────────────
+
+func NewRecipeRestoreCommand() *cobra.Command {
+	return &cobra.Command{
+		Use:   "restore",
+		Short: "Restore a tool config from a previous backup",
+		Long: `Open an interactive picker to browse all backup slots created by kimchi
+and restore one of them. The baseline slot captures the state before the
+first recipe was ever installed for a tool.`,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return tui.RunRestoreWizard()
 		},
 	}
 }
