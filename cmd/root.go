@@ -41,7 +41,7 @@ Model Selection Strategy:
 Each tool is automatically configured with the best model for its use case,
 removing the complexity of manual model selection while ensuring peak performance.
 
-Get your API key at: https://kimchi.console.cast.ai`,
+Get your API key at: https://app.kimchi.dev`,
 		SilenceUsage:  true,
 		SilenceErrors: true,
 		Version:       version.String(),
