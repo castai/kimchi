@@ -38,6 +38,12 @@ Since this feature is on a development branch (`LLM-1212-add-kimchi-cookbook`), 
 - Git configured with your credentials
 - Cast AI API key (get at https://kimchi.console.cast.ai)
 
+> **Important:** Before running any `kimchi` command, set the following environment variable to prevent auto-update from replacing this pre-release binary with the latest official release (which does not include cookbook and recipe commands):
+>
+> ```bash
+> export KIMCHI_NO_AUTO_UPDATE=1
+> ```
+
 ### Build from Source
 
 ```bash
