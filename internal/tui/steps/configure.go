@@ -228,7 +228,7 @@ func (s *ConfigureStep) View() string {
 			b.WriteString(Styles.Success.Render("Configuration complete!"))
 			b.WriteString("\n\n")
 			b.WriteString("Your tools are now connected to Cast AI's inference endpoint:\n")
-			b.WriteString(Styles.Success.Render("https://llm.cast.ai"))
+			b.WriteString(Styles.Success.Render("https://llm.kimchi.dev"))
 			b.WriteString("\n\n")
 			b.WriteString("Each tool has been configured with optimal models for its use case:")
 			b.WriteString("\n")

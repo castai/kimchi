@@ -124,7 +124,7 @@ Kimchi configures each tool to use Cast AI's inference endpoint:
 Your AI Tool ──► Kimchi Config ──► Cast AI Endpoint ──► Open-Source Models
                                         │
                                         ▼
-                               https://llm.cast.ai
+                               https://llm.kimchi.dev
 ```
 
 **Configuration Example (OpenCode):**
@@ -136,7 +136,7 @@ Your AI Tool ──► Kimchi Config ──► Cast AI Endpoint ──► Open-S
     "kimchi": {
       "name": "Kimchi by Cast AI",
       "options": {
-        "baseURL": "https://llm.cast.ai/openai/v1",
+        "baseURL": "https://llm.kimchi.dev/openai/v1",
         "apiKey": "your-api-key"
       },
       "models": {
