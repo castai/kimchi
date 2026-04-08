@@ -232,14 +232,19 @@ func (w *installWizard) rebuildWriteFn() {
 		if err != nil {
 			return fmt.Errorf("predict asset paths: %w", err)
 		}
-		if err := recipe.EnsureBaseline(tools.ToolOpenCode, filesToCapture); err != nil {
+		baselineBacked, err := recipe.EnsureBaseline(tools.ToolOpenCode, filesToCapture)
+		if err != nil {
 			return fmt.Errorf("backup baseline: %w", err)
 		}
-		if err := recipe.SnapshotCurrentlyInstalled(tools.ToolOpenCode); err != nil {
+		if err := recipe.RemoveAssetFiles(baselineBacked); err != nil {
+			return fmt.Errorf("clean baseline assets: %w", err)
+		}
+		snapshotBacked, err := recipe.SnapshotCurrentlyInstalled(tools.ToolOpenCode)
+		if err != nil {
 			return fmt.Errorf("backup current recipes: %w", err)
 		}
-		if err := recipe.UninstallByManifest(tools.ToolOpenCode, orig.Name); err != nil {
-			return fmt.Errorf("uninstall prior recipe: %w", err)
+		if err := recipe.RemoveAssetFiles(snapshotBacked); err != nil {
+			return fmt.Errorf("clean installed assets: %w", err)
 		}
 
 		written, err := recipe.InstallOpenCode(r, secretValues, decisions)

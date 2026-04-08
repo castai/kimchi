@@ -14,9 +14,10 @@ type restoreCompleteMsg struct{ err error }
 // RestoreConfirmStep shows the selected slot details, asks for confirmation,
 // then performs the restore.
 type RestoreConfirmStep struct {
-	slot *recipe.BackupSlot
-	done bool
-	err  error
+	slot   *recipe.BackupSlot
+	offset int
+	done   bool
+	err    error
 }
 
 func NewRestoreConfirmStep(slot *recipe.BackupSlot) *RestoreConfirmStep {
@@ -45,6 +46,14 @@ func (s *RestoreConfirmStep) Update(msg tea.Msg) (Step, tea.Cmd) {
 			return s, func() tea.Msg { return AbortMsg{} }
 		case "esc", "n":
 			return s, func() tea.Msg { return PrevStepMsg{} }
+		case "up", "k":
+			if s.offset > 0 {
+				s.offset--
+			}
+		case "down", "j":
+			if s.slot != nil && s.offset+restorePageSize < len(s.slot.Meta.Files) {
+				s.offset++
+			}
 		case "y", "enter":
 			return s, s.doRestore()
 		}
@@ -74,9 +83,20 @@ func (s *RestoreConfirmStep) View() string {
 		b.WriteString(fmt.Sprintf("Backup:    %s\n", name))
 		b.WriteString(fmt.Sprintf("Captured:  %s\n\n", s.slot.CapturedAt.Format("2006-01-02 15:04:05")))
 
-		b.WriteString(fmt.Sprintf("Files to restore (%d):\n", len(s.slot.Meta.Files)))
-		for _, f := range s.slot.Meta.Files {
+		files := s.slot.Meta.Files
+		b.WriteString(fmt.Sprintf("Files to restore (%d):\n", len(files)))
+		if s.offset > 0 {
+			b.WriteString(Styles.Desc.Render(fmt.Sprintf("  ↑ %d more above\n", s.offset)))
+		}
+		end := s.offset + restorePageSize
+		if end > len(files) {
+			end = len(files)
+		}
+		for _, f := range files[s.offset:end] {
 			b.WriteString("  " + Styles.Desc.Render(f) + "\n")
+		}
+		if end < len(files) {
+			b.WriteString(Styles.Desc.Render(fmt.Sprintf("  ↓ %d more below\n", len(files)-end)))
 		}
 		b.WriteString("\n")
 		b.WriteString(Styles.Warning.Render("This will overwrite your current config. Continue?"))
@@ -93,9 +113,12 @@ func (s *RestoreConfirmStep) View() string {
 		if s.slot.RecipeName != "" {
 			b.WriteString("\n")
 			b.WriteString(Styles.Help.Render(fmt.Sprintf(
-				"Recipe %q removed from installed list. Use `kimchi recipe install` to re-install.",
+				"Config restored to the backed-up state of recipe %q.",
 				s.slot.RecipeName,
 			)))
+		} else {
+			b.WriteString("\n")
+			b.WriteString(Styles.Help.Render("Config restored to the pre-install baseline."))
 		}
 	}
 	b.WriteString("\n\n")
@@ -114,6 +137,7 @@ func (s *RestoreConfirmStep) Info() StepInfo {
 		KeyBindings: []KeyBinding{
 			{Key: "y/↵", Text: "confirm"},
 			{Key: "n/esc", Text: "cancel"},
+			BindingsNavigate,
 			BindingsQuit,
 		},
 	}

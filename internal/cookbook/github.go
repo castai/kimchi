@@ -15,7 +15,8 @@ import (
 // githubClientID is the GitHub OAuth App client ID compiled into the binary.
 // Override at build time: -ldflags "-X github.com/castai/kimchi/internal/cookbook.githubClientID=<id>"
 // or set KIMCHI_GITHUB_CLIENT_ID at runtime.
-const githubClientID = ""
+// TODO: this is a temporary Github APP - replace it with official one before release
+const githubClientID = "Ov23liNx4u53Pg5wkjmg"
 
 // DeviceCodeResponse is returned by RequestDeviceCode.
 type DeviceCodeResponse struct {

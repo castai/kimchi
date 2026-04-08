@@ -56,28 +56,25 @@ func backupSlotDir(tool tools.ToolID, recipeName string) (string, error) {
 
 // EnsureBaseline captures the current state of filesToCapture into the
 // baseline slot for this tool. Does nothing if a baseline already exists.
-func EnsureBaseline(tool tools.ToolID, filesToCapture []string) error {
+// Returns the absolute paths that were actually backed up (nil when the
+// baseline already existed and no files were captured).
+func EnsureBaseline(tool tools.ToolID, filesToCapture []string) ([]string, error) {
 	dir, err := backupBaselineDir(tool)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	if _, err := os.Stat(filepath.Join(dir, "meta.json")); err == nil {
-		return nil // baseline already exists
+		return nil, nil // baseline already exists
 	}
 	return captureFilesToDir(dir, BackupMeta{Tool: tool}, filesToCapture)
 }
 
-// Snapshot captures filesToCapture into the per-recipe backup slot, overwriting
-// any previous snapshot for this (tool, recipeName) pair.
-func Snapshot(tool tools.ToolID, recipeName string, filesToCapture []string) error {
-	return snapshotWithMeta(tool, recipeName, "", "", filesToCapture)
-}
-
 // snapshotWithMeta is like Snapshot but also stores version and cookbook in meta.json.
-func snapshotWithMeta(tool tools.ToolID, recipeName, version, cookbook string, filesToCapture []string) error {
+// Returns the absolute paths that were actually backed up.
+func snapshotWithMeta(tool tools.ToolID, recipeName, version, cookbook string, filesToCapture []string) ([]string, error) {
 	dir, err := backupSlotDir(tool, recipeName)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	_ = os.RemoveAll(dir) // remove stale slot
 	return captureFilesToDir(dir, BackupMeta{
@@ -93,15 +90,17 @@ func snapshotWithMeta(tool tools.ToolID, recipeName, version, cookbook string, f
 // already installed for tool into per-recipe backup slots. This preserves the
 // pre-upgrade state so users can roll back to it. Should be called right before
 // installing a new recipe, after EnsureBaseline.
-func SnapshotCurrentlyInstalled(tool tools.ToolID) error {
+// Returns the union of all absolute paths that were actually backed up.
+func SnapshotCurrentlyInstalled(tool tools.ToolID) ([]string, error) {
 	installed, err := loadInstalledForTool(tool)
 	if err != nil || len(installed) == 0 {
-		return err
+		return nil, err
 	}
 	home, err := os.UserHomeDir()
 	if err != nil {
-		return err
+		return nil, err
 	}
+	var allBacked []string
 	for _, rec := range installed {
 		m, _ := LoadManifest(tool, rec.Name)
 		var filesToCapture []string
@@ -111,23 +110,26 @@ func SnapshotCurrentlyInstalled(tool tools.ToolID) error {
 		// opencode.json is excluded from manifests (merge target) but should be
 		// included in the backup so the full config state is preserved.
 		filesToCapture = append(filesToCapture, filepath.Join(home, ".config", "opencode", "opencode.json"))
-		if err := snapshotWithMeta(tool, rec.Name, rec.Version, rec.Cookbook, filesToCapture); err != nil {
-			return err
+		backed, err := snapshotWithMeta(tool, rec.Name, rec.Version, rec.Cookbook, filesToCapture)
+		if err != nil {
+			return nil, err
 		}
+		allBacked = append(allBacked, backed...)
 	}
-	return nil
+	return allBacked, nil
 }
 
-func captureFilesToDir(destDir string, meta BackupMeta, paths []string) error {
+func captureFilesToDir(destDir string, meta BackupMeta, paths []string) ([]string, error) {
 	if err := os.MkdirAll(destDir, 0700); err != nil {
-		return err
+		return nil, err
 	}
 	home, err := os.UserHomeDir()
 	if err != nil {
-		return err
+		return nil, err
 	}
 
-	var captured []string
+	var capturedRel []string
+	var capturedAbs []string
 	for _, src := range paths {
 		if _, err := os.Stat(src); err != nil {
 			continue // file doesn't exist yet; skip
@@ -138,21 +140,22 @@ func captureFilesToDir(destDir string, meta BackupMeta, paths []string) error {
 		}
 		dst := filepath.Join(destDir, rel)
 		if err := os.MkdirAll(filepath.Dir(dst), 0700); err != nil {
-			return err
+			return nil, err
 		}
 		if err := copyFile(src, dst); err != nil {
-			return err
+			return nil, err
 		}
-		captured = append(captured, rel)
+		capturedRel = append(capturedRel, rel)
+		capturedAbs = append(capturedAbs, src)
 	}
 
 	meta.CapturedAt = time.Now()
-	meta.Files = captured
+	meta.Files = capturedRel
 	data, err := json.MarshalIndent(meta, "", "  ")
 	if err != nil {
-		return err
+		return nil, err
 	}
-	return os.WriteFile(filepath.Join(destDir, "meta.json"), data, 0600)
+	return capturedAbs, os.WriteFile(filepath.Join(destDir, "meta.json"), data, 0600)
 }
 
 func copyFile(src, dst string) error {
@@ -219,9 +222,22 @@ func ListBackupSlots() ([]BackupSlot, error) {
 }
 
 // RestoreSlot restores all files from a BackupSlot to their original locations
-// under $HOME. After restore it removes the manifest and installed record for
-// the restored recipe so kimchi state stays consistent.
+// under $HOME. It first removes all currently installed recipe asset files so
+// that files present in the current install but absent from the backup slot are
+// not left behind. After restore it updates kimchi state to match the slot.
 func RestoreSlot(slot BackupSlot) error {
+	// Remove all currently installed asset files before restoring, so the
+	// on-disk state is fully replaced rather than merged.
+	installed, err := loadInstalledForTool(slot.Tool)
+	if err != nil {
+		return fmt.Errorf("load installed recipes: %w", err)
+	}
+	for _, rec := range installed {
+		if err := UninstallByManifest(slot.Tool, rec.Name); err != nil {
+			return fmt.Errorf("uninstall %s before restore: %w", rec.Name, err)
+		}
+	}
+
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return err

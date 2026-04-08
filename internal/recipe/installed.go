@@ -22,9 +22,6 @@ type InstalledRecipe struct {
 
 // LoadInstalled returns all installed recipes across all tools.
 func LoadInstalled() ([]InstalledRecipe, error) {
-	if err := migrateInstalledIfNeeded(); err != nil {
-		return nil, err
-	}
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return nil, err

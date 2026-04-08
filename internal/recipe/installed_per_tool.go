@@ -17,45 +17,7 @@ func installedPerToolPath(tool tools.ToolID) (string, error) {
 	return filepath.Join(home, ".kimchi", "installed", string(tool)+".json"), nil
 }
 
-// migrateInstalledIfNeeded moves ~/.kimchi/installed.json → per-tool files.
-// Idempotent: renames the old file to .migrated after migration.
-func migrateInstalledIfNeeded() error {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return err
-	}
-	legacyPath := filepath.Join(home, ".kimchi", "installed.json")
-	data, err := os.ReadFile(legacyPath)
-	if os.IsNotExist(err) {
-		return nil
-	}
-	if err != nil {
-		return err
-	}
-	var list []InstalledRecipe
-	if err := json.Unmarshal(data, &list); err != nil {
-		return nil // corrupt legacy file; leave it alone
-	}
-	byTool := make(map[tools.ToolID][]InstalledRecipe)
-	for _, r := range list {
-		if r.Tool == "" {
-			r.Tool = tools.ToolOpenCode
-		}
-		byTool[r.Tool] = append(byTool[r.Tool], r)
-	}
-	for toolID, recs := range byTool {
-		if err := saveInstalledForTool(toolID, recs); err != nil {
-			return err
-		}
-	}
-	_ = os.Rename(legacyPath, legacyPath+".migrated")
-	return nil
-}
-
 func loadInstalledForTool(tool tools.ToolID) ([]InstalledRecipe, error) {
-	if err := migrateInstalledIfNeeded(); err != nil {
-		return nil, err
-	}
 	p, err := installedPerToolPath(tool)
 	if err != nil {
 		return nil, err
@@ -94,4 +56,3 @@ func saveInstalledForTool(tool tools.ToolID, list []InstalledRecipe) error {
 func clearAllInstalledForTool(tool tools.ToolID) error {
 	return saveInstalledForTool(tool, nil)
 }
-

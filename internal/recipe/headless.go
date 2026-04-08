@@ -56,14 +56,19 @@ func InstallHeadless(opts HeadlessInstallOptions) error {
 	if err != nil {
 		return fmt.Errorf("predict asset paths: %w", err)
 	}
-	if err := EnsureBaseline(tools.ToolOpenCode, filesToCapture); err != nil {
+	baselineBacked, err := EnsureBaseline(tools.ToolOpenCode, filesToCapture)
+	if err != nil {
 		return fmt.Errorf("backup baseline: %w", err)
 	}
-	if err := SnapshotCurrentlyInstalled(tools.ToolOpenCode); err != nil {
+	if err := RemoveAssetFiles(baselineBacked); err != nil {
+		return fmt.Errorf("clean baseline assets: %w", err)
+	}
+	snapshotBacked, err := SnapshotCurrentlyInstalled(tools.ToolOpenCode)
+	if err != nil {
 		return fmt.Errorf("backup current recipes: %w", err)
 	}
-	if err := UninstallByManifest(tools.ToolOpenCode, r.Name); err != nil {
-		return fmt.Errorf("uninstall prior recipe: %w", err)
+	if err := RemoveAssetFiles(snapshotBacked); err != nil {
+		return fmt.Errorf("clean installed assets: %w", err)
 	}
 
 	written, err := InstallOpenCode(r, secretValues, nil)

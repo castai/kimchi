@@ -504,3 +504,19 @@ func shouldWrite(path string, decisions AssetDecisions) bool {
 	}
 	return true
 }
+
+// RemoveAssetFiles removes each path in the list that exists on disk, skipping
+// opencode.json since it is a merge target rather than a verbatim asset.
+// Missing files are silently ignored. Call this after taking backups and before
+// InstallOpenCode to guarantee a conflict-free install.
+func RemoveAssetFiles(paths []string) error {
+	for _, p := range paths {
+		if filepath.Base(p) == "opencode.json" {
+			continue
+		}
+		if err := os.Remove(p); err != nil && !os.IsNotExist(err) {
+			return fmt.Errorf("remove %s: %w", p, err)
+		}
+	}
+	return nil
+}
