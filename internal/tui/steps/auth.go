@@ -8,7 +8,7 @@ import (
 
 	"github.com/charmbracelet/bubbles/spinner"
 	"github.com/charmbracelet/bubbles/textinput"
-	"github.com/charmbracelet/bubbletea"
+	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/castai/kimchi/internal/auth"
 	"github.com/castai/kimchi/internal/config"
@@ -152,7 +152,7 @@ func (s *AuthStep) View() string {
 	b.WriteString("To create one:\n\n")
 
 	b.WriteString("  1. Open ")
-	b.WriteString(Hyperlink("https://kimchi.console.cast.ai/settings", "https://kimchi.console.cast.ai/settings"))
+	b.WriteString(Hyperlink("https://app.kimchi.dev/settings", "https://app.kimchi.dev/settings"))
 	b.WriteString("\n")
 	b.WriteString("  2. Click \"Create API Key\"\n")
 	b.WriteString("  3. Paste the key below\n\n")

@@ -58,7 +58,7 @@ sudo mv kimchi /usr/local/bin/
 
 ### 1. Get Your API Key
 
-1. Go to [kimchi.console.cast.ai/settings](https://kimchi.console.cast.ai/settings)
+1. Go to [app.kimchi.dev/settings](https://app.kimchi.dev/settings)
 2. Create and copy your API key
 
 ### 2. Run Kimchi
@@ -88,6 +88,7 @@ The interactive wizard will guide you through:
 | [Codex](https://github.com/openai/codex) | OpenAI's coding CLI | `~/.codex/.env` |
 | [Zed](https://zed.dev) | High-performance editor | `~/.zed/settings.json` |
 | [Cline](https://cline.bot) | VS Code extension | `~/.cline/data/globalState.json` |
+| [OpenClaw](https://openclaw.ai) | AI agent framework | `~/.openclaw/openclaw.json` |
 | Generic | Environment variables | Prints to stdout |
 
 ---
@@ -123,7 +124,7 @@ Kimchi configures each tool to use Cast AI's inference endpoint:
 Your AI Tool ──► Kimchi Config ──► Cast AI Endpoint ──► Open-Source Models
                                         │
                                         ▼
-                               https://llm.cast.ai
+                               https://llm.kimchi.dev
 ```
 
 **Configuration Example (OpenCode):**
@@ -135,7 +136,7 @@ Your AI Tool ──► Kimchi Config ──► Cast AI Endpoint ──► Open-S
     "kimchi": {
       "name": "Kimchi by Cast AI",
       "options": {
-        "baseURL": "https://llm.cast.ai/openai/v1",
+        "baseURL": "https://llm.kimchi.dev/openai/v1",
         "apiKey": "your-api-key"
       },
       "models": {
@@ -164,6 +165,17 @@ Yes. Simply remove the `kimchi` provider from your tool's config file, or re-run
 
 - **Config file**: `~/.config/kimchi/config.json` (permissions: 600)
 - **Environment variable**: `KIMCHI_API_KEY`
+
+### How does telemetry work?
+
+Kimchi collects anonymous usage data to help improve the tool, i.e., the CLI version running and the fact that the tool has been used. You can disable telemetry at any time:
+
+```bash
+kimchi config telemetry off         # disable via CLI
+export KIMCHI_TELEMETRY=false       # disable via env var
+```
+
+To check your current telemetry status: `kimchi config telemetry`
 
 ---
 

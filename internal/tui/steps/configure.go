@@ -26,6 +26,8 @@ type toolStatus struct {
 	writing bool
 }
 
+type spinTickMsg struct{}
+
 type ConfigureStep struct {
 	toolIDs          []tools.ToolID
 	scope            config.ConfigScope
@@ -36,6 +38,7 @@ type ConfigureStep struct {
 	statuses         []toolStatus
 	done             bool
 	startOnce        sync.Once
+	spinFrame        int
 }
 
 type writeCompleteMsg struct {
@@ -82,10 +85,18 @@ func (s *ConfigureStep) Update(msg tea.Msg) (Step, tea.Cmd) {
 			}
 		}
 		if len(cmds) > 0 {
+			cmds = append(cmds, s.spinTick())
 			return s, tea.Batch(cmds...)
 		}
 		if s.allComplete() {
 			s.done = true
+		}
+		return s, nil
+
+	case spinTickMsg:
+		if !s.done {
+			s.spinFrame++
+			return s, s.spinTick()
 		}
 		return s, nil
 
@@ -120,12 +131,25 @@ func (s *ConfigureStep) writeToolConfig(index int) tea.Cmd {
 			return writeCompleteMsg{index: index, status: "skipped", err: fmt.Errorf("no writer for tool")}
 		}
 
+		// Install the tool first if it's not present and has an installer.
+		if !tool.DetectInstalled() && tool.CanInstall() {
+			if err := tool.Install(); err != nil {
+				return writeCompleteMsg{index: index, status: "failed", err: fmt.Errorf("install: %w", err)}
+			}
+		}
+
 		err := tool.Write(s.scope)
 		if err != nil {
 			return writeCompleteMsg{index: index, status: "failed", err: err}
 		}
 		return writeCompleteMsg{index: index, status: "done"}
 	}
+}
+
+func (s *ConfigureStep) spinTick() tea.Cmd {
+	return tea.Tick(100*time.Millisecond, func(t time.Time) tea.Msg {
+		return spinTickMsg{}
+	})
 }
 
 func (s *ConfigureStep) exportAPIKeyToShellProfile() {
@@ -163,7 +187,6 @@ func (s *ConfigureStep) View() string {
 	var b strings.Builder
 
 	spinChars := []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"}
-	spinIdx := 0
 
 	for _, status := range s.statuses {
 		var icon string
@@ -176,10 +199,9 @@ func (s *ConfigureStep) View() string {
 			icon = Styles.Success.Render("✓")
 			msg = Styles.Success.Render(" configured")
 		} else if status.writing {
-			spin := spinChars[spinIdx%len(spinChars)]
-			spinIdx++
+			spin := spinChars[s.spinFrame%len(spinChars)]
 			icon = Styles.Spinner.Render(spin)
-			msg = Styles.Spinner.Render(" writing...")
+			msg = Styles.Spinner.Render(" configuring...")
 		} else {
 			icon = "○"
 			msg = " waiting"
@@ -206,7 +228,7 @@ func (s *ConfigureStep) View() string {
 			b.WriteString(Styles.Success.Render("Configuration complete!"))
 			b.WriteString("\n\n")
 			b.WriteString("Your tools are now connected to Kimchi's inference endpoint:\n")
-			b.WriteString(Styles.Success.Render("https://llm.cast.ai"))
+			b.WriteString(Styles.Success.Render("https://llm.kimchi.dev"))
 			b.WriteString("\n\n")
 			b.WriteString("Each tool has been configured with optimal models for its use case:")
 			b.WriteString("\n")
@@ -249,6 +271,8 @@ func (s *ConfigureStep) getModelInfoForTool(toolID tools.ToolID) string {
 		return fmt.Sprintf("→ %s (action) + %s (planning)", c, m)
 	case tools.ToolGSD2:
 		return fmt.Sprintf("→ %s (default) + %s (coding) + %s (sub)", m, c, s2)
+	case tools.ToolOpenClaw:
+		return fmt.Sprintf("→ %s (primary) + %s (fallback) + %s (fallback)", m, c, s2)
 	case tools.ToolGeneric:
 		return "→ Environment variables for Kimchi endpoint"
 	default:

@@ -207,7 +207,7 @@ func (s *DoneStep) runStreamBackground(ctx context.Context) {
 		return
 	}
 
-	req, err := http.NewRequestWithContext(ctx, "POST", "https://llm.cast.ai/openai/v1/chat/completions", strings.NewReader(string(jsonBody)))
+	req, err := http.NewRequestWithContext(ctx, "POST", "https://llm.kimchi.dev/openai/v1/chat/completions", strings.NewReader(string(jsonBody)))
 	if err != nil {
 		if ctx.Err() == nil {
 			s.sendDefaultMessage()

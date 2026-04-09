@@ -10,7 +10,9 @@ builds:
       - amd64
       - arm64
     ldflags:
-      - -s -w -X github.com/castai/kimchi/internal/version.Version={{.Version}}
+      - -s -w
+      - -X github.com/castai/kimchi/internal/version.Version={{.Version}}
+      - -X github.com/castai/kimchi/internal/telemetry.PostHogAPIKey={{.Env.POSTHOG_API_KEY}}
     binary: kimchi
 
 archives:

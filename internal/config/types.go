@@ -14,10 +14,36 @@ const (
 )
 
 type Config struct {
-	APIKey          string     `json:"api_key"`
-	Mode            ConfigMode `json:"mode,omitempty"`
-	SelectedTools   []string   `json:"selected_tools,omitempty"`
-	Scope           string     `json:"scope,omitempty"`
-	TelemetryOptIn  bool       `json:"telemetry_opt_in"`
-	GSDInstalledFor []string   `json:"gsd_installed_for,omitempty"`
+	APIKey               string     `json:"api_key,omitempty"`
+	Mode                 ConfigMode `json:"mode,omitempty"`
+	SelectedTools        []string   `json:"selected_tools,omitempty"`
+	Scope                string     `json:"scope,omitempty"`
+	TelemetryEnabled     *bool      `json:"telemetry_enabled,omitempty"`
+	DeviceID             string     `json:"device_id,omitempty"`
+	TelemetryNoticeShown bool       `json:"telemetry_notice_shown,omitempty"`
+	GSDInstalledFor      []string   `json:"gsd_installed_for,omitempty"`
+}
+
+func (c *Config) Clone() Config {
+	clone := *c
+	if c.TelemetryEnabled != nil {
+		v := *c.TelemetryEnabled
+		clone.TelemetryEnabled = &v
+	}
+	return clone
+}
+
+func (c *Config) Equal(other *Config) bool {
+	if c.APIKey != other.APIKey ||
+		c.DeviceID != other.DeviceID ||
+		c.TelemetryNoticeShown != other.TelemetryNoticeShown {
+		return false
+	}
+	if c.TelemetryEnabled == nil && other.TelemetryEnabled == nil {
+		return true
+	}
+	if c.TelemetryEnabled == nil || other.TelemetryEnabled == nil {
+		return false
+	}
+	return *c.TelemetryEnabled == *other.TelemetryEnabled
 }
