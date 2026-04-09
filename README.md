@@ -59,7 +59,7 @@ sudo mv kimchi /usr/local/bin/
 ### 1. Get Your API Key
 
 1. Go to [app.kimchi.dev](https://app.kimchi.dev)
-2. Go to API Keys → Create API Key and copy your key
+2. Create and copy your API key
 
 ### 2. Run Kimchi
 
@@ -124,7 +124,7 @@ Kimchi configures each tool to use Cast AI's inference endpoint:
 Your AI Tool ──► Kimchi Config ──► Cast AI Endpoint ──► Open-Source Models
                                         │
                                         ▼
-                               https://llm.cast.ai
+                               https://llm.kimchi.dev
 ```
 
 **Configuration Example (OpenCode):**
@@ -136,7 +136,7 @@ Your AI Tool ──► Kimchi Config ──► Cast AI Endpoint ──► Open-S
     "kimchi": {
       "name": "Kimchi by Cast AI",
       "options": {
-        "baseURL": "https://llm.cast.ai/openai/v1",
+        "baseURL": "https://llm.kimchi.dev/openai/v1",
         "apiKey": "your-api-key"
       },
       "models": {
@@ -165,6 +165,17 @@ Yes. Simply remove the `kimchi` provider from your tool's config file, or re-run
 
 - **Config file**: `~/.config/kimchi/config.json` (permissions: 600)
 - **Environment variable**: `KIMCHI_API_KEY`
+
+### How does telemetry work?
+
+Kimchi collects anonymous usage data to help improve the tool, i.e., the CLI version running and the fact that the tool has been used. You can disable telemetry at any time:
+
+```bash
+kimchi config telemetry off         # disable via CLI
+export KIMCHI_TELEMETRY=false       # disable via env var
+```
+
+To check your current telemetry status: `kimchi config telemetry`
 
 ---
 

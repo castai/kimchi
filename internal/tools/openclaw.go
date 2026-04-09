@@ -6,12 +6,52 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
+
+	"github.com/Masterminds/semver/v3"
 
 	"github.com/castai/kimchi/internal/config"
 )
 
 const openclawConfigPath = "~/.openclaw/openclaw.json"
+
+// openclawVersionRegexp matches "OpenClaw 2026.4.8 (9ece252)" format
+var openclawVersionRegexp = regexp.MustCompile(`OpenClaw\s+(\d{4}\.\d+\.\d+)`)
+
+const batchConfigMinVersion = "2026.3.17"
+
+// getOpenClawVersion parses the version from `openclaw --version` output.
+// Returns empty string if version cannot be determined.
+func getOpenClawVersion() string {
+	cmd := exec.Command("openclaw", "--version")
+	out, err := cmd.Output()
+	if err != nil {
+		return ""
+	}
+
+	matches := openclawVersionRegexp.FindStringSubmatch(string(out))
+	if len(matches) < 2 {
+		return ""
+	}
+	return matches[1]
+}
+
+// isBatchJSONSupported checks if the OpenClaw version supports --batch-json flag.
+// Returns true if version >= 2026.3.17 or if version cannot be determined (assume latest).
+func isBatchJSONSupported(version string) bool {
+	if version == "" {
+		return true // Assume latest if we can't determine version
+	}
+
+	v, err := semver.NewVersion(version)
+	if err != nil {
+		return true // Assume latest if parsing fails
+	}
+
+	min, _ := semver.NewVersion(batchConfigMinVersion)
+	return v.GreaterThan(min) || v.Equal(min)
+}
 
 func init() {
 	register(Tool{
@@ -67,6 +107,47 @@ func writeOpenClaw(scope config.ConfigScope) error {
 	return writeOpenClawDirect(scope, apiKey)
 }
 
+// writeOpenClawViaCLISequential sets config values one by one for older OpenClaw versions.
+func writeOpenClawViaCLISequential(providerBlock map[string]any, modelsCatalog map[string]any) error {
+	// Set models.providers.kimchi
+	providerJSON, err := json.Marshal(providerBlock)
+	if err != nil {
+		return fmt.Errorf("marshal provider block: %w", err)
+	}
+	cmd := exec.Command("openclaw", "config", "set", "models.providers.kimchi", string(providerJSON))
+	if out, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("openclaw config set models.providers.kimchi: %s: %w", string(out), err)
+	}
+
+	// Set agents.defaults.model.primary
+	cmd = exec.Command("openclaw", "config", "set", "agents.defaults.model.primary", providerName+"/"+MainModel.Slug)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("openclaw config set agents.defaults.model.primary: %s: %w", string(out), err)
+	}
+
+	// Set agents.defaults.model.fallbacks
+	fallbacksJSON, _ := json.Marshal([]string{
+		providerName + "/" + CodingModel.Slug,
+		providerName + "/" + SubModel.Slug,
+	})
+	cmd = exec.Command("openclaw", "config", "set", "agents.defaults.model.fallbacks", string(fallbacksJSON))
+	if out, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("openclaw config set agents.defaults.model.fallbacks: %s: %w", string(out), err)
+	}
+
+	// Set agents.defaults.models
+	modelsJSON, err := json.Marshal(modelsCatalog)
+	if err != nil {
+		return fmt.Errorf("marshal models catalog: %w", err)
+	}
+	cmd = exec.Command("openclaw", "config", "set", "agents.defaults.models", string(modelsJSON))
+	if out, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("openclaw config set agents.defaults.models: %s: %w", string(out), err)
+	}
+
+	return nil
+}
+
 func writeOpenClawViaCLI(apiKey string) error {
 	// Build the full provider block as JSON so it passes validation in one shot.
 	var modelEntries []map[string]any
@@ -94,25 +175,34 @@ func writeOpenClawViaCLI(apiKey string) error {
 		modelsCatalog[providerName+"/"+m.Slug] = map[string]any{"alias": m.displayName}
 	}
 
-	// Use --batch-json to set all config in a single CLI call (~3s vs ~12s sequential).
-	batchOps := []map[string]any{
-		{"path": "models.providers.kimchi", "value": providerBlock},
-		{"path": "agents.defaults.model.primary", "value": providerName + "/" + MainModel.Slug},
-		{"path": "agents.defaults.model.fallbacks", "value": []string{
-			providerName + "/" + CodingModel.Slug,
-			providerName + "/" + SubModel.Slug,
-		}},
-		{"path": "agents.defaults.models", "value": modelsCatalog},
-	}
+	// Check OpenClaw version to determine which approach to use
+	version := getOpenClawVersion()
+	if isBatchJSONSupported(version) {
+		// Use --batch-json to set all config in a single CLI call (~3s vs ~12s sequential).
+		batchOps := []map[string]any{
+			{"path": "models.providers.kimchi", "value": providerBlock},
+			{"path": "agents.defaults.model.primary", "value": providerName + "/" + MainModel.Slug},
+			{"path": "agents.defaults.model.fallbacks", "value": []string{
+				providerName + "/" + CodingModel.Slug,
+				providerName + "/" + SubModel.Slug,
+			}},
+			{"path": "agents.defaults.models", "value": modelsCatalog},
+		}
 
-	batchJSON, err := json.Marshal(batchOps)
-	if err != nil {
-		return fmt.Errorf("marshal batch config: %w", err)
-	}
+		batchJSON, err := json.Marshal(batchOps)
+		if err != nil {
+			return fmt.Errorf("marshal batch config: %w", err)
+		}
 
-	cmd := exec.Command("openclaw", "config", "set", "--batch-json", string(batchJSON))
-	if out, err := cmd.CombinedOutput(); err != nil {
-		return fmt.Errorf("openclaw config set: %s: %w", string(out), err)
+		cmd := exec.Command("openclaw", "config", "set", "--batch-json", string(batchJSON))
+		if out, err := cmd.CombinedOutput(); err != nil {
+			return fmt.Errorf("openclaw config set: %s: %w", string(out), err)
+		}
+	} else {
+		// Fall back to sequential calls for older versions
+		if err := writeOpenClawViaCLISequential(providerBlock, modelsCatalog); err != nil {
+			return err
+		}
 	}
 
 	// Write API key to ~/.openclaw/.env for daemon use.
@@ -122,7 +212,7 @@ func writeOpenClawViaCLI(apiKey string) error {
 
 	if isOpenClawGatewayRunning() {
 		// Gateway is already running — restart it so the new config takes effect.
-		cmd = exec.Command("openclaw", "gateway", "restart")
+		cmd := exec.Command("openclaw", "gateway", "restart")
 		if out, err := cmd.CombinedOutput(); err != nil {
 			return fmt.Errorf("gateway restart: %s: %w", string(out), err)
 		}

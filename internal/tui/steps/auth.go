@@ -8,7 +8,7 @@ import (
 
 	"github.com/charmbracelet/bubbles/spinner"
 	"github.com/charmbracelet/bubbles/textinput"
-	"github.com/charmbracelet/bubbletea"
+	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/castai/kimchi/internal/auth"
 	"github.com/castai/kimchi/internal/config"
@@ -42,7 +42,7 @@ type AuthStep struct {
 
 func NewAuthStep() *AuthStep {
 	ti := textinput.New()
-	ti.Placeholder = "Enter your Cast AI API key"
+	ti.Placeholder = "Enter your Kimchi API key"
 	ti.EchoMode = textinput.EchoPassword
 	ti.EchoCharacter = '●'
 	ti.Width = 50
@@ -148,7 +148,7 @@ func (s *AuthStep) validate(apiKey string) tea.Cmd {
 func (s *AuthStep) View() string {
 	var b strings.Builder
 
-	b.WriteString("You need an API key to use Cast AI's open-source models.\n")
+	b.WriteString("You need an API key to use Kimchi's open-source models.\n")
 	b.WriteString("To create one:\n\n")
 
 	b.WriteString("  1. Open ")

@@ -40,9 +40,33 @@ func writeOpenCode(scope config.ConfigScope) error {
 
 	existing["$schema"] = "https://opencode.ai/config.json"
 
-	providerConfig := map[string]any{
+	providers, _ := existing["provider"].(map[string]any)
+	if providers == nil {
+		providers = make(map[string]any)
+	}
+	providers[providerName] = OpenCodeProviderConfig(apiKey)
+	existing["provider"] = providers
+
+	existing["model"] = providerName + "/" + MainModel.Slug
+
+	if _, ok := existing["compaction"]; !ok {
+		existing["compaction"] = map[string]any{
+			"auto": true,
+		}
+	}
+
+	if err := config.WriteJSON(path, existing); err != nil {
+		return fmt.Errorf("write config: %w", err)
+	}
+
+	return nil
+}
+
+// OpenCodeProviderConfig returns the provider configuration map for OpenCode.
+func OpenCodeProviderConfig(apiKey string) map[string]any {
+	return map[string]any{
 		"npm":  "@ai-sdk/openai-compatible",
-		"name": "Kimchi by Cast AI",
+		"name": "Kimchi",
 		"options": map[string]any{
 			"baseURL":      baseURL,
 			"litellmProxy": true,
@@ -78,25 +102,6 @@ func writeOpenCode(scope config.ConfigScope) error {
 			},
 		},
 	}
-
-	providers, _ := existing["provider"].(map[string]any)
-	if providers == nil {
-		providers = make(map[string]any)
-	}
-	providers[providerName] = providerConfig
-	existing["provider"] = providers
-
-	existing["model"] = providerName + "/" + MainModel.Slug
-
-	existing["compaction"] = map[string]any{
-		"auto": true,
-	}
-
-	if err := config.WriteJSON(path, existing); err != nil {
-		return fmt.Errorf("write config: %w", err)
-	}
-
-	return nil
 }
 
 func detectBinary(name string) func() bool {
