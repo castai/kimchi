@@ -11,16 +11,16 @@ import (
 const codexConfigPath = "~/.codex/config.toml"
 const codexAgentsPath = "~/.codex/AGENTS.md"
 const codexCatalogPath = "~/.codex/kimchi-models.json"
-const envKeyInstructions = "Set the " + APIKeyEnv + " environment variable with your Cast AI API key. You can add it to your shell profile (~/.zshrc, ~/.bashrc) or a .env file."
+const envKeyInstructions = "Set the " + APIKeyEnv + " environment variable with your Kimchi API key. You can add it to your shell profile (~/.zshrc, ~/.bashrc) or a .env file."
 
 func codexAgentMD() string {
-	return `# Cast AI Configuration
+	return `# Kimchi Configuration
 
-This project uses Cast AI's open-source models:
+This project uses Kimchi's open-source models:
 - ` + MainModel.Slug + ` for reasoning, planning, and image processing (primary model)
 - ` + CodingModel.Slug + ` for coding/execution (subagent)
 
-Set the ` + APIKeyEnv + ` environment variable with your Cast AI API key.
+Set the ` + APIKeyEnv + ` environment variable with your Kimchi API key.
 `
 }
 
@@ -73,6 +73,11 @@ type codexCatalog struct {
 	Models []codexModelEntry `json:"models"`
 }
 
+// WriteCodexModelCatalog writes the model catalog JSON to the given path.
+func WriteCodexModelCatalog(path string) error {
+	return writeModelCatalog(path)
+}
+
 func writeModelCatalog(path string) error {
 	var models []codexModelEntry
 	for _, m := range allModels {
@@ -123,18 +128,15 @@ func writeCodex(scope config.ConfigScope) error {
 		return fmt.Errorf("get config path: %w", err)
 	}
 
-	// Read existing config or start fresh
 	cfg, err := config.ReadTOML(configPath)
 	if err != nil {
 		return fmt.Errorf("read config: %w", err)
 	}
 
-	// GLM is the coding subagent used as the fixed default for Codex (a coding-focused tool)
 	cfg["model"] = CodingModel.Slug
 	cfg["model_provider"] = providerName
 	cfg["suppress_unstable_features_warning"] = true
 
-	// Add model provider
 	providers, ok := cfg["model_providers"].(map[string]any)
 	if !ok {
 		if cfg["model_providers"] != nil {
@@ -145,15 +147,8 @@ func writeCodex(scope config.ConfigScope) error {
 		cfg["model_providers"] = providers
 	}
 
-	providers["kimchi"] = map[string]any{
-		"name":                 "Kimchi by Cast AI",
-		"base_url":             baseURL,
-		"env_key":              APIKeyEnv,
-		"env_key_instructions": envKeyInstructions,
-		"wire_api":             "responses",
-	}
+	providers["kimchi"] = CodexProviderBlock()
 
-	// Write model catalog and reference it in config
 	catalogPath, err := config.ScopePaths(scope, codexCatalogPath)
 	if err != nil {
 		return fmt.Errorf("get catalog path: %w", err)
@@ -167,7 +162,6 @@ func writeCodex(scope config.ConfigScope) error {
 		return fmt.Errorf("write config: %w", err)
 	}
 
-	// Write AGENTS.md only if it doesn't exist
 	instructionsPath, err := config.ScopePaths(scope, codexAgentsPath)
 	if err != nil {
 		return fmt.Errorf("get AGENTS.md path: %w", err)
@@ -184,3 +178,21 @@ func writeCodex(scope config.ConfigScope) error {
 
 	return nil
 }
+
+// CodexProviderBlock returns the kimchi provider config map for Codex TOML.
+// Shared between override mode (writeCodex) and inject mode (provider/codex).
+func CodexProviderBlock() map[string]any {
+	return map[string]any{
+		"name":                 "Kimchi",
+		"base_url":             baseURL,
+		"env_key":              APIKeyEnv,
+		"env_key_instructions": envKeyInstructions,
+		"wire_api":             "responses",
+	}
+}
+
+// ProviderName returns the kimchi provider name used in tool configs.
+func ProviderName() string { return providerName }
+
+// CodexAgentMD returns the default AGENTS.md content for Codex.
+func CodexAgentMD() string { return codexAgentMD() }

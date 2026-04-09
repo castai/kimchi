@@ -42,6 +42,11 @@ func Load() (*Config, error) {
 		return nil, fmt.Errorf("parse config file: %w", err)
 	}
 
+	// Default to override mode for configs created before inject mode existed.
+	if cfg.Mode == "" {
+		cfg.Mode = ModeOverride
+	}
+
 	return &cfg, nil
 }
 
@@ -58,6 +63,19 @@ func GetAPIKey() (string, error) {
 	return cfg.APIKey, nil
 }
 
+// ResolveAPIKey returns the API key from the config, overridden by
+// KIMCHI_API_KEY env var. Returns an error if no key is available.
+func ResolveAPIKey(cfg *Config) (string, error) {
+	apiKey := cfg.APIKey
+	if envKey := os.Getenv(envAPIKey); envKey != "" {
+		apiKey = envKey
+	}
+	if apiKey == "" {
+		return "", fmt.Errorf("no API key configured — run 'kimchi' to set up, or set KIMCHI_API_KEY")
+	}
+	return apiKey, nil
+}
+
 func SetAPIKey(key string) error {
 	cfg, err := Load()
 	if err != nil {
@@ -65,6 +83,17 @@ func SetAPIKey(key string) error {
 	}
 
 	cfg.APIKey = key
+
+	return Save(cfg)
+}
+
+func SaveGSDInstalled(tools []string) error {
+	cfg, err := Load()
+	if err != nil {
+		return fmt.Errorf("load existing config: %w", err)
+	}
+
+	cfg.GSDInstalledFor = tools
 
 	return Save(cfg)
 }
@@ -125,7 +154,6 @@ func ParseSwitch(s string) (bool, error) {
 		return false, fmt.Errorf("invalid switch value: %q (expected on/off, true/false, 1/0, yes/no)", s)
 	}
 }
-
 func Save(cfg *Config) error {
 	path := ConfigPath()
 	if path == "" {

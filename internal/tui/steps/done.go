@@ -35,15 +35,13 @@ type streamStartMsg struct{}
 type streamTimeoutMsg struct{}
 
 type DoneParams struct {
-	APIKey           string
-	ToolIDs          []tools.ToolID
-	ShellProfilePath string
+	APIKey  string
+	ToolIDs []tools.ToolID
 }
 
 type DoneStep struct {
 	apiKey             string
 	toolIDs            []tools.ToolID
-	shellProfilePath   string
 	streamedMsg        strings.Builder
 	streamDone         bool
 	hasReceivedContent bool
@@ -61,10 +59,9 @@ func NewDoneStep(ctx context.Context, params DoneParams) *DoneStep {
 	sp.Style = lipgloss.NewStyle().Foreground(lipgloss.Color("12"))
 
 	return &DoneStep{
-		apiKey:           params.APIKey,
-		toolIDs:          params.ToolIDs,
-		shellProfilePath: params.ShellProfilePath,
-		spin:             sp,
+		apiKey:  params.APIKey,
+		toolIDs: params.ToolIDs,
+		spin:    sp,
 	}
 }
 
@@ -278,9 +275,9 @@ func (s *DoneStep) sendDefaultMessage() {
 }
 
 func (s *DoneStep) sendDefaultMessageTo(ch chan string) {
-	ch <- "Welcome to Kimchi by Cast AI!\n\n"
+	ch <- "Welcome to Kimchi!\n\n"
 	ch <- "You've just unlocked access to powerful open-source models\n"
-	ch <- "via Cast AI's infrastructure!\n\n"
+	ch <- "via Kimchi's infrastructure!\n\n"
 	ch <- tools.MainModel.Slug + " is your primary model for reasoning, planning,\n"
 	ch <- "code generation, and image processing.\n\n"
 	ch <- tools.CodingModel.Slug + " is your coding subagent for writing,\n"
@@ -300,9 +297,6 @@ func (s *DoneStep) getToolTip(toolID tools.ToolID) string {
 	case tools.ToolZed:
 		return "Open Zed and use Cmd+Enter to send prompts to the AI assistant."
 	case tools.ToolCodex:
-		if s.shellProfilePath != "" {
-			return fmt.Sprintf("Run 'codex' with a prompt. %s was added to %s — restart your shell or run 'source %s'.", tools.APIKeyEnv, s.shellProfilePath, s.shellProfilePath)
-		}
 		return fmt.Sprintf("Run 'codex' with a prompt. Ensure %s is set in your environment.", tools.APIKeyEnv)
 	case tools.ToolCline:
 		return "Open VS Code with Cline extension installed and start a new task."

@@ -44,7 +44,7 @@ func writeGSD2(scope config.ConfigScope) error {
 	modelsContent := map[string]any{
 		"providers": map[string]any{
 			"castai": map[string]any{
-				"name":         "Cast AI",
+				"name":         "Kimchi",
 				"baseUrl":      baseURL,
 				"apiKey":       apiKey,
 				"api":          "openai-completions",

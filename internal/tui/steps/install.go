@@ -204,7 +204,7 @@ func (s *InstallStep) View() string {
 		b.WriteString("\n\n")
 		b.WriteString("We couldn't find any supported AI coding tools.\n\n")
 		b.WriteString("OpenCode is a powerful agentic coding CLI that works\n")
-		b.WriteString("great with Cast AI's open-source models.\n\n")
+		b.WriteString("great with Kimchi's open-source models.\n\n")
 		b.WriteString("Install OpenCode now?\n")
 
 	case installStateInstalling:

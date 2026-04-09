@@ -94,7 +94,7 @@ func (s *WelcomeStep) Name() string {
 
 func (s *WelcomeStep) Info() StepInfo {
 	return StepInfo{
-		Name:        "Welcome to Kimchi by Cast AI",
+		Name:        "Welcome to Kimchi",
 		KeyBindings: []KeyBinding{{Key: "↵", Text: "begin"}},
 	}
 }

@@ -44,7 +44,7 @@ func (v *validator) ValidateAPIKey(ctx context.Context, apiKey string) (Validate
 	if err != nil {
 		return ValidateResult{
 			Valid: false,
-			Error: "Network error: unable to reach Cast AI API",
+			Error: "Network error: unable to reach Kimchi API",
 			Suggestions: []string{
 				"Check your internet connection",
 				"Verify you can reach https://api.cast.ai",

@@ -82,7 +82,7 @@ func (s *ToolsStep) Update(msg tea.Msg) (Step, tea.Cmd) {
 func (s *ToolsStep) View() string {
 	var b strings.Builder
 
-	b.WriteString("Selected tools will be reconfigured to use Cast AI models.\n")
+	b.WriteString("Selected tools will be reconfigured to use Kimchi models.\n")
 	b.WriteString("You can always switch back to your regular models at any time.")
 	b.WriteString("\n\n")
 

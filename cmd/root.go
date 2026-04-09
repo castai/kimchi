@@ -2,8 +2,10 @@ package cmd
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
+	"os"
 
 	"github.com/google/uuid"
 	"github.com/spf13/cobra"
@@ -11,6 +13,7 @@ import (
 
 	"github.com/castai/kimchi/internal/config"
 	"github.com/castai/kimchi/internal/telemetry"
+	"github.com/castai/kimchi/internal/tools"
 	"github.com/castai/kimchi/internal/tui"
 	"github.com/castai/kimchi/internal/version"
 )
@@ -23,12 +26,12 @@ var (
 func newRootCommand() *cobra.Command {
 	root := &cobra.Command{
 		Use:   "kimchi",
-		Short: "Configure AI coding tools to use Cast AI open-source models",
-		Long: `Kimchi by Cast AI
+		Short: "Configure AI coding tools to use open-source models via Kimchi",
+		Long: `Kimchi
 Connect your AI tools to powerful open-source models
 
 This tool configures AI coding assistants (OpenCode, Claude Code, Cursor, etc.)
-to use Cast AI's serverless inference endpoints with optimal model selection:
+to use Kimchi's serverless inference endpoints with optimal model selection:
 
 Model Selection Strategy:
   • kimi-k2.5     - Primary model: reasoning, planning, code generation, and images
@@ -63,6 +66,8 @@ Get your API key at: https://app.kimchi.dev`,
 	root.AddCommand(NewCompletionCommand())
 	root.AddCommand(NewUpdateCommand())
 	root.AddCommand(NewConfigCommand())
+	root.AddCommand(NewOpenCodeCommand())
+	root.AddCommand(NewCodexCommand())
 
 	return root
 }
@@ -109,9 +114,6 @@ func initTelemetry(root *cobra.Command) {
 		}
 	}
 
-	// Note: app_started fires on all commands, including "config telemetry off".
-	// This is intentional — telemetry is still enabled at the time the event fires.
-	// The client is a noop when telemetry is already disabled.
 	client.Track(telemetry.NewEvent("app_started", nil))
 }
 
@@ -147,5 +149,13 @@ func Execute(args ...string) error {
 		telemetry.FromCtx(root.Context()).Close()
 		klog.Flush()
 	}()
-	return root.ExecuteContext(ctx)
+
+	err := root.ExecuteContext(ctx)
+	if err != nil {
+		var exitErr *tools.ExitError
+		if errors.As(err, &exitErr) {
+			os.Exit(exitErr.Code)
+		}
+	}
+	return err
 }

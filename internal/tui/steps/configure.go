@@ -17,6 +17,7 @@ type ConfigureParams struct {
 	Scope          config.ConfigScope
 	TelemetryOptIn bool
 	APIKey         string
+	Mode           config.ConfigMode
 }
 
 type toolStatus struct {
@@ -33,6 +34,7 @@ type ConfigureStep struct {
 	scope            config.ConfigScope
 	telemetryOptIn   bool
 	apiKey           string
+	mode             config.ConfigMode
 	shellProfilePath string
 	shellProfileErr  error
 	statuses         []toolStatus
@@ -55,6 +57,7 @@ func NewConfigureStep(params ConfigureParams) *ConfigureStep {
 		scope:          params.Scope,
 		telemetryOptIn: params.TelemetryOptIn,
 		apiKey:         params.APIKey,
+		mode:           params.Mode,
 		statuses:       make([]toolStatus, len(params.ToolIDs)),
 	}
 }
@@ -127,6 +130,13 @@ func (s *ConfigureStep) Update(msg tea.Msg) (Step, tea.Cmd) {
 func (s *ConfigureStep) writeToolConfig(index int) tea.Cmd {
 	return func() tea.Msg {
 		tool := s.statuses[index].tool
+
+		// In inject mode, tool configs are applied at runtime via
+		// `kimchi opencode` / `kimchi codex` — skip writing to disk.
+		if s.mode == config.ModeInject {
+			return writeCompleteMsg{index: index, status: "done"}
+		}
+
 		if tool.Write == nil {
 			return writeCompleteMsg{index: index, status: "skipped", err: fmt.Errorf("no writer for tool")}
 		}
@@ -159,6 +169,14 @@ func (s *ConfigureStep) exportAPIKeyToShellProfile() {
 	path, err := config.ExportEnvToShellProfile(tools.APIKeyEnv, s.apiKey)
 	s.shellProfilePath = path
 	s.shellProfileErr = err
+
+	// Persist the selected mode so `kimchi opencode` / `kimchi codex` can read it.
+	if s.mode != "" {
+		if cfg, err := config.Load(); err == nil {
+			cfg.Mode = s.mode
+			_ = config.Save(cfg)
+		}
+	}
 }
 
 func (s *ConfigureStep) ShellProfilePath() string {
@@ -227,7 +245,7 @@ func (s *ConfigureStep) View() string {
 		} else {
 			b.WriteString(Styles.Success.Render("Configuration complete!"))
 			b.WriteString("\n\n")
-			b.WriteString("Your tools are now connected to Cast AI's inference endpoint:\n")
+			b.WriteString("Your tools are now connected to Kimchi's inference endpoint:\n")
 			b.WriteString(Styles.Success.Render("https://llm.kimchi.dev"))
 			b.WriteString("\n\n")
 			b.WriteString("Each tool has been configured with optimal models for its use case:")
@@ -274,7 +292,7 @@ func (s *ConfigureStep) getModelInfoForTool(toolID tools.ToolID) string {
 	case tools.ToolOpenClaw:
 		return fmt.Sprintf("→ %s (primary) + %s (fallback) + %s (fallback)", m, c, s2)
 	case tools.ToolGeneric:
-		return "→ Environment variables for Cast AI endpoint"
+		return "→ Environment variables for Kimchi endpoint"
 	default:
 		return ""
 	}
