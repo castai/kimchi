@@ -250,6 +250,7 @@ func (w *wizard) scheduleConfigureIfReady() {
 		Scope:          w.config.Scope,
 		TelemetryOptIn: w.config.TelemetryOptIn,
 		APIKey:         w.config.APIKey,
+		Mode:           w.config.Mode,
 	})
 }
 
