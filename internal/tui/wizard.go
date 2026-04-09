@@ -96,6 +96,11 @@ func (w *wizard) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			w.pendingConfigure = nil
 		}
 
+		if w.pendingDone != nil {
+			w.stepList = append(w.stepList, w.pendingDone)
+			w.pendingDone = nil
+		}
+
 		if w.current >= len(w.stepList)-1 {
 			w.finished = true
 			return w, tea.Quit
