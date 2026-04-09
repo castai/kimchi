@@ -241,7 +241,7 @@ func (s *ConfigureStep) View() string {
 		if s.hasErrors() {
 			b.WriteString(Styles.Warning.Render("Configuration completed with errors."))
 			b.WriteString("\n")
-			b.WriteString(Styles.Help.Render("Press enter to continue"))
+			b.WriteString(Styles.Help.Render("Press enter to exit"))
 		} else {
 			b.WriteString(Styles.Success.Render("Configuration complete!"))
 			b.WriteString("\n\n")
@@ -262,7 +262,7 @@ func (s *ConfigureStep) View() string {
 				b.WriteString(fmt.Sprintf("\n%s\n", Styles.Warning.Render(fmt.Sprintf("Could not export %s to shell profile: %v", tools.APIKeyEnv, s.shellProfileErr))))
 			}
 			b.WriteString("\n")
-			b.WriteString(Styles.Help.Render("Press enter to continue"))
+			b.WriteString(Styles.Help.Render("Press enter to exit"))
 		}
 	}
 

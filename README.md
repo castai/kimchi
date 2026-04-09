@@ -58,7 +58,7 @@ sudo mv kimchi /usr/local/bin/
 
 ### 1. Get Your API Key
 
-1. Go to [app.kimchi.dev/settings](https://app.kimchi.dev/settings)
+1. Go to [app.kimchi.dev](https://app.kimchi.dev)
 2. Create and copy your API key
 
 ### 2. Run Kimchi
