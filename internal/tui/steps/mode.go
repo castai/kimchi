@@ -16,8 +16,8 @@ type modeOption struct {
 }
 
 var modeOptions = []modeOption{
-	{config.ModeInject, "Runtime wrapper (recommended)", "Launch via 'kimchi opencode' / 'kimchi codex'. Your existing tool configs are never modified."},
-	{config.ModeOverride, "Direct override", "Write Kimchi settings into tool config files (e.g. ~/.config/opencode/opencode.json, ~/.codex/config.toml). Then run tools directly."},
+	{config.ModeOverride, "Direct override (recommended)", "Write Kimchi settings into tool config files (e.g. ~/.config/opencode/opencode.json, ~/.codex/config.toml)."},
+	{config.ModeInject, "Runtime wrapper", "Launch via 'kimchi opencode' / 'kimchi codex'. Your existing tool configs are never modified."},
 }
 
 type ModeStep struct {

@@ -229,10 +229,7 @@ func (w *wizard) collectStepResult() {
 		w.config.GSDMigrateFrom = s.GetMigrateInstallations()
 		w.config.GSDInstallFor = s.GetInstallTypes()
 	case *steps.ConfigureStep:
-		w.pendingDone = steps.NewDoneStep(context.Background(), steps.DoneParams{
-			APIKey:  w.config.APIKey,
-			ToolIDs: w.config.SelectedTools,
-		})
+		// Done step removed - wizard ends after configure
 	}
 }
 
