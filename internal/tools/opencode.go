@@ -100,6 +100,15 @@ func OpenCodeProviderConfig(apiKey string) map[string]any {
 					"output":  SubModel.limits.maxOutputTokens,
 				},
 			},
+			NemotronModel.Slug: map[string]any{
+				"name":      NemotronModel.Slug,
+				"tool_call": NemotronModel.toolCall,
+				"reasoning": NemotronModel.reasoning,
+				"limit": map[string]any{
+					"context": NemotronModel.limits.contextWindow,
+					"output":  NemotronModel.limits.maxOutputTokens,
+				},
+			},
 		},
 	}
 }

@@ -128,9 +128,23 @@ func writeWindsurf(scope config.ConfigScope) error {
 		},
 	}
 
+	nemotronConfig := map[string]any{
+		"apiProvider": "openai-native",
+		"apiKey":      apiKey,
+		"baseUrl":     baseURL,
+		"modelId":     NemotronModel.Slug,
+		"modelInfo": map[string]any{
+			"maxTokens":           NemotronModel.limits.maxOutputTokens,
+			"contextWindow":       NemotronModel.limits.contextWindow,
+			"supportsImages":      NemotronModel.supportsImages,
+			"supportsPromptCache": false,
+		},
+	}
+
 	apiConfigs["castai-kimi"] = kimiConfig
 	apiConfigs["castai-coding"] = codingConfig
 	apiConfigs["castai-sub"] = subConfig
+	apiConfigs["castai-nemotron"] = nemotronConfig
 	state["apiConfigs"] = apiConfigs
 	state["currentApiConfigName"] = "castai-kimi"
 	storage[stateKey] = state
