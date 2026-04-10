@@ -55,7 +55,7 @@ var (
 		toolCall:        true,
 		reasoning:       true,
 		inputModalities: []string{"text"},
-		limits:          limits{contextWindow: 131072, maxOutputTokens: 32768},
+		limits:          limits{contextWindow: 1000000, maxOutputTokens: 32768},
 	}
 
 	allModels = []model{MainModel, CodingModel, SubModel, NemotronModel}
