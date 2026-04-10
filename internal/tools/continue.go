@@ -55,7 +55,6 @@ func writeContinue(scope config.ConfigScope) error {
 	hasMainModel := false
 	hasCodingModel := false
 	hasSubModel := false
-	hasNemotronModel := false
 
 	for _, m := range models {
 		modelMap, ok := m.(map[string]any)
@@ -71,9 +70,6 @@ func writeContinue(scope config.ConfigScope) error {
 		}
 		if title == SubModel.displayName {
 			hasSubModel = true
-		}
-		if title == NemotronModel.displayName {
-			hasNemotronModel = true
 		}
 	}
 
@@ -115,20 +111,6 @@ func writeContinue(scope config.ConfigScope) error {
 			"contextLength": SubModel.limits.contextWindow,
 			"completionOptions": map[string]any{
 				"maxTokens": SubModel.limits.maxOutputTokens,
-			},
-		})
-	}
-
-	if !hasNemotronModel {
-		models = append(models, map[string]any{
-			"title":         NemotronModel.displayName,
-			"provider":      "openai",
-			"model":         NemotronModel.Slug,
-			"apiBase":       baseURL,
-			"apiKey":        apiKey,
-			"contextLength": NemotronModel.limits.contextWindow,
-			"completionOptions": map[string]any{
-				"maxTokens": NemotronModel.limits.maxOutputTokens,
 			},
 		})
 	}

@@ -30,13 +30,13 @@ var (
 	}
 	// CodingModel is the coding subagent used where tools require a fixed model value for code tasks.
 	CodingModel = model{
-		Slug:            "glm-5-fp8",
-		displayName:     "GLM-5 FP8",
-		description:     "Coding subagent for writing, refactoring, and debugging code.",
+		Slug:            "nemotron-3-super-fp4",
+		displayName:     "Nemotron 3 Super FP4",
+		description:     "High-performance reasoning model for complex tasks.",
 		toolCall:        true,
 		reasoning:       true,
 		inputModalities: []string{"text"},
-		limits:          limits{contextWindow: 202752, maxOutputTokens: 32768},
+		limits:          limits{contextWindow: 1048576, maxOutputTokens: 256000},
 	}
 	// SubModel is the secondary subagent available across all tool installations.
 	SubModel = model{
@@ -47,16 +47,6 @@ var (
 		inputModalities: []string{"text"},
 		limits:          limits{contextWindow: 196608, maxOutputTokens: 32768},
 	}
-	// NemotronModel is a high-performance reasoning model for complex tasks.
-	NemotronModel = model{
-		Slug:            "nemotron-3-super-fp4",
-		displayName:     "Nemotron 3 Super FP4",
-		description:     "High-performance reasoning model for complex tasks.",
-		toolCall:        true,
-		reasoning:       true,
-		inputModalities: []string{"text"},
-		limits:          limits{contextWindow: 1048576, maxOutputTokens: 256000},
-	}
 
-	allModels = []model{MainModel, CodingModel, SubModel, NemotronModel}
+	allModels = []model{MainModel, CodingModel, SubModel}
 )
