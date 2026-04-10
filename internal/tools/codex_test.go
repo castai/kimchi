@@ -17,7 +17,7 @@ func TestWriteCodex(t *testing.T) {
 		tmpDir := t.TempDir()
 		t.Setenv("HOME", tmpDir)
 
-		err := writeCodex(config.ScopeGlobal)
+		err := writeCodex(config.ScopeGlobal, "test-api-key")
 		require.NoError(t, err)
 
 		cfg, err := config.ReadTOML(filepath.Join(tmpDir, ".codex", "config.toml"))
@@ -47,7 +47,7 @@ check_interval = 30
 `
 		require.NoError(t, os.WriteFile(filepath.Join(configDir, "config.toml"), []byte(existing), 0644))
 
-		err := writeCodex(config.ScopeGlobal)
+		err := writeCodex(config.ScopeGlobal, "test-api-key")
 		require.NoError(t, err)
 
 		cfg, err := config.ReadTOML(filepath.Join(configDir, "config.toml"))
@@ -75,7 +75,7 @@ wire_api = "responses"
 `
 		require.NoError(t, os.WriteFile(filepath.Join(configDir, "config.toml"), []byte(existing), 0644))
 
-		err := writeCodex(config.ScopeGlobal)
+		err := writeCodex(config.ScopeGlobal, "test-api-key")
 		require.NoError(t, err)
 
 		cfg, err := config.ReadTOML(filepath.Join(configDir, "config.toml"))
@@ -94,7 +94,7 @@ wire_api = "responses"
 		tmpDir := t.TempDir()
 		t.Setenv("HOME", tmpDir)
 
-		err := writeCodex(config.ScopeGlobal)
+		err := writeCodex(config.ScopeGlobal, "test-api-key")
 		require.NoError(t, err)
 
 		catalogPath := filepath.Join(tmpDir, ".codex", "kimchi-models.json")
@@ -140,7 +140,7 @@ wire_api = "responses"
 `
 		require.NoError(t, os.WriteFile(filepath.Join(configDir, "config.toml"), []byte(malformed), 0644))
 
-		err := writeCodex(config.ScopeGlobal)
+		err := writeCodex(config.ScopeGlobal, "test-api-key")
 		require.ErrorContains(t, err, "expected \"model_providers\" to be a TOML table")
 	})
 
@@ -155,7 +155,7 @@ wire_api = "responses"
 		require.NoError(t, os.Chmod(configDir, 0555))
 		t.Cleanup(func() { _ = os.Chmod(configDir, 0755) })
 
-		err := writeCodex(config.ScopeGlobal)
+		err := writeCodex(config.ScopeGlobal, "test-api-key")
 		require.ErrorContains(t, err, "permission denied")
 	})
 
@@ -167,7 +167,7 @@ wire_api = "responses"
 		require.NoError(t, os.MkdirAll(agentsDir, 0755))
 		require.NoError(t, os.WriteFile(filepath.Join(agentsDir, "AGENTS.md"), []byte("custom instructions"), 0644))
 
-		err := writeCodex(config.ScopeGlobal)
+		err := writeCodex(config.ScopeGlobal, "test-api-key")
 		require.NoError(t, err)
 
 		content, err := os.ReadFile(filepath.Join(agentsDir, "AGENTS.md"))

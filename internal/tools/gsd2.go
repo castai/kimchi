@@ -28,11 +28,7 @@ func detectGSD2() bool {
 	return err == nil
 }
 
-func writeGSD2(scope config.ConfigScope) error {
-	apiKey, err := config.GetAPIKey()
-	if err != nil {
-		return fmt.Errorf("get API key: %w", err)
-	}
+func writeGSD2(scope config.ConfigScope, apiKey string) error {
 	if apiKey == "" {
 		return fmt.Errorf("API key not configured")
 	}

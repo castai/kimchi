@@ -32,11 +32,7 @@ func detectContinue() bool {
 	return false
 }
 
-func writeContinue(scope config.ConfigScope) error {
-	apiKey, err := config.GetAPIKey()
-	if err != nil {
-		return fmt.Errorf("get API key: %w", err)
-	}
+func writeContinue(scope config.ConfigScope, apiKey string) error {
 	if apiKey == "" {
 		return fmt.Errorf("API key not configured")
 	}

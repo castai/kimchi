@@ -148,7 +148,7 @@ func (s *ConfigureStep) writeToolConfig(index int) tea.Cmd {
 			}
 		}
 
-		err := tool.Write(s.scope)
+		err := tool.Write(s.scope, s.apiKey)
 		if err != nil {
 			return writeCompleteMsg{index: index, status: "failed", err: err}
 		}

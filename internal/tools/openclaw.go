@@ -88,11 +88,7 @@ func detectOpenClaw() bool {
 	return false
 }
 
-func writeOpenClaw(scope config.ConfigScope) error {
-	apiKey, err := config.GetAPIKey()
-	if err != nil {
-		return fmt.Errorf("get API key: %w", err)
-	}
+func writeOpenClaw(scope config.ConfigScope, apiKey string) error {
 	if apiKey == "" {
 		return fmt.Errorf("API key not configured")
 	}

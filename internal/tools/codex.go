@@ -122,7 +122,7 @@ func writeModelCatalog(path string) error {
 	return config.WriteFile(path, data)
 }
 
-func writeCodex(scope config.ConfigScope) error {
+func writeCodex(scope config.ConfigScope, apiKey string) error {
 	configPath, err := config.ScopePaths(scope, codexConfigPath)
 	if err != nil {
 		return fmt.Errorf("get config path: %w", err)
