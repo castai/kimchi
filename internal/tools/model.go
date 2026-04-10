@@ -47,6 +47,16 @@ var (
 		inputModalities: []string{"text"},
 		limits:          limits{contextWindow: 196608, maxOutputTokens: 32768},
 	}
+	// NemotronModel is a high-performance reasoning model for complex tasks.
+	NemotronModel = model{
+		Slug:            "nemotron-3-super-fp4",
+		displayName:     "Nemotron 3 Super FP4",
+		description:     "High-performance reasoning model for complex tasks.",
+		toolCall:        true,
+		reasoning:       true,
+		inputModalities: []string{"text"},
+		limits:          limits{contextWindow: 1048576, maxOutputTokens: 256000},
+	}
 
-	allModels = []model{MainModel, CodingModel, SubModel}
+	allModels = []model{MainModel, CodingModel, SubModel, NemotronModel}
 )
