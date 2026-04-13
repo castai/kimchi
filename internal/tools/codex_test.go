@@ -119,9 +119,8 @@ wire_api = "responses"
 		assert.Equal(t, "medium", bySlug[CodingModel.Slug].DefaultReasoningLevel)
 		assert.Equal(t, 3, len(bySlug[CodingModel.Slug].SupportedReasoningLevels))
 
-		// SubModel (minimax-m2.5) has no reasoning
-		assert.Equal(t, "none", bySlug[SubModel.Slug].DefaultReasoningLevel)
-		assert.Equal(t, 1, len(bySlug[SubModel.Slug].SupportedReasoningLevels))
+		assert.Equal(t, "medium", bySlug[SubModel.Slug].DefaultReasoningLevel)
+		assert.Equal(t, 3, len(bySlug[SubModel.Slug].SupportedReasoningLevels))
 
 		// Verify config.toml references the catalog
 		cfg, err := config.ReadTOML(filepath.Join(tmpDir, ".codex", "config.toml"))
