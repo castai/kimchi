@@ -40,10 +40,11 @@ var (
 	}
 	// SubModel is the secondary subagent available across all tool installations.
 	SubModel = model{
-		Slug:            "minimax-m2.5",
-		displayName:     "MiniMax M2.5",
+		Slug:            "minimax-m2.7",
+		displayName:     "MiniMax M2.7",
 		description:     "Secondary subagent for code generation and debugging.",
 		toolCall:        true,
+		reasoning:       true,
 		inputModalities: []string{"text"},
 		limits:          limits{contextWindow: 196608, maxOutputTokens: 32768},
 	}
