@@ -1,10 +1,20 @@
 package tools
 
 import (
+	"encoding/json"
 	"fmt"
+	"net/http"
 	"os/exec"
+	"regexp"
+	"strings"
+	"time"
 
 	"github.com/castai/kimchi/internal/config"
+)
+
+const (
+	npmRegistryBaseURL = "https://registry.npmjs.org"
+	pluginPackage      = "@kimchi-dev/opencode-kimchi"
 )
 
 func init() {
@@ -17,6 +27,53 @@ func init() {
 		IsInstalled: detectBinary("opencode"),
 		Write:       writeOpenCode,
 	})
+}
+
+// npmPackageResponse represents the response from npm registry
+// We only care about the version field
+type npmPackageResponse struct {
+	Version string `json:"version"`
+}
+
+// getLatestNPMVersion queries npm registry for the latest version of a package
+func getLatestNPMVersion(packageName string) (string, error) {
+	client := &http.Client{
+		Timeout: 10 * time.Second,
+	}
+
+	url := fmt.Sprintf("%s/%s/latest", npmRegistryBaseURL, packageName)
+	resp, err := client.Get(url)
+	if err != nil {
+		return "", fmt.Errorf("failed to query npm registry: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("npm registry returned status %d", resp.StatusCode)
+	}
+
+	var pkg npmPackageResponse
+	if err := json.NewDecoder(resp.Body).Decode(&pkg); err != nil {
+		return "", fmt.Errorf("failed to parse npm response: %w", err)
+	}
+
+	if pkg.Version == "" {
+		return "", fmt.Errorf("no version found in npm response")
+	}
+
+	return pkg.Version, nil
+}
+
+// extractVersionFromPlugin extracts the version from a plugin package name
+// Handles formats like "@kimchi-dev/opencode-kimchi", "@kimchi-dev/opencode-kimchi@latest" or "@kimchi-dev/opencode-kimchi@1.2.3"
+func extractVersionFromPlugin(pkgName string) string {
+	// Match @kimchi-dev/opencode-kimchi@<version>
+	re := regexp.MustCompile(`^` + regexp.QuoteMeta(pluginPackage) + `@(.+)$`)
+	matches := re.FindStringSubmatch(pkgName)
+	if len(matches) > 1 {
+		return matches[1]
+	}
+	return ""
 }
 
 func writeOpenCode(scope config.ConfigScope, apiKey string) error {
@@ -68,22 +125,48 @@ func writeOpenCode(scope config.ConfigScope, apiKey string) error {
 		plugins = existingPlugins
 	}
 
-	// Find and update existing Kimchi plugin or append new one
-	kimchiPlugin := []any{"@kimchi-dev/opencode-kimchi", pluginConfig}
-	found := false
-	for i, p := range plugins {
+	// Find existing Kimchi plugin version if any
+	existingVersion := ""
+	var filteredPlugins []any
+	for _, p := range plugins {
 		if pluginArr, ok := p.([]any); ok && len(pluginArr) > 0 {
-			if pkgName, ok := pluginArr[0].(string); ok && pkgName == "@kimchi-dev/opencode-kimchi" {
-				plugins[i] = kimchiPlugin
-				found = true
-				break
+			if pkgName, ok := pluginArr[0].(string); ok && strings.HasPrefix(pkgName, pluginPackage) {
+				existingVersion = extractVersionFromPlugin(pkgName)
+				continue // Skip existing Kimchi plugins
 			}
 		}
+		filteredPlugins = append(filteredPlugins, p)
 	}
-	if !found {
-		plugins = append(plugins, kimchiPlugin)
+
+	// Query npm for latest version
+	latestVersion, err := getLatestNPMVersion(pluginPackage)
+	if err != nil {
+		// Fallback: use existing version if available, otherwise don't update
+		if existingVersion != "" {
+			latestVersion = existingVersion
+		} else {
+			// No existing plugin and npm query failed - skip plugin update
+			// Keep existing plugins without adding Kimchi plugin
+			existing["plugin"] = filteredPlugins
+			if err := config.WriteJSON(path, existing); err != nil {
+				return fmt.Errorf("write config: %w", err)
+			}
+			return nil
+		}
 	}
-	existing["plugin"] = plugins
+
+	// Only update if version changed or no existing plugin
+	shouldUpdate := existingVersion == "" || existingVersion != latestVersion
+
+	if shouldUpdate {
+		kimchiPlugin := []any{pluginPackage + "@" + latestVersion, pluginConfig}
+		plugins = append(filteredPlugins, kimchiPlugin)
+		existing["plugin"] = plugins
+	} else {
+		// Keep existing plugin configuration
+		plugins = append(filteredPlugins, []any{pluginPackage + "@" + existingVersion, pluginConfig})
+		existing["plugin"] = plugins
+	}
 
 	if err := config.WriteJSON(path, existing); err != nil {
 		return fmt.Errorf("write config: %w", err)
