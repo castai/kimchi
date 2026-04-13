@@ -51,6 +51,40 @@ func writeOpenCode(scope config.ConfigScope, apiKey string) error {
 		}
 	}
 
+	// Add or update Kimchi plugin while preserving existing plugins
+	// Plugin format is an array of arrays: [[npm_package, config], ...]
+	telemetryEnabled, _ := config.IsTelemetryEnabled()
+
+	pluginConfig := map[string]any{}
+	if telemetryEnabled {
+		pluginConfig["telemetry"] = true
+		pluginConfig["logsEndpoint"] = "https://api.cast.ai/ai-optimizer/v1beta/logs:ingest"
+		pluginConfig["metricsEndpoint"] = "https://api.cast.ai/ai-optimizer/v1beta/metrics:ingest"
+	}
+
+	// Get existing plugins or create new array
+	var plugins []any
+	if existingPlugins, ok := existing["plugin"].([]any); ok {
+		plugins = existingPlugins
+	}
+
+	// Find and update existing Kimchi plugin or append new one
+	kimchiPlugin := []any{"@kimchi-dev/opencode-kimchi", pluginConfig}
+	found := false
+	for i, p := range plugins {
+		if pluginArr, ok := p.([]any); ok && len(pluginArr) > 0 {
+			if pkgName, ok := pluginArr[0].(string); ok && pkgName == "@kimchi-dev/opencode-kimchi" {
+				plugins[i] = kimchiPlugin
+				found = true
+				break
+			}
+		}
+	}
+	if !found {
+		plugins = append(plugins, kimchiPlugin)
+	}
+	existing["plugin"] = plugins
+
 	if err := config.WriteJSON(path, existing); err != nil {
 		return fmt.Errorf("write config: %w", err)
 	}
