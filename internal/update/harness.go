@@ -2,16 +2,13 @@ package update
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
-	"regexp"
 
 	"github.com/Masterminds/semver/v3"
 )
-
-var semverRe = regexp.MustCompile(`v?\d+\.\d+\.\d+`)
 
 // NewHarnessWorkflow returns a Workflow pre-configured for harness install/update.
 // Caller-provided opts override the defaults.
@@ -40,8 +37,9 @@ func CheckHarnessUpdate(ctx context.Context, opts ...WorkflowOpt) (*UpdateStatus
 }
 
 // HarnessCurrentVersion returns the installed harness version, or nil if the
-// harness is not installed.
-func HarnessCurrentVersion(ctx context.Context) (*semver.Version, error) {
+// harness is not installed. It reads the version from package.json next to the
+// binary, which is instant compared to invoking the binary itself.
+func HarnessCurrentVersion(_ context.Context) (*semver.Version, error) {
 	path, err := ResolveHarnessPath()
 	if err != nil {
 		return nil, err
@@ -49,11 +47,21 @@ func HarnessCurrentVersion(ctx context.Context) (*semver.Version, error) {
 	if !HarnessInstalled(path) {
 		return nil, nil
 	}
-	verStr, err := harnessVersion(ctx, path)
+	pkgPath := filepath.Join(filepath.Dir(path), "package.json")
+	data, err := os.ReadFile(pkgPath)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("read package.json: %w", err)
 	}
-	return semver.NewVersion(verStr)
+	var pkg struct {
+		Version string `json:"version"`
+	}
+	if err := json.Unmarshal(data, &pkg); err != nil {
+		return nil, fmt.Errorf("parse package.json: %w", err)
+	}
+	if pkg.Version == "" {
+		return nil, nil
+	}
+	return semver.NewVersion(pkg.Version)
 }
 
 // HarnessPathInDir returns the harness binary path within the given directory.
@@ -63,7 +71,7 @@ func HarnessPathInDir(dir string) string {
 
 // ResolveHarnessPath derives the harness binary path from the kimchi executable's
 // resolved directory. For example, if kimchi is at /usr/local/bin/kimchi, this
-// returns /usr/local/bin/kimchi_code.
+// returns /usr/local/bin/kimchi-code.
 func ResolveHarnessPath() (string, error) {
 	execPath, err := ResolveExecutablePath()
 	if err != nil {
@@ -76,29 +84,4 @@ func ResolveHarnessPath() (string, error) {
 func HarnessInstalled(path string) bool {
 	_, err := os.Stat(path)
 	return err == nil
-}
-
-// harnessVersion runs the harness binary with "version" and parses the semver
-// string from its output.
-func harnessVersion(ctx context.Context, path string) (string, error) {
-	out, err := exec.CommandContext(ctx, path, "version").Output()
-	if err != nil {
-		return "", fmt.Errorf("run %s version: %w", filepath.Base(path), err)
-	}
-
-	match := semverRe.Find(out)
-	if match == nil {
-		return "", fmt.Errorf("no semver found in output: %q", string(out))
-	}
-
-	v := string(match)
-	if v[0] != 'v' {
-		v = "v" + v
-	}
-
-	if _, err := semver.NewVersion(v); err != nil {
-		return "", fmt.Errorf("invalid semver %q: %w", v, err)
-	}
-
-	return v, nil
 }

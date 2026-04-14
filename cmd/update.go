@@ -49,7 +49,7 @@ func (m updateModel) View() string {
 	if m.done {
 		return ""
 	}
-	return m.spinner.View() + " Updating to v" + m.version + "...\n"
+	return m.spinner.View() + " Updating to " + m.version + "...\n"
 }
 
 type updateResult struct {
@@ -106,10 +106,13 @@ func runCLIUpdate(cmd *cobra.Command, ctx context.Context, force, dryRun, skipCa
 
 	opts = append(opts,
 		update.WithCurrentVersionFn(func(ctx context.Context) (*semver.Version, error) {
+			if version.Version == "dev" {
+				return semver.MustParse("0.0.0-dev"), nil
+			}
 			return semver.NewVersion(version.Version)
 		}),
 		update.WithConfirmFn(func(current, latest *semver.Version) (bool, error) {
-			prompt := fmt.Sprintf("Update available: %s → %s\nUpdate? [Y/n]: ", current, latest)
+			prompt := fmt.Sprintf("Kimchi update available: %s → %s\nUpdate? [Y/n]: ", current, latest)
 			return confirmAction(cmd, prompt, "Update skipped.", force), nil
 		}),
 		update.WithProgressFn(runUpdateWithSpinner),
@@ -140,11 +143,11 @@ func runHarnessUpdate(cmd *cobra.Command, ctx context.Context, force, dryRun, sk
 	opts = append(opts,
 		update.WithConfirmFn(func(current, latest *semver.Version) (bool, error) {
 			if current == nil {
-				prompt := fmt.Sprintf("Coding harness is not installed. Install %s? [Y/n]: ", latest)
+				prompt := fmt.Sprintf("Kimchi harness is not installed. Install %s? [Y/n]: ", latest)
 				return confirmAction(cmd, prompt, "Install cancelled.", force), nil
 			}
-			prompt := fmt.Sprintf("Coding harness update available: %s → %s\nUpdate? [Y/n]: ", current, latest)
-			return confirmAction(cmd, prompt, "Coding harness update skipped.", force), nil
+			prompt := fmt.Sprintf("Kimchi harness update available: %s → %s\nUpdate? [Y/n]: ", current, latest)
+			return confirmAction(cmd, prompt, "Kimchi harness update skipped.", force), nil
 		}),
 		update.WithProgressFn(runUpdateWithSpinner),
 	)

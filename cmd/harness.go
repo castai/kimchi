@@ -39,16 +39,17 @@ func runHarness(cmd *cobra.Command) error {
 		return err
 	}
 
-	// Ensure harness is installed before launching.
+	// If the harness is not installed (e.g. user declined, or fetch failed), exit
+	// gracefully instead of treating it as a fatal error.
 	if !update.HarnessInstalled(harnessPath) {
-		return fmt.Errorf("coding harness installation was declined")
+		return nil
 	}
 
 	var props map[string]any
 	if v, err := update.HarnessCurrentVersion(ctx); err == nil && v != nil {
 		props = map[string]any{"version": v.String()}
 	}
-	telemetry.FromCtx(ctx).Track(telemetry.NewEvent("harness_launch", props))
+	telemetry.FromCtx(ctx).Track(telemetry.NewEvent("harness_launched", props))
 
 	return launchHarness(cmd, harnessPath)
 }

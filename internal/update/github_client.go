@@ -27,7 +27,7 @@ type Repo struct {
 
 var (
 	kimchiRepo    = Repo{Owner: "castai", Name: "kimchi", Binary: "kimchi"}
-	kimchiDevRepo = Repo{Owner: "castai", Name: "kimchi-dev", Binary: "kimchi_code"}
+	kimchiDevRepo = Repo{Owner: "castai", Name: "kimchi-dev", Binary: "kimchi-code"}
 )
 
 type ReleaseInfo struct {

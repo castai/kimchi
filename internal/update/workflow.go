@@ -261,7 +261,7 @@ func checkPermissions(executablePath string) error {
 }
 
 // apply downloads the release for the given version, verifies the archive checksum,
-// extracts the binary, and atomically replaces the current executable.
+// extracts all contents, and installs them to the target directory.
 func (w *Workflow) apply(ctx context.Context, tag string, freshInstall bool) error {
 	executablePath, err := w.getExecutablePathFn()
 	if err != nil {
@@ -277,22 +277,50 @@ func (w *Workflow) apply(ctx context.Context, tag string, freshInstall bool) err
 		return fmt.Errorf("fetch checksum: %w", err)
 	}
 
-	binaryPath, err := w.downloadAndVerify(ctx, tag, expectedChecksum)
+	extractDir, err := w.downloadAndVerify(ctx, tag, expectedChecksum)
 	if err != nil {
 		return err
 	}
-	defer func() { _ = os.RemoveAll(filepath.Dir(binaryPath)) }()
+	defer func() { _ = os.RemoveAll(extractDir) }()
 
+	binaryPath := filepath.Join(extractDir, w.repo.Binary)
 	f, err := os.Open(binaryPath)
 	if err != nil {
 		return fmt.Errorf("open downloaded binary: %w", err)
 	}
 	defer func() { _ = f.Close() }()
 
+	var backupPath string
 	if freshInstall {
-		return applyFreshInstall(f, executablePath)
+		if err := applyFreshInstall(f, executablePath); err != nil {
+			return err
+		}
+	} else {
+		var err error
+		backupPath, err = applyUpdate(f, w.repo.Binary, tag, executablePath)
+		if err != nil {
+			return err
+		}
 	}
-	return applyUpdate(f, w.repo.Binary, tag, executablePath)
+
+	// Copy supporting files before verification — the binary may depend on them.
+	targetDir := filepath.Dir(executablePath)
+	if err := copySupportingFiles(extractDir, targetDir, w.repo.Binary); err != nil {
+		return err
+	}
+
+	if err := verifyBinary(executablePath); err != nil {
+		if freshInstall {
+			_ = os.Remove(executablePath)
+		} else if backupPath != "" {
+			if backup, berr := os.Open(backupPath); berr == nil {
+				_ = selfupdate.Apply(backup, selfupdate.Options{TargetPath: executablePath})
+				_ = backup.Close()
+			}
+		}
+		return fmt.Errorf("binary verification failed: %w", err)
+	}
+	return nil
 }
 
 // applyFreshInstall handles the case where the target binary does not yet exist.
@@ -324,20 +352,16 @@ func applyFreshInstall(newBinary *os.File, targetPath string) error {
 		_ = os.Remove(tmpPath)
 		return fmt.Errorf("install binary: %w", err)
 	}
-
-	if err := verifyBinary(targetPath); err != nil {
-		_ = os.Remove(targetPath)
-		return fmt.Errorf("binary verification failed, removed install: %w", err)
-	}
 	return nil
 }
 
 // applyUpdate handles the standard update case where an existing binary is being replaced.
-// It backs up the current binary and restores it if verification fails.
-func applyUpdate(newBinary *os.File, binaryName, version, executablePath string) error {
-	backupPath, err := prepareBackup(binaryName, version)
+// It backs up the current binary and returns the backup path so the caller can
+// roll back if post-install verification fails.
+func applyUpdate(newBinary *os.File, binaryName, version, executablePath string) (backupPath string, err error) {
+	backupPath, err = prepareBackup(binaryName, version)
 	if err != nil {
-		return fmt.Errorf("prepare backup: %w", err)
+		return "", fmt.Errorf("prepare backup: %w", err)
 	}
 
 	suOpts := selfupdate.Options{
@@ -345,34 +369,22 @@ func applyUpdate(newBinary *os.File, binaryName, version, executablePath string)
 		OldSavePath: backupPath,
 	}
 	if err := suOpts.CheckPermissions(); err != nil {
-		return fmt.Errorf("permission denied: %w", err)
+		return "", fmt.Errorf("permission denied: %w", err)
 	}
 	if err := selfupdate.Apply(newBinary, suOpts); err != nil {
 		if rerr := selfupdate.RollbackError(err); rerr != nil {
-			return fmt.Errorf("update failed and rollback failed: %w (rollback: %v)", err, rerr)
+			return "", fmt.Errorf("update failed and rollback failed: %w (rollback: %v)", err, rerr)
 		}
-		return fmt.Errorf("update failed, restored previous version: %w", err)
-	}
-
-	if err := verifyBinary(executablePath); err != nil {
-		backup, berr := os.Open(backupPath)
-		if berr != nil {
-			return fmt.Errorf("new binary broken and cannot restore: %w (restore: %v)", err, berr)
-		}
-		defer func() { _ = backup.Close() }()
-
-		if rerr := selfupdate.Apply(backup, selfupdate.Options{TargetPath: executablePath}); rerr != nil {
-			return fmt.Errorf("new binary broken and restore failed: %w (restore: %v)", err, rerr)
-		}
-		return fmt.Errorf("new binary verification failed, restored previous version: %w", err)
+		return "", fmt.Errorf("update failed, restored previous version: %w", err)
 	}
 
 	cleanOldBackups(binaryName, backupPath)
-	return nil
+	return backupPath, nil
 }
 
 // downloadAndVerify downloads the archive, verifies its SHA256 checksum,
-// then extracts the binary. Returns the path to the extracted binary.
+// and extracts all contents. Returns the path to the temporary directory
+// containing the extracted files. The caller must clean up the directory.
 func (w *Workflow) downloadAndVerify(ctx context.Context, version string, expectedChecksum []byte) (string, error) {
 	tmpDir, err := os.MkdirTemp("", "kimchi-update-*")
 	if err != nil {
@@ -396,17 +408,15 @@ func (w *Workflow) downloadAndVerify(ctx context.Context, version string, expect
 		return "", err
 	}
 
-	// extractBinary creates its own temp directory for the output binary,
-	// so binaryPath is independent of tmpDir and survives the cleanup below.
-	binaryPath, err := extractBinary(archiveFile, w.repo.Binary)
+	extractDir, err := extractArchive(archiveFile, w.repo.Binary)
 	_ = archiveFile.Close()
 	if err != nil {
 		_ = os.RemoveAll(tmpDir)
-		return "", fmt.Errorf("extract binary: %w", err)
+		return "", fmt.Errorf("extract archive: %w", err)
 	}
 
 	_ = os.RemoveAll(tmpDir)
-	return binaryPath, nil
+	return extractDir, nil
 }
 
 func prepareBackup(binaryName, version string) (string, error) {
@@ -444,13 +454,22 @@ func verifyBinary(path string) error {
 	return nil
 }
 
-func extractBinary(r io.Reader, binaryName string) (string, error) {
+// extractArchive extracts all files from a tar.gz archive into a temporary
+// directory and returns the directory path. It verifies that the expected
+// binary is present in the archive. The caller must clean up the directory.
+func extractArchive(r io.Reader, binaryName string) (string, error) {
 	gz, err := gzip.NewReader(r)
 	if err != nil {
 		return "", err
 	}
 	defer func() { _ = gz.Close() }()
 
+	tmpDir, err := os.MkdirTemp("", "kimchi-update-*")
+	if err != nil {
+		return "", err
+	}
+
+	foundBinary := false
 	tr := tar.NewReader(gz)
 	for {
 		hdr, err := tr.Next()
@@ -458,36 +477,130 @@ func extractBinary(r io.Reader, binaryName string) (string, error) {
 			break
 		}
 		if err != nil {
+			_ = os.RemoveAll(tmpDir)
 			return "", err
 		}
 
-		if hdr.Typeflag != tar.TypeReg || filepath.Base(hdr.Name) != binaryName {
+		// Sanitize path to prevent directory traversal.
+		clean := filepath.Clean(hdr.Name)
+		if strings.HasPrefix(clean, "..") {
 			continue
 		}
+		outPath := filepath.Join(tmpDir, clean)
 
-		tmpDir, err := os.MkdirTemp("", "kimchi-update-*")
-		if err != nil {
-			return "", err
-		}
-
-		outPath := filepath.Join(tmpDir, binaryName)
-		out, err := os.OpenFile(outPath, os.O_CREATE|os.O_WRONLY, 0755)
-		if err != nil {
-			_ = os.RemoveAll(tmpDir)
-			return "", err
-		}
-
-		if _, err := io.Copy(out, tr); err != nil {
+		switch hdr.Typeflag {
+		case tar.TypeDir:
+			if err := os.MkdirAll(outPath, 0755); err != nil {
+				_ = os.RemoveAll(tmpDir)
+				return "", err
+			}
+		case tar.TypeReg:
+			if err := os.MkdirAll(filepath.Dir(outPath), 0755); err != nil {
+				_ = os.RemoveAll(tmpDir)
+				return "", err
+			}
+			out, err := os.OpenFile(outPath, os.O_CREATE|os.O_WRONLY, hdr.FileInfo().Mode())
+			if err != nil {
+				_ = os.RemoveAll(tmpDir)
+				return "", err
+			}
+			if _, err := io.Copy(out, tr); err != nil {
+				_ = out.Close()
+				_ = os.RemoveAll(tmpDir)
+				return "", err
+			}
 			_ = out.Close()
-			_ = os.RemoveAll(tmpDir)
-			return "", err
-		}
-		_ = out.Close()
 
-		return outPath, nil
+			if filepath.Base(hdr.Name) == binaryName {
+				foundBinary = true
+			}
+		}
 	}
 
-	return "", fmt.Errorf("%s binary not found in archive", binaryName)
+	if !foundBinary {
+		_ = os.RemoveAll(tmpDir)
+		return "", fmt.Errorf("%s binary not found in archive", binaryName)
+	}
+
+	return tmpDir, nil
+}
+
+// copySupportingFiles copies all files and directories from srcDir to dstDir,
+// skipping the binary itself (which is handled by applyFreshInstall/applyUpdate).
+func copySupportingFiles(srcDir, dstDir, binaryName string) error {
+	entries, err := os.ReadDir(srcDir)
+	if err != nil {
+		return fmt.Errorf("read extract directory: %w", err)
+	}
+
+	for _, entry := range entries {
+		if entry.Name() == binaryName {
+			continue
+		}
+		src := filepath.Join(srcDir, entry.Name())
+		dst := filepath.Join(dstDir, entry.Name())
+
+		if entry.IsDir() {
+			if err := copyDir(src, dst); err != nil {
+				return err
+			}
+		} else {
+			if err := copyFile(src, dst); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+func copyFile(src, dst string) error {
+	in, err := os.Open(src)
+	if err != nil {
+		return fmt.Errorf("open %s: %w", src, err)
+	}
+	defer func() { _ = in.Close() }()
+
+	info, err := in.Stat()
+	if err != nil {
+		return fmt.Errorf("stat %s: %w", src, err)
+	}
+
+	out, err := os.OpenFile(dst, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, info.Mode())
+	if err != nil {
+		return fmt.Errorf("create %s: %w", dst, err)
+	}
+	defer func() { _ = out.Close() }()
+
+	if _, err := io.Copy(out, in); err != nil {
+		return fmt.Errorf("copy %s: %w", dst, err)
+	}
+	return nil
+}
+
+func copyDir(src, dst string) error {
+	if err := os.MkdirAll(dst, 0755); err != nil {
+		return fmt.Errorf("create directory %s: %w", dst, err)
+	}
+
+	entries, err := os.ReadDir(src)
+	if err != nil {
+		return fmt.Errorf("read directory %s: %w", src, err)
+	}
+
+	for _, entry := range entries {
+		s := filepath.Join(src, entry.Name())
+		d := filepath.Join(dst, entry.Name())
+		if entry.IsDir() {
+			if err := copyDir(s, d); err != nil {
+				return err
+			}
+		} else {
+			if err := copyFile(s, d); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
 }
 
 func verifyChecksum(path string, expected []byte) error {

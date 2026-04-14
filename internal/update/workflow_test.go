@@ -374,6 +374,48 @@ func TestCheckHarnessUpdate_FreshInstall(t *testing.T) {
 	assert.Equal(t, "coding harness", status.DisplayName)
 }
 
+func TestWorkflowRun_VerificationFails_RollsBackUpdate(t *testing.T) {
+	t.Setenv("XDG_CACHE_HOME", t.TempDir())
+
+	// The new binary will fail verification (exits non-zero).
+	brokenBinary := []byte("#!/bin/sh\nexit 1")
+	archive := createTestArchive(t, kimchiRepo.Binary, brokenBinary)
+	checksum := sha256sum(archive)
+
+	client := &mockGitHubClient{
+		latestRelease: &ReleaseInfo{
+			TagName: "v2.0.0",
+			HTMLURL: "https://github.com/castai/kimchi/releases/tag/v2.0.0",
+		},
+		checksum: checksum,
+		downloadFn: func(_ context.Context, _ Repo, _, dest string) error {
+			return os.WriteFile(dest, archive, 0644)
+		},
+	}
+
+	targetDir := t.TempDir()
+	targetPath := filepath.Join(targetDir, kimchiRepo.Binary)
+	originalContent := []byte("#!/bin/sh\necho v1.0.0")
+	require.NoError(t, os.WriteFile(targetPath, originalContent, 0755))
+
+	w := NewWorkflow(kimchiRepo,
+		WithClient(client),
+		WithCurrentVersionFn(func(_ context.Context) (*semver.Version, error) {
+			return mustVersion("1.0.0"), nil
+		}),
+		WithExecutablePathFn(func() (string, error) { return targetPath, nil }),
+	)
+
+	_, err := w.Run(context.Background())
+	assert.Error(t, err)
+	assert.ErrorContains(t, err, "binary verification failed")
+
+	// Original binary must be restored.
+	got, err := os.ReadFile(targetPath)
+	require.NoError(t, err)
+	assert.Equal(t, originalContent, got)
+}
+
 func TestNewWorkflow_DefaultClient_IsUsable(t *testing.T) {
 	t.Setenv("XDG_CACHE_HOME", t.TempDir())
 

@@ -173,7 +173,10 @@ func (s *UpdateStep) handleHarnessPromptKey(msg tea.KeyMsg) (Step, tea.Cmd) {
 		s.skipSelected = !s.skipSelected
 	case "enter":
 		if s.skipSelected {
-			// Skip harness.
+			// Skip harness — if nothing was applied or errored, go straight to next step.
+			if !s.cliResult.applied && s.cliResult.err == nil {
+				return s, func() tea.Msg { return NextStepMsg{} }
+			}
 			s.state = updateStateDone
 			return s, nil
 		}
