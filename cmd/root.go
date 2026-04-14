@@ -60,7 +60,7 @@ Get your API key at: https://app.kimchi.dev`,
 	root.PersistentFlags().BoolVar(&debug, "debug", false, "Enable debug output")
 	root.PersistentFlags().BoolVar(&verbose, "verbose", false, "Enable verbose output")
 	root.PersistentFlags().BoolVar(&preview, "preview", false, "Enable preview features")
-	root.PersistentFlags().MarkHidden("preview")
+	_ = root.PersistentFlags().MarkHidden("preview")
 
 	initKlogFlags(root)
 
