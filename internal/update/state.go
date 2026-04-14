@@ -14,14 +14,25 @@ const (
 	appDir    = "kimchi"
 )
 
-type State struct {
+// repoState holds the cached update-check result for a single repository.
+type repoState struct {
 	CheckedAt     time.Time `json:"checked_at"`
 	LatestVersion string    `json:"latest_version"`
 	ReleaseURL    string    `json:"release_url,omitempty"`
 }
 
-func (s *State) IsStale(now time.Time) bool {
+func (s *repoState) IsStale(now time.Time) bool {
 	return now.Sub(s.CheckedAt) > stateTTL
+}
+
+// state is the top-level structure persisted to disk. It holds cached state
+// for multiple repositories, keyed by "owner/name".
+type state struct {
+	Repos map[string]*repoState `json:"repos"`
+}
+
+func repoKey(repo Repo) string {
+	return repo.Owner + "/" + repo.Name
 }
 
 func statePath() (string, error) {
@@ -32,7 +43,7 @@ func statePath() (string, error) {
 	return filepath.Join(dir, appDir, stateFile), nil
 }
 
-func LoadState() (*State, error) {
+func loadState() (*state, error) {
 	path, err := statePath()
 	if err != nil {
 		return nil, err
@@ -46,7 +57,7 @@ func LoadState() (*State, error) {
 		return nil, fmt.Errorf("read state file: %w", err)
 	}
 
-	var s State
+	var s state
 	if err := json.Unmarshal(data, &s); err != nil {
 		// Treat corrupt file as missing state (will trigger re-check).
 		return nil, nil
@@ -55,7 +66,7 @@ func LoadState() (*State, error) {
 	return &s, nil
 }
 
-func SaveState(s *State) error {
+func saveState(s *state) error {
 	path, err := statePath()
 	if err != nil {
 		return err
@@ -82,4 +93,33 @@ func SaveState(s *State) error {
 	}
 
 	return nil
+}
+
+// loadRepoState returns the cached state for the given repo, or nil if none exists.
+func loadRepoState(repo Repo) (*repoState, error) {
+	s, err := loadState()
+	if err != nil {
+		return nil, err
+	}
+	if s == nil || s.Repos == nil {
+		return nil, nil
+	}
+	return s.Repos[repoKey(repo)], nil
+}
+
+// saveRepoState performs a read-modify-write: it loads the full state file,
+// updates the entry for the given repo, and writes back the full map.
+func saveRepoState(repo Repo, rs *repoState) error {
+	s, err := loadState()
+	if err != nil {
+		return err
+	}
+	if s == nil {
+		s = &state{}
+	}
+	if s.Repos == nil {
+		s.Repos = make(map[string]*repoState)
+	}
+	s.Repos[repoKey(repo)] = rs
+	return saveState(s)
 }

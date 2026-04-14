@@ -21,6 +21,7 @@ import (
 var (
 	debug   bool
 	verbose bool
+	preview bool
 )
 
 func newRootCommand() *cobra.Command {
@@ -58,6 +59,8 @@ Get your API key at: https://app.kimchi.dev`,
 
 	root.PersistentFlags().BoolVar(&debug, "debug", false, "Enable debug output")
 	root.PersistentFlags().BoolVar(&verbose, "verbose", false, "Enable verbose output")
+	root.PersistentFlags().BoolVar(&preview, "preview", false, "Enable preview features")
+	root.PersistentFlags().MarkHidden("preview")
 
 	initKlogFlags(root)
 
@@ -67,6 +70,7 @@ Get your API key at: https://app.kimchi.dev`,
 	root.AddCommand(NewConfigCommand())
 	root.AddCommand(NewOpenCodeCommand())
 	root.AddCommand(NewCodexCommand())
+	root.AddCommand(NewSetupCommand())
 
 	return root
 }
@@ -134,7 +138,10 @@ func propagateKlogFlags(cmd *cobra.Command) {
 }
 
 func runConfigure(cmd *cobra.Command, args []string) error {
-	_, err := tui.RunWizard(cmd.Context())
+	if preview {
+		return runHarness(cmd)
+	}
+	_, err := tui.RunWizard(cmd.Context(), tui.WithPreview(preview))
 	return err
 }
 

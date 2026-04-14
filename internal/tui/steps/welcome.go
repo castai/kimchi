@@ -2,6 +2,7 @@ package steps
 
 import (
 	"context"
+	"sync"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -10,22 +11,21 @@ import (
 )
 
 type updateCheckMsg struct {
-	latestVersion string
-	latestTag     string
-	hasUpdate     bool
+	cli     update.UpdateStatus
+	harness update.UpdateStatus
 }
 
 // WelcomeStep displays an initial welcome message and checks for updates in the background.
 type WelcomeStep struct {
-	currentVersion string
-	latestVersion  string
-	latestTag      string
-	hasUpdate      bool
+	preview bool
+
+	cli     update.UpdateStatus
+	harness update.UpdateStatus
 }
 
-func NewWelcomeStep(currentVersion string) *WelcomeStep {
+func NewWelcomeStep(preview bool) *WelcomeStep {
 	return &WelcomeStep{
-		currentVersion: currentVersion,
+		preview: preview,
 	}
 }
 
@@ -33,31 +33,55 @@ func (s *WelcomeStep) Init() tea.Cmd {
 	if update.IsUpdateCheckDisabled() {
 		return nil
 	}
-	currentVersion := s.currentVersion
+	preview := s.preview
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
-		res, err := update.Check(ctx, update.NewGitHubClient(), currentVersion)
-		if err != nil {
-			return updateCheckMsg{}
+
+		msg := updateCheckMsg{}
+
+		checkCLI := func() {
+			cli, err := update.CheckCLIUpdate(ctx)
+			if err != nil {
+				return
+			}
+			msg.cli = *cli
 		}
-		hasUpdate := res.LatestVersion.GreaterThan(&res.CurrentVersion)
-		return updateCheckMsg{
-			latestVersion: res.LatestVersion.String(),
-			latestTag:     res.LatestTag,
-			hasUpdate:     hasUpdate,
+
+		if !preview {
+			// No preview: check only the CLI repo (original behavior).
+			checkCLI()
+			return msg
 		}
+
+		// Preview: check both repos in parallel.
+		var wg sync.WaitGroup
+		wg.Add(2)
+
+		go func() {
+			defer wg.Done()
+			checkCLI()
+		}()
+
+		go func() {
+			defer wg.Done()
+			harness, err := update.CheckHarnessUpdate(ctx)
+			if err != nil {
+				return
+			}
+			msg.harness = *harness
+		}()
+
+		wg.Wait()
+		return msg
 	}
 }
 
 func (s *WelcomeStep) Update(msg tea.Msg) (Step, tea.Cmd) {
 	switch msg := msg.(type) {
 	case updateCheckMsg:
-		if msg.hasUpdate {
-			s.hasUpdate = true
-			s.latestVersion = msg.latestVersion
-			s.latestTag = msg.latestTag
-		}
+		s.cli = msg.cli
+		s.harness = msg.harness
 		return s, nil
 
 	case tea.KeyMsg:
@@ -84,9 +108,8 @@ func (s *WelcomeStep) View() string {
 	return view
 }
 
-func (s *WelcomeStep) HasUpdate() bool       { return s.hasUpdate }
-func (s *WelcomeStep) LatestVersion() string { return s.latestVersion }
-func (s *WelcomeStep) LatestTag() string     { return s.latestTag }
+func (s *WelcomeStep) CLI() update.UpdateStatus     { return s.cli }
+func (s *WelcomeStep) Harness() update.UpdateStatus { return s.harness }
 
 func (s *WelcomeStep) Name() string {
 	return "Welcome"

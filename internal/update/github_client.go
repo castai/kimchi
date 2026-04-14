@@ -14,8 +14,20 @@ import (
 )
 
 const (
-	defaultReleasesURL = "https://api.github.com/repos/castai/kimchi/releases/latest"
-	defaultDownloadURL = "https://github.com/castai/kimchi/releases/download"
+	defaultGitHubAPIBase = "https://api.github.com"
+	defaultGitHubBase    = "https://github.com"
+)
+
+// Repo identifies a GitHub repository and the binary it produces.
+type Repo struct {
+	Owner  string
+	Name   string
+	Binary string
+}
+
+var (
+	kimchiRepo    = Repo{Owner: "castai", Name: "kimchi", Binary: "kimchi"}
+	kimchiDevRepo = Repo{Owner: "castai", Name: "kimchi-dev", Binary: "kimchi_code"}
 )
 
 type ReleaseInfo struct {
@@ -26,15 +38,15 @@ type ReleaseInfo struct {
 // GitHubClient is the interface used by Check and Apply to interact with
 // the GitHub releases API.
 type GitHubClient interface {
-	LatestRelease(ctx context.Context) (*ReleaseInfo, error)
-	FetchChecksum(ctx context.Context, version string) ([]byte, error)
-	DownloadArchive(ctx context.Context, version, dest string) error
+	LatestRelease(ctx context.Context, repo Repo) (*ReleaseInfo, error)
+	FetchChecksum(ctx context.Context, repo Repo, version string) ([]byte, error)
+	DownloadArchive(ctx context.Context, repo Repo, version, dest string) error
 }
 
 type githubClient struct {
-	httpClient  *http.Client
-	releasesURL string
-	downloadURL string
+	httpClient    *http.Client
+	githubAPIBase string
+	githubBase    string
 }
 
 type GitHubClientOption func(*githubClient)
@@ -43,19 +55,19 @@ func WithHTTPClient(c *http.Client) GitHubClientOption {
 	return func(g *githubClient) { g.httpClient = c }
 }
 
-func WithReleasesURL(url string) GitHubClientOption {
-	return func(g *githubClient) { g.releasesURL = url }
+func WithGitHubAPIBase(url string) GitHubClientOption {
+	return func(g *githubClient) { g.githubAPIBase = url }
 }
 
-func WithDownloadURL(url string) GitHubClientOption {
-	return func(g *githubClient) { g.downloadURL = url }
+func WithGitHubBase(url string) GitHubClientOption {
+	return func(g *githubClient) { g.githubBase = url }
 }
 
 func NewGitHubClient(opts ...GitHubClientOption) GitHubClient {
 	g := &githubClient{
-		httpClient:  http.DefaultClient,
-		releasesURL: defaultReleasesURL,
-		downloadURL: defaultDownloadURL,
+		httpClient:    http.DefaultClient,
+		githubAPIBase: defaultGitHubAPIBase,
+		githubBase:    defaultGitHubBase,
 	}
 	for _, o := range opts {
 		o(g)
@@ -63,8 +75,9 @@ func NewGitHubClient(opts ...GitHubClientOption) GitHubClient {
 	return g
 }
 
-func (g *githubClient) LatestRelease(ctx context.Context) (*ReleaseInfo, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, g.releasesURL, nil)
+func (g *githubClient) LatestRelease(ctx context.Context, repo Repo) (*ReleaseInfo, error) {
+	url := fmt.Sprintf("%s/repos/%s/%s/releases/latest", g.githubAPIBase, repo.Owner, repo.Name)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return nil, fmt.Errorf("create request: %w", err)
 	}
@@ -88,14 +101,14 @@ func (g *githubClient) LatestRelease(ctx context.Context) (*ReleaseInfo, error) 
 	return &info, nil
 }
 
-func assetName() string {
-	return fmt.Sprintf("kimchi_%s_%s.tar.gz", runtime.GOOS, runtime.GOARCH)
+func assetName(repo Repo) string {
+	return fmt.Sprintf("%s_%s_%s.tar.gz", repo.Binary, runtime.GOOS, runtime.GOARCH)
 }
 
 // FetchChecksum downloads checksums.txt for the given version tag and returns
 // the SHA256 hash for the current platform's asset as raw bytes.
-func (g *githubClient) FetchChecksum(ctx context.Context, version string) ([]byte, error) {
-	url := fmt.Sprintf("%s/%s/checksums.txt", g.downloadURL, version)
+func (g *githubClient) FetchChecksum(ctx context.Context, repo Repo, version string) ([]byte, error) {
+	url := fmt.Sprintf("%s/%s/%s/releases/download/%s/checksums.txt", g.githubBase, repo.Owner, repo.Name, version)
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return nil, fmt.Errorf("create checksum request: %w", err)
@@ -110,7 +123,7 @@ func (g *githubClient) FetchChecksum(ctx context.Context, version string) ([]byt
 		return nil, fmt.Errorf("checksums download returned %d", resp.StatusCode)
 	}
 
-	target := assetName()
+	target := assetName(repo)
 	scanner := bufio.NewScanner(resp.Body)
 	for scanner.Scan() {
 		parts := strings.Fields(scanner.Text())
@@ -130,8 +143,8 @@ func (g *githubClient) FetchChecksum(ctx context.Context, version string) ([]byt
 }
 
 // DownloadArchive downloads the release archive to the given dest path.
-func (g *githubClient) DownloadArchive(ctx context.Context, version, dest string) error {
-	url := fmt.Sprintf("%s/%s/%s", g.downloadURL, version, assetName())
+func (g *githubClient) DownloadArchive(ctx context.Context, repo Repo, version, dest string) error {
+	url := fmt.Sprintf("%s/%s/%s/releases/download/%s/%s", g.githubBase, repo.Owner, repo.Name, version, assetName(repo))
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return fmt.Errorf("create download request: %w", err)
@@ -148,10 +161,15 @@ func (g *githubClient) DownloadArchive(ctx context.Context, version, dest string
 
 	f, err := os.Create(dest)
 	if err != nil {
-		return err
+		return fmt.Errorf("create file %s: %w", dest, err)
 	}
-	defer func() { _ = f.Close() }()
 
-	_, err = io.Copy(f, resp.Body)
-	return err
+	if _, err := io.Copy(f, resp.Body); err != nil {
+		_ = f.Close()
+		return fmt.Errorf("write archive to disk: %w", err)
+	}
+	if err := f.Close(); err != nil {
+		return fmt.Errorf("close archive file: %w", err)
+	}
+	return nil
 }
