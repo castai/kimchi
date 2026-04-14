@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/spf13/cobra"
+	"k8s.io/klog/v2"
 
 	"github.com/castai/kimchi/internal/auth"
 	"github.com/castai/kimchi/internal/config"
@@ -79,6 +80,7 @@ func launchHarness(cmd *cobra.Command, harnessPath string) error {
 		_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "Warning: could not save API key: %v\n", err)
 	}
 
+	klog.V(1).InfoS("launching coding harness", "path", harnessPath)
 	_, _ = fmt.Fprintln(cmd.OutOrStdout(), "Launching coding harness...")
 
 	if err := tools.ExecBinary(harnessPath, nil, nil); err != nil {

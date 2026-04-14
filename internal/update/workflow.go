@@ -16,6 +16,7 @@ import (
 
 	"github.com/Masterminds/semver/v3"
 	"github.com/minio/selfupdate"
+	"k8s.io/klog/v2"
 
 	"github.com/castai/kimchi/internal/version"
 )
@@ -292,30 +293,38 @@ func (w *Workflow) apply(ctx context.Context, tag string, freshInstall bool) err
 
 	var backupPath string
 	if freshInstall {
+		klog.V(1).InfoS("installing binary", "repo", w.repo.Name, "path", executablePath)
 		if err := applyFreshInstall(f, executablePath); err != nil {
 			return err
 		}
 	} else {
+		klog.V(1).InfoS("updating binary", "repo", w.repo.Name, "path", executablePath)
 		var err error
 		backupPath, err = applyUpdate(f, w.repo.Binary, tag, executablePath)
 		if err != nil {
 			return err
 		}
 	}
+	klog.V(1).InfoS("binary installed", "repo", w.repo.Name, "path", executablePath)
 
 	// Copy supporting files before verification — the binary may depend on them.
 	targetDir := filepath.Dir(executablePath)
 	if err := copySupportingFiles(extractDir, targetDir, w.repo.Binary); err != nil {
 		return err
 	}
+	klog.V(1).InfoS("supporting files copied", "repo", w.repo.Name, "targetDir", targetDir)
 
+	klog.V(1).InfoS("verifying binary", "repo", w.repo.Name, "path", executablePath)
 	if err := verifyBinary(executablePath); err != nil {
+		klog.ErrorS(err, "binary verification failed", "repo", w.repo.Name, "path", executablePath)
 		if freshInstall {
 			_ = os.Remove(executablePath)
+			klog.V(1).InfoS("removed failed fresh install", "path", executablePath)
 		} else if backupPath != "" {
 			if backup, berr := os.Open(backupPath); berr == nil {
 				_ = selfupdate.Apply(backup, selfupdate.Options{TargetPath: executablePath})
 				_ = backup.Close()
+				klog.V(1).InfoS("rolled back to previous version", "repo", w.repo.Name, "backup", backupPath)
 			}
 		}
 		return fmt.Errorf("binary verification failed: %w", err)
@@ -392,15 +401,18 @@ func (w *Workflow) downloadAndVerify(ctx context.Context, version string, expect
 	}
 
 	archivePath := filepath.Join(tmpDir, assetName(w.repo))
+	klog.V(1).InfoS("downloading release archive", "repo", w.repo.Name, "version", version)
 	if err := w.client.DownloadArchive(ctx, w.repo, version, archivePath); err != nil {
 		_ = os.RemoveAll(tmpDir)
 		return "", fmt.Errorf("download archive: %w", err)
 	}
+	klog.V(1).InfoS("download complete", "repo", w.repo.Name, "version", version)
 
 	if err := verifyChecksum(archivePath, expectedChecksum); err != nil {
 		_ = os.RemoveAll(tmpDir)
 		return "", err
 	}
+	klog.V(1).InfoS("checksum verified", "repo", w.repo.Name, "version", version)
 
 	archiveFile, err := os.Open(archivePath)
 	if err != nil {
@@ -408,12 +420,14 @@ func (w *Workflow) downloadAndVerify(ctx context.Context, version string, expect
 		return "", err
 	}
 
+	klog.V(1).InfoS("extracting archive", "repo", w.repo.Name, "version", version)
 	extractDir, err := extractArchive(archiveFile, w.repo.Binary)
 	_ = archiveFile.Close()
 	if err != nil {
 		_ = os.RemoveAll(tmpDir)
 		return "", fmt.Errorf("extract archive: %w", err)
 	}
+	klog.V(1).InfoS("extraction complete", "repo", w.repo.Name, "version", version)
 
 	_ = os.RemoveAll(tmpDir)
 	return extractDir, nil
@@ -447,7 +461,7 @@ func cleanOldBackups(binaryName, keepPath string) {
 }
 
 func verifyBinary(path string) error {
-	out, err := exec.Command(path, "version").CombinedOutput()
+	out, err := exec.Command(path, "--version").CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("binary verification failed: %w (output: %s)", err, string(out))
 	}
