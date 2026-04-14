@@ -18,7 +18,7 @@ func init() {
 	})
 }
 
-func writeGeneric(scope config.ConfigScope, apiKey string) error {
+func writeGeneric(scope config.ConfigScope, apiKey string, _ ModelConfig) error {
 	if apiKey == "" {
 		return fmt.Errorf("API key not configured")
 	}

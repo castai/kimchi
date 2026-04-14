@@ -12,11 +12,23 @@ import (
 	"github.com/castai/kimchi/internal/tools"
 )
 
+func testModelConfig() tools.ModelConfig {
+	main := tools.Model{Slug: "kimchi-main", DisplayName: "Kimchi Main", Reasoning: true, ToolCall: true, Limits: tools.ModelLimits{ContextWindow: 200000, MaxOutputTokens: 32000}}
+	coding := tools.Model{Slug: "kimchi-coding", DisplayName: "Kimchi Coding", ToolCall: true, Limits: tools.ModelLimits{ContextWindow: 200000, MaxOutputTokens: 32000}}
+	sub := tools.Model{Slug: "kimchi-sub", DisplayName: "Kimchi Sub", ToolCall: true, Limits: tools.ModelLimits{ContextWindow: 200000, MaxOutputTokens: 32000}}
+	return tools.ModelConfig{
+		Main:   main,
+		Coding: coding,
+		Sub:    sub,
+		All:    []tools.Model{main, coding, sub},
+	}
+}
+
 func TestEnv_ReturnsCODEXHOME(t *testing.T) {
 	tmpDir := t.TempDir()
 	t.Setenv("HOME", tmpDir)
 
-	env, err := Env("test-key")
+	env, err := Env("test-key", testModelConfig())
 	require.NoError(t, err)
 
 	expectedHome := filepath.Join(tmpDir, ".config", "kimchi", "codex")
@@ -28,14 +40,15 @@ func TestEnv_WritesKimchiProvider(t *testing.T) {
 	tmpDir := t.TempDir()
 	t.Setenv("HOME", tmpDir)
 
-	_, err := Env("test-key")
+	mc := testModelConfig()
+	_, err := Env("test-key", mc)
 	require.NoError(t, err)
 
 	configPath := filepath.Join(tmpDir, ".config", "kimchi", "codex", "config.toml")
 	cfg, err := config.ReadTOML(configPath)
 	require.NoError(t, err)
 
-	assert.Equal(t, tools.CodingModel.Slug, cfg["model"])
+	assert.Equal(t, mc.Coding.Slug, cfg["model"])
 	assert.Equal(t, tools.ProviderName(), cfg["model_provider"])
 
 	providers, ok := cfg["model_providers"].(map[string]any)
@@ -56,7 +69,7 @@ func TestEnv_CopiesUserConfig(t *testing.T) {
 mode = "allow"
 `), 0644))
 
-	_, err := Env("test-key")
+	_, err := Env("test-key", testModelConfig())
 	require.NoError(t, err)
 
 	// Verify user settings are preserved in managed config.
@@ -78,7 +91,7 @@ func TestEnv_CopiesUserAgents(t *testing.T) {
 	require.NoError(t, os.MkdirAll(agentsDir, 0755))
 	require.NoError(t, os.WriteFile(filepath.Join(agentsDir, "custom.md"), []byte("my agent"), 0644))
 
-	_, err := Env("test-key")
+	_, err := Env("test-key", testModelConfig())
 	require.NoError(t, err)
 
 	// Verify agents are copied.
@@ -91,7 +104,7 @@ func TestEnv_WritesDefaultAgentsMD(t *testing.T) {
 	tmpDir := t.TempDir()
 	t.Setenv("HOME", tmpDir)
 
-	_, err := Env("test-key")
+	_, err := Env("test-key", testModelConfig())
 	require.NoError(t, err)
 
 	agentsPath := filepath.Join(tmpDir, ".config", "kimchi", "codex", "AGENTS.md")
@@ -109,7 +122,7 @@ func TestEnv_PreservesUserAgentsMD(t *testing.T) {
 	require.NoError(t, os.MkdirAll(userDir, 0755))
 	require.NoError(t, os.WriteFile(filepath.Join(userDir, "AGENTS.md"), []byte("custom instructions"), 0644))
 
-	_, err := Env("test-key")
+	_, err := Env("test-key", testModelConfig())
 	require.NoError(t, err)
 
 	// The user's AGENTS.md is copied over, so managed dir should have user's content.

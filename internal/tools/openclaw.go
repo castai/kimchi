@@ -88,7 +88,7 @@ func detectOpenClaw() bool {
 	return false
 }
 
-func writeOpenClaw(scope config.ConfigScope, apiKey string) error {
+func writeOpenClaw(scope config.ConfigScope, apiKey string, models ModelConfig) error {
 	if apiKey == "" {
 		return fmt.Errorf("API key not configured")
 	}
@@ -97,14 +97,14 @@ func writeOpenClaw(scope config.ConfigScope, apiKey string) error {
 	// as OpenClaw uses JSON5 which may not round-trip cleanly through
 	// Go's encoding/json.
 	if _, err := exec.LookPath("openclaw"); err == nil {
-		return writeOpenClawViaCLI(apiKey)
+		return writeOpenClawViaCLI(apiKey, models)
 	}
 
-	return writeOpenClawDirect(scope, apiKey)
+	return writeOpenClawDirect(scope, apiKey, models)
 }
 
 // writeOpenClawViaCLISequential sets config values one by one for older OpenClaw versions.
-func writeOpenClawViaCLISequential(providerBlock map[string]any, modelsCatalog map[string]any) error {
+func writeOpenClawViaCLISequential(providerBlock map[string]any, modelsCatalog map[string]any, models ModelConfig) error {
 	// Set models.providers.kimchi
 	providerJSON, err := json.Marshal(providerBlock)
 	if err != nil {
@@ -116,15 +116,15 @@ func writeOpenClawViaCLISequential(providerBlock map[string]any, modelsCatalog m
 	}
 
 	// Set agents.defaults.model.primary
-	cmd = exec.Command("openclaw", "config", "set", "agents.defaults.model.primary", providerName+"/"+MainModel.Slug)
+	cmd = exec.Command("openclaw", "config", "set", "agents.defaults.model.primary", providerName+"/"+models.Main.Slug)
 	if out, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("openclaw config set agents.defaults.model.primary: %s: %w", string(out), err)
 	}
 
 	// Set agents.defaults.model.fallbacks
 	fallbacksJSON, _ := json.Marshal([]string{
-		providerName + "/" + CodingModel.Slug,
-		providerName + "/" + SubModel.Slug,
+		providerName + "/" + models.Coding.Slug,
+		providerName + "/" + models.Sub.Slug,
 	})
 	cmd = exec.Command("openclaw", "config", "set", "agents.defaults.model.fallbacks", string(fallbacksJSON))
 	if out, err := cmd.CombinedOutput(); err != nil {
@@ -144,17 +144,17 @@ func writeOpenClawViaCLISequential(providerBlock map[string]any, modelsCatalog m
 	return nil
 }
 
-func writeOpenClawViaCLI(apiKey string) error {
+func writeOpenClawViaCLI(apiKey string, models ModelConfig) error {
 	// Build the full provider block as JSON so it passes validation in one shot.
 	var modelEntries []map[string]any
-	for _, m := range allModels {
+	for _, m := range models.All {
 		modelEntries = append(modelEntries, map[string]any{
 			"id":            providerName + "/" + m.Slug,
-			"name":          m.displayName,
-			"reasoning":     m.reasoning,
-			"input":         m.inputModalities,
-			"contextWindow": m.limits.contextWindow,
-			"maxTokens":     m.limits.maxOutputTokens,
+			"name":          m.DisplayName,
+			"reasoning":     m.Reasoning,
+			"input":         m.InputModalities,
+			"contextWindow": m.Limits.ContextWindow,
+			"maxTokens":     m.Limits.MaxOutputTokens,
 		})
 	}
 
@@ -167,8 +167,8 @@ func writeOpenClawViaCLI(apiKey string) error {
 
 	// Build the models catalog as a single JSON blob to avoid slash-in-path issues.
 	modelsCatalog := make(map[string]any)
-	for _, m := range allModels {
-		modelsCatalog[providerName+"/"+m.Slug] = map[string]any{"alias": m.displayName}
+	for _, m := range models.All {
+		modelsCatalog[providerName+"/"+m.Slug] = map[string]any{"alias": m.DisplayName}
 	}
 
 	// Check OpenClaw version to determine which approach to use
@@ -177,10 +177,10 @@ func writeOpenClawViaCLI(apiKey string) error {
 		// Use --batch-json to set all config in a single CLI call (~3s vs ~12s sequential).
 		batchOps := []map[string]any{
 			{"path": "models.providers.kimchi", "value": providerBlock},
-			{"path": "agents.defaults.model.primary", "value": providerName + "/" + MainModel.Slug},
+			{"path": "agents.defaults.model.primary", "value": providerName + "/" + models.Main.Slug},
 			{"path": "agents.defaults.model.fallbacks", "value": []string{
-				providerName + "/" + CodingModel.Slug,
-				providerName + "/" + SubModel.Slug,
+				providerName + "/" + models.Coding.Slug,
+				providerName + "/" + models.Sub.Slug,
 			}},
 			{"path": "agents.defaults.models", "value": modelsCatalog},
 		}
@@ -196,7 +196,7 @@ func writeOpenClawViaCLI(apiKey string) error {
 		}
 	} else {
 		// Fall back to sequential calls for older versions
-		if err := writeOpenClawViaCLISequential(providerBlock, modelsCatalog); err != nil {
+		if err := writeOpenClawViaCLISequential(providerBlock, modelsCatalog, models); err != nil {
 			return err
 		}
 	}
@@ -254,7 +254,7 @@ func onboardOpenClaw() error {
 	return nil
 }
 
-func writeOpenClawDirect(scope config.ConfigScope, apiKey string) error {
+func writeOpenClawDirect(scope config.ConfigScope, apiKey string, models ModelConfig) error {
 	path, err := config.ScopePaths(scope, openclawConfigPath)
 	if err != nil {
 		return fmt.Errorf("get config path: %w", err)
@@ -267,14 +267,14 @@ func writeOpenClawDirect(scope config.ConfigScope, apiKey string) error {
 
 	// Build the provider block with all models.
 	var modelEntries []any
-	for _, m := range allModels {
+	for _, m := range models.All {
 		modelEntries = append(modelEntries, map[string]any{
 			"id":            providerName + "/" + m.Slug,
-			"name":          m.displayName,
-			"reasoning":     m.reasoning,
-			"input":         m.inputModalities,
-			"contextWindow": m.limits.contextWindow,
-			"maxTokens":     m.limits.maxOutputTokens,
+			"name":          m.DisplayName,
+			"reasoning":     m.Reasoning,
+			"input":         m.InputModalities,
+			"contextWindow": m.Limits.ContextWindow,
+			"maxTokens":     m.Limits.MaxOutputTokens,
 		})
 	}
 
@@ -286,17 +286,17 @@ func writeOpenClawDirect(scope config.ConfigScope, apiKey string) error {
 	}
 
 	// Merge into models.providers.
-	models, _ := existing["models"].(map[string]any)
-	if models == nil {
-		models = make(map[string]any)
+	existingModels, _ := existing["models"].(map[string]any)
+	if existingModels == nil {
+		existingModels = make(map[string]any)
 	}
-	providers, _ := models["providers"].(map[string]any)
+	providers, _ := existingModels["providers"].(map[string]any)
 	if providers == nil {
 		providers = make(map[string]any)
 	}
 	providers[providerName] = providerBlock
-	models["providers"] = providers
-	existing["models"] = models
+	existingModels["providers"] = providers
+	existing["models"] = existingModels
 
 	// Set agent defaults.
 	agents, _ := existing["agents"].(map[string]any)
@@ -308,14 +308,14 @@ func writeOpenClawDirect(scope config.ConfigScope, apiKey string) error {
 		defaults = make(map[string]any)
 	}
 	defaults["model"] = map[string]any{
-		"primary":   providerName + "/" + MainModel.Slug,
-		"fallbacks": []any{providerName + "/" + CodingModel.Slug, providerName + "/" + SubModel.Slug},
+		"primary":   providerName + "/" + models.Main.Slug,
+		"fallbacks": []any{providerName + "/" + models.Coding.Slug, providerName + "/" + models.Sub.Slug},
 	}
 
 	// Add models to the allowed models catalog.
 	modelsCatalog := make(map[string]any)
-	for _, m := range allModels {
-		modelsCatalog[providerName+"/"+m.Slug] = map[string]any{"alias": m.displayName}
+	for _, m := range models.All {
+		modelsCatalog[providerName+"/"+m.Slug] = map[string]any{"alias": m.DisplayName}
 	}
 	defaults["models"] = modelsCatalog
 	agents["defaults"] = defaults

@@ -18,6 +18,7 @@ type ConfigureParams struct {
 	TelemetryOptIn bool
 	APIKey         string
 	Mode           config.ConfigMode
+	ModelConfig    tools.ModelConfig
 }
 
 type toolStatus struct {
@@ -35,6 +36,7 @@ type ConfigureStep struct {
 	telemetryOptIn   bool
 	apiKey           string
 	mode             config.ConfigMode
+	modelCfg         tools.ModelConfig
 	shellProfilePath string
 	shellProfileErr  error
 	statuses         []toolStatus
@@ -58,6 +60,7 @@ func NewConfigureStep(params ConfigureParams) *ConfigureStep {
 		telemetryOptIn: params.TelemetryOptIn,
 		apiKey:         params.APIKey,
 		mode:           params.Mode,
+		modelCfg:       params.ModelConfig,
 		statuses:       make([]toolStatus, len(params.ToolIDs)),
 	}
 }
@@ -148,7 +151,7 @@ func (s *ConfigureStep) writeToolConfig(index int) tea.Cmd {
 			}
 		}
 
-		err := tool.Write(s.scope, s.apiKey)
+		err := tool.Write(s.scope, s.apiKey, s.modelCfg)
 		if err != nil {
 			return writeCompleteMsg{index: index, status: "failed", err: err}
 		}
@@ -250,11 +253,11 @@ func (s *ConfigureStep) View() string {
 			b.WriteString("\n\n")
 			b.WriteString("Each tool has been configured with optimal models for its use case:")
 			b.WriteString("\n")
-			b.WriteString(fmt.Sprintf("• Primary model → %s", tools.MainModel.Slug))
+			b.WriteString(fmt.Sprintf("• Primary model → %s", s.modelCfg.Main.Slug))
 			b.WriteString("\n")
-			b.WriteString(fmt.Sprintf("• Coding subagent → %s", tools.CodingModel.Slug))
+			b.WriteString(fmt.Sprintf("• Coding subagent → %s", s.modelCfg.Coding.Slug))
 			b.WriteString("\n")
-			b.WriteString(fmt.Sprintf("• Secondary subagent → %s", tools.SubModel.Slug))
+			b.WriteString(fmt.Sprintf("• Secondary subagent → %s", s.modelCfg.Sub.Slug))
 			b.WriteString("\n")
 			if s.shellProfilePath != "" {
 				b.WriteString(fmt.Sprintf("\n%s exported to %s\n", tools.APIKeyEnv, s.shellProfilePath))
@@ -270,9 +273,9 @@ func (s *ConfigureStep) View() string {
 }
 
 func (s *ConfigureStep) getModelInfoForTool(toolID tools.ToolID) string {
-	m := tools.MainModel.Slug
-	c := tools.CodingModel.Slug
-	s2 := tools.SubModel.Slug
+	m := s.modelCfg.Main.Slug
+	c := s.modelCfg.Coding.Slug
+	s2 := s.modelCfg.Sub.Slug
 
 	switch toolID {
 	case tools.ToolOpenCode:

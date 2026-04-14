@@ -18,7 +18,7 @@ func init() {
 	})
 }
 
-func writeCline(scope config.ConfigScope, apiKey string) error {
+func writeCline(scope config.ConfigScope, apiKey string, models ModelConfig) error {
 	if apiKey == "" {
 		return fmt.Errorf("API key not configured")
 	}
@@ -35,10 +35,10 @@ func writeCline(scope config.ConfigScope, apiKey string) error {
 
 	existing["ollamaBaseUrl"] = baseURL
 	existing["actModeApiProvider"] = "ollama"
-	existing["actModeOllamaModelId"] = CodingModel.Slug
+	existing["actModeOllamaModelId"] = models.Coding.Slug
 	existing["actModeOllamaBaseUrl"] = baseURL
 	existing["planModeApiProvider"] = "ollama"
-	existing["planModeOllamaModelId"] = MainModel.Slug
+	existing["planModeOllamaModelId"] = models.Main.Slug
 	existing["planModeOllamaBaseUrl"] = baseURL
 	existing["welcomeViewCompleted"] = true
 

@@ -11,10 +11,12 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-type Migrator struct{}
+type Migrator struct {
+	modelCfg tools.ModelConfig
+}
 
-func NewMigrator() *Migrator {
-	return &Migrator{}
+func NewMigrator(modelCfg tools.ModelConfig) *Migrator {
+	return &Migrator{modelCfg: modelCfg}
 }
 
 func (m *Migrator) Migrate(installations []Installation) ([]string, error) {
@@ -125,7 +127,7 @@ func (m *Migrator) determineModelForAgent(agentName string, installType Installa
 	var model string
 	for _, name := range PlanningAgents {
 		if name == agentName {
-			model = tools.MainModel.Slug
+			model = m.modelCfg.Main.Slug
 			break
 		}
 	}
@@ -133,14 +135,14 @@ func (m *Migrator) determineModelForAgent(agentName string, installType Installa
 	if model == "" {
 		for _, name := range ExecutionAgents {
 			if name == agentName {
-				model = tools.CodingModel.Slug
+				model = m.modelCfg.Coding.Slug
 				break
 			}
 		}
 	}
 
 	if model == "" {
-		model = tools.MainModel.Slug
+		model = m.modelCfg.Main.Slug
 	}
 
 	// For opencode, prefix the model with the provider name

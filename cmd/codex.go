@@ -30,9 +30,16 @@ func NewCodexCommand() *cobra.Command {
 				return err
 			}
 
-			printBanner(os.Stderr, "codex", cfg)
+			fetchedModels, err := tools.FetchModels(cmd.Context(), apiKey)
+			if err != nil {
+				return fmt.Errorf("fetch models: %w", err)
+			}
 
-			env, err := codex.Env(apiKey)
+			modelCfg := tools.BuildModelConfig(fetchedModels, cfg.ModelMain, cfg.ModelCoding, cfg.ModelSub)
+
+			printBanner(os.Stderr, "codex", cfg, modelCfg)
+
+			env, err := codex.Env(apiKey, modelCfg)
 			if err != nil {
 				return fmt.Errorf("prepare codex environment: %w", err)
 			}

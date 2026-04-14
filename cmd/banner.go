@@ -29,9 +29,9 @@ func colorEnabled() bool {
 	return term != "" && term != "dumb"
 }
 
-func printBanner(w io.Writer, wrapping string, cfg *config.Config) {
+func printBanner(w io.Writer, wrapping string, cfg *config.Config, modelCfg tools.ModelConfig) {
 	line := strings.Repeat("\u2500", 45)
-	models := fmt.Sprintf("%s (reasoning) / %s (coding)", tools.MainModel.Slug, tools.CodingModel.Slug)
+	models := fmt.Sprintf("%s (reasoning) / %s (coding)", modelCfg.Main.Slug, modelCfg.Coding.Slug)
 	gsdStatus := "not installed"
 	for _, t := range cfg.GSDInstalledFor {
 		if strings.Contains(t, wrapping) {
