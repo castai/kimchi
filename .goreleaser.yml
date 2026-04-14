@@ -12,6 +12,8 @@ builds:
     ldflags:
       - -s -w
       - -X github.com/castai/kimchi/internal/version.Version={{.Version}}
+      - -X github.com/castai/kimchi/internal/version.GitCommit={{.ShortCommit}}
+      - -X github.com/castai/kimchi/internal/version.BuildDate={{.Date}}
       - -X github.com/castai/kimchi/internal/telemetry.PostHogAPIKey={{.Env.POSTHOG_API_KEY}}
     binary: kimchi
 
