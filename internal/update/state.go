@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sync"
 	"time"
 )
 
@@ -107,9 +108,17 @@ func loadRepoState(repo Repo) (*repoState, error) {
 	return s.Repos[repoKey(repo)], nil
 }
 
+// stateMu serializes read-modify-write cycles on the state file so that
+// concurrent goroutines (e.g. parallel CLI + harness update checks) don't
+// clobber each other's entries.
+var stateMu sync.Mutex
+
 // saveRepoState performs a read-modify-write: it loads the full state file,
 // updates the entry for the given repo, and writes back the full map.
 func saveRepoState(repo Repo, rs *repoState) error {
+	stateMu.Lock()
+	defer stateMu.Unlock()
+
 	s, err := loadState()
 	if err != nil {
 		return err

@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/Masterminds/semver/v3"
@@ -353,17 +354,7 @@ func applyUpdate(newBinary *os.File, binaryName, version, executablePath string)
 		return fmt.Errorf("update failed, restored previous version: %w", err)
 	}
 
-	// Resolve the path that was actually updated.
-	verifyPath := executablePath
-	if verifyPath == "" {
-		var err error
-		verifyPath, err = os.Executable()
-		if err != nil {
-			return fmt.Errorf("get executable path: %w", err)
-		}
-	}
-
-	if err := verifyBinary(verifyPath); err != nil {
+	if err := verifyBinary(executablePath); err != nil {
 		backup, berr := os.Open(backupPath)
 		if berr != nil {
 			return fmt.Errorf("new binary broken and cannot restore: %w (restore: %v)", err, berr)
@@ -376,7 +367,7 @@ func applyUpdate(newBinary *os.File, binaryName, version, executablePath string)
 		return fmt.Errorf("new binary verification failed, restored previous version: %w", err)
 	}
 
-	cleanOldBackups(backupPath)
+	cleanOldBackups(binaryName, backupPath)
 	return nil
 }
 
@@ -431,13 +422,15 @@ func prepareBackup(binaryName, version string) (string, error) {
 	return filepath.Join(dir, binaryName+"-"+version), nil
 }
 
-// cleanOldBackups removes all backups except the one at keepPath.
-func cleanOldBackups(keepPath string) {
+// cleanOldBackups removes backups for the given binary except the one at keepPath.
+// Backups for other binaries sharing the same directory are left untouched.
+func cleanOldBackups(binaryName, keepPath string) {
 	dir := filepath.Dir(keepPath)
+	prefix := binaryName + "-"
 	entries, _ := os.ReadDir(dir)
 	for _, e := range entries {
 		p := filepath.Join(dir, e.Name())
-		if p != keepPath {
+		if p != keepPath && strings.HasPrefix(e.Name(), prefix) {
 			_ = os.Remove(p)
 		}
 	}

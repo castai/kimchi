@@ -82,8 +82,8 @@ func NewUpdateStep(cli, harness update.UpdateStatus) *UpdateStep {
 	}
 }
 
-// hasHarness reports whether there is harness work to consider (update or installed).
-func (s *UpdateStep) hasHarness() bool {
+// needsHarnessStep reports whether there is harness work to consider (update or installed).
+func (s *UpdateStep) needsHarnessStep() bool {
 	return s.harness.HasUpdate || s.harness.Installed()
 }
 
@@ -94,7 +94,7 @@ func (s *UpdateStep) Update(msg tea.Msg) (Step, tea.Cmd) {
 	case cliApplyMsg:
 		s.cliResult.err = msg.err
 		s.cliResult.applied = msg.err == nil
-		if s.hasHarness() {
+		if s.needsHarnessStep() {
 			s.state = updateStateCLIDone
 			return s, nil
 		}
@@ -139,7 +139,7 @@ func (s *UpdateStep) handleChoiceKey(msg tea.KeyMsg) (Step, tea.Cmd) {
 	case "enter":
 		if s.skipSelected {
 			// Skip CLI update.
-			if s.hasHarness() {
+			if s.needsHarnessStep() {
 				s.state = updateStateHarnessPrompt
 				s.skipSelected = false
 				return s, nil
@@ -207,7 +207,7 @@ func (s *UpdateStep) handleQuit(msg tea.KeyMsg) (tea.Cmd, bool) {
 }
 
 func (s *UpdateStep) transitionToHarness() tea.Cmd {
-	if !s.hasHarness() || (s.harness.Installed() && !s.harness.HasUpdate) {
+	if !s.needsHarnessStep() || (s.harness.Installed() && !s.harness.HasUpdate) {
 		// Nothing to do for harness — skip directly to done.
 		s.state = updateStateDone
 		return nil
@@ -337,7 +337,7 @@ func (s *UpdateStep) viewDone() string {
 	}
 
 	// Harness status.
-	if s.hasHarness() {
+	if s.needsHarnessStep() {
 		if s.harnessResult.err != nil {
 			view += Styles.Warning.Render(errorText(s.harness, s.harnessResult)) + "\n"
 		} else if s.harnessResult.applied {

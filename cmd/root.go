@@ -138,6 +138,8 @@ func propagateKlogFlags(cmd *cobra.Command) {
 }
 
 func runConfigure(cmd *cobra.Command, args []string) error {
+	// In preview mode, skip the setup wizard and launch the coding harness
+	// directly — the harness is the new default experience.
 	if preview {
 		return runHarness(cmd)
 	}

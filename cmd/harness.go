@@ -35,18 +35,8 @@ func runHarness(cmd *cobra.Command) error {
 
 	// Reuse the update command logic for CLI + harness updates.
 	// Uses cache (skipCache=false) since --preview launches happen frequently.
-	result, err := runUpdate(cmd, false, false, false)
-	if err != nil {
+	if _, err := runUpdate(cmd, false, false, false); err != nil {
 		return err
-	}
-
-	// If CLI was updated, re-exec into the new binary so fresh code handles harness.
-	if result.cliUpdated {
-		execPath, err := update.ResolveExecutablePath()
-		if err != nil {
-			return fmt.Errorf("resolve executable path for re-exec: %w", err)
-		}
-		return tools.ExecBinary(execPath, nil, nil)
 	}
 
 	// Ensure harness is installed before launching.
