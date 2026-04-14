@@ -23,7 +23,7 @@ func writeGeneric(scope config.ConfigScope, apiKey string) error {
 		return fmt.Errorf("API key not configured")
 	}
 
-	fmt.Printf("export CASTAI_API_KEY=%s\n", apiKey)
+	fmt.Printf("export %s=%s\n", APIKeyEnv, apiKey)
 	fmt.Printf("export OPENAI_API_KEY=%s\n", apiKey)
 	fmt.Printf("export OPENAI_BASE_URL=%s\n", baseURL)
 

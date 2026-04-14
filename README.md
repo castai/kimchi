@@ -1,6 +1,6 @@
 # Kimchi
 
-**Configure your AI coding tools to use Cast AI's open-source models in seconds.**
+**Configure your AI coding tools to use Kimchi's open-source models in seconds.**
 
 [![Release](https://img.shields.io/github/v/release/castai/kimchi?include_prereleases)](https://github.com/castai/kimchi/releases)
 [![License](https://img.shields.io/badge/license-Cast%20AI-blue)](LICENSE)
@@ -10,16 +10,16 @@
 
 ## What is Kimchi?
 
-Kimchi is a CLI tool that configures your favorite AI coding assistants to use open-source models hosted by Cast AI:
+Kimchi is a CLI tool that configures your favorite AI coding assistants to use open-source models hosted by Kimchi:
 
 | Model            | Role                   | Best For                                                          | Context | Output      |
 |------------------|------------------------|-------------------------------------------------------------------|---------|-------------|
 | **kimi-k2.5**    | Primary model          | Reasoning, planning, code generation, and image processing        | 262K tokens | 32K tokens  |
-| **glm-5-fp8**    | Coding subagent        | Writing, refactoring, and debugging code                          | 202.8K tokens | 32K tokens  |
-| **minimax-m2.5** | Secondary subagent     | Code generation and debugging (available across all tools)        | 196.6K tokens | 32K tokens  |
+| **nemotron-3-super-fp4** | Coding subagent | Writing, refactoring, and debugging code                    | 1M tokens | 256K tokens |
+| **minimax-m2.7** | Secondary subagent     | Code generation and debugging (available across all tools)        | 196.6K tokens | 32K tokens  |
 | **nemotron-3-super-fp4** | Reasoning model | High-performance reasoning for complex tasks                | 1M tokens | 256K tokens |
 
-No API keys from Anthropic or OpenAI needed — just your Cast AI API key.
+No API keys from Anthropic or OpenAI needed — just your Kimchi API key.
 
 ---
 
@@ -70,7 +70,7 @@ kimchi
 
 The interactive wizard will guide you through:
 
-1. **Auth** — Enter and validate your Cast AI API key
+1. **Auth** — Enter and validate your Kimchi API key
 2. **Detect Tools** — Automatically finds installed AI tools
 3. **Select Tools** — Choose which tools to configure
 4. **Scope** — Global (all projects) or project-specific
@@ -119,10 +119,10 @@ kimchi completion fish > ~/.config/fish/completions/kimchi.fish
 
 ## How It Works
 
-Kimchi configures each tool to use Cast AI's inference endpoint:
+Kimchi configures each tool to use Kimchi's inference endpoint:
 
 ```
-Your AI Tool ──► Kimchi Config ──► Cast AI Endpoint ──► Open-Source Models
+Your AI Tool ──► Kimchi Config ──► Kimchi Endpoint ──► Open-Source Models
                                         │
                                         ▼
                                https://llm.kimchi.dev
@@ -135,15 +135,15 @@ Your AI Tool ──► Kimchi Config ──► Cast AI Endpoint ──► Open-S
   "model": "kimchi/kimi-k2.5",
   "provider": {
     "kimchi": {
-      "name": "Kimchi by Cast AI",
+      "name": "Kimchi",
       "options": {
         "baseURL": "https://llm.kimchi.dev/openai/v1",
         "apiKey": "your-api-key"
       },
       "models": {
         "kimi-k2.5": { "reasoning": true },
-        "glm-5-fp8": { "reasoning": true },
-        "minimax-m2.5": { "reasoning": false }
+        "nemotron-3-super-fp4": { "reasoning": true },
+        "minimax-m2.7": { "reasoning": true }
       }
     }
   }

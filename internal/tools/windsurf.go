@@ -124,11 +124,11 @@ func writeWindsurf(scope config.ConfigScope, apiKey string) error {
 		},
 	}
 
-	apiConfigs["castai-kimi"] = kimiConfig
-	apiConfigs["castai-coding"] = codingConfig
-	apiConfigs["castai-sub"] = subConfig
+	apiConfigs["kimchi-kimi"] = kimiConfig
+	apiConfigs["kimchi-coding"] = codingConfig
+	apiConfigs["kimchi-sub"] = subConfig
 	state["apiConfigs"] = apiConfigs
-	state["currentApiConfigName"] = "castai-kimi"
+	state["currentApiConfigName"] = "kimchi-kimi"
 	storage[stateKey] = state
 
 	newData, err := json.MarshalIndent(storage, "", "    ")
