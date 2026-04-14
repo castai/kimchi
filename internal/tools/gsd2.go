@@ -39,7 +39,7 @@ func writeGSD2(scope config.ConfigScope, apiKey string) error {
 	}
 	modelsContent := map[string]any{
 		"providers": map[string]any{
-			"castai": map[string]any{
+			"kimchi": map[string]any{
 				"name":         "Kimchi",
 				"baseUrl":      baseURL,
 				"apiKey":       apiKey,
@@ -104,10 +104,10 @@ func writeGSD2(scope config.ConfigScope, apiKey string) error {
 	prefsContent := fmt.Sprintf(`---
 version: 1
 models:
-  research: castai/%s
-  planning: castai/%s
-  execution: castai/%s
-  completion: castai/%s
+  research: kimchi/%s
+  planning: kimchi/%s
+  execution: kimchi/%s
+  completion: kimchi/%s
 token_profile: balanced
 skill_discovery: suggest
 git:

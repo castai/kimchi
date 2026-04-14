@@ -113,7 +113,6 @@ wire_api = "responses"
 		assert.Equal(t, CodingModel.limits.contextWindow, bySlug[CodingModel.Slug].ContextWindow)
 		assert.Equal(t, SubModel.limits.contextWindow, bySlug[SubModel.Slug].ContextWindow)
 
-		// MainModel (kimi-k2.5) and CodingModel (glm-5-fp8) have reasoning=true
 		assert.Equal(t, "medium", bySlug[MainModel.Slug].DefaultReasoningLevel)
 		assert.Equal(t, 3, len(bySlug[MainModel.Slug].SupportedReasoningLevels))
 		assert.Equal(t, "medium", bySlug[CodingModel.Slug].DefaultReasoningLevel)
