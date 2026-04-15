@@ -14,7 +14,7 @@ import (
 // It copies the user's ~/.codex/ to a kimchi-managed directory, merges the
 // kimchi provider config, and returns CODEX_HOME pointing to the managed copy
 // so the original user directory is never modified.
-func Env(apiKey string, models tools.ModelConfig) (map[string]string, error) {
+func Env(apiKey string) (map[string]string, error) {
 	homeDir, err := os.UserHomeDir()
 	if err != nil {
 		return nil, fmt.Errorf("get home directory: %w", err)
@@ -64,7 +64,7 @@ func Env(apiKey string, models tools.ModelConfig) (map[string]string, error) {
 	}
 
 	// Merge kimchi provider into the config map.
-	cfg["model"] = models.Coding.Slug
+	cfg["model"] = tools.CodingModel.Slug
 	cfg["model_provider"] = tools.ProviderName()
 	cfg["suppress_unstable_features_warning"] = true
 
@@ -80,7 +80,7 @@ func Env(apiKey string, models tools.ModelConfig) (map[string]string, error) {
 
 	// Write model catalog into the managed directory.
 	managedCatalogPath := filepath.Join(managedCodexDir, "kimchi-models.json")
-	if err := tools.WriteCodexModelCatalog(managedCatalogPath, models); err != nil {
+	if err := tools.WriteCodexModelCatalog(managedCatalogPath); err != nil {
 		return nil, fmt.Errorf("write model catalog: %w", err)
 	}
 
@@ -96,7 +96,7 @@ func Env(apiKey string, models tools.ModelConfig) (map[string]string, error) {
 	// Write AGENTS.md only if it was not copied from the user's directory.
 	if !agentsMDCopied {
 		agentsPath := filepath.Join(managedCodexDir, "AGENTS.md")
-		if err := config.WriteFile(agentsPath, []byte(tools.CodexAgentMD(models))); err != nil {
+		if err := config.WriteFile(agentsPath, []byte(tools.CodexAgentMD())); err != nil {
 			return nil, fmt.Errorf("write AGENTS.md: %w", err)
 		}
 	}

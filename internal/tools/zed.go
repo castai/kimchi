@@ -18,7 +18,7 @@ func init() {
 	})
 }
 
-func writeZed(scope config.ConfigScope, apiKey string, models ModelConfig) error {
+func writeZed(scope config.ConfigScope, apiKey string) error {
 	if apiKey == "" {
 		return fmt.Errorf("API key not configured")
 	}
@@ -43,7 +43,7 @@ func writeZed(scope config.ConfigScope, apiKey string, models ModelConfig) error
 		defaultModel = make(map[string]any)
 	}
 	defaultModel["provider"] = "openai"
-	defaultModel["model"] = models.Main.Slug
+	defaultModel["model"] = MainModel.Slug
 	assistant["default_model"] = defaultModel
 
 	openai, _ := assistant["openai"].(map[string]any)

@@ -21,7 +21,6 @@ type WizardConfig struct {
 	SelectedTools  []tools.ToolID
 	Scope          config.ConfigScope
 	TelemetryOptIn bool
-	ModelConfig    tools.ModelConfig
 	GSDMigrateFrom []gsd.Installation
 	GSDInstallFor  []gsd.InstallationType
 }
@@ -35,20 +34,19 @@ func WithPreview(preview bool) WizardOption {
 }
 
 type wizard struct {
-	stepList          []steps.Step
-	current           int
-	config            WizardConfig
-	finished          bool
-	aborted           bool
-	preview           bool
-	pendingUpdate     *steps.UpdateStep
-	pendingModelRoles *steps.ModelRolesStep
-	pendingGSD        *steps.GSDStep
-	pendingTelemetry  *steps.TelemetryStep
-	pendingConfigure  *steps.ConfigureStep
-	pendingDone       *steps.DoneStep
-	viewport          viewport.Model
-	ready             bool
+	stepList         []steps.Step
+	current          int
+	config           WizardConfig
+	finished         bool
+	aborted          bool
+	preview          bool
+	pendingUpdate    *steps.UpdateStep
+	pendingGSD       *steps.GSDStep
+	pendingTelemetry *steps.TelemetryStep
+	pendingConfigure *steps.ConfigureStep
+	pendingDone      *steps.DoneStep
+	viewport         viewport.Model
+	ready            bool
 }
 
 func newWizard(ctx context.Context, opts ...WizardOption) *wizard {
@@ -92,11 +90,6 @@ func (w *wizard) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if w.pendingUpdate != nil {
 			w.stepList = slices.Insert(w.stepList, w.current+1, steps.Step(w.pendingUpdate))
 			w.pendingUpdate = nil
-		}
-
-		if w.pendingModelRoles != nil {
-			w.stepList = slices.Insert(w.stepList, w.current+1, steps.Step(w.pendingModelRoles))
-			w.pendingModelRoles = nil
 		}
 
 		if w.pendingTelemetry != nil {
@@ -217,9 +210,6 @@ func (w *wizard) collectStepResult() {
 		}
 	case *steps.AuthStep:
 		w.config.APIKey = s.APIKey()
-		w.pendingModelRoles = steps.NewModelRolesStep(w.config.APIKey)
-	case *steps.ModelRolesStep:
-		w.config.ModelConfig = s.ModelConfig()
 	case *steps.InstallStep:
 		if s.HasInstalledTools() {
 			w.config.SelectedTools = s.AutoSelectedTools()
@@ -271,7 +261,6 @@ func (w *wizard) scheduleConfigureIfReady() {
 		TelemetryOptIn: w.config.TelemetryOptIn,
 		APIKey:         w.config.APIKey,
 		Mode:           w.config.Mode,
-		ModelConfig:    w.config.ModelConfig,
 	})
 }
 
@@ -315,16 +304,8 @@ func RunWizard(ctx context.Context, opts ...WizardOption) (*WizardConfig, error)
 
 	cfg := &finalWizard.config
 
-	// Persist the selected model role assignments so inject-mode commands
-	// (kimchi opencode / kimchi codex) can restore them at launch time.
-	if cfg.ModelConfig.Main.Slug != "" {
-		if err := config.SaveModelConfig(cfg.ModelConfig.Main.Slug, cfg.ModelConfig.Coding.Slug, cfg.ModelConfig.Sub.Slug); err != nil {
-			fmt.Printf("Warning: could not save model config: %v\n", err)
-		}
-	}
-
 	if len(cfg.GSDMigrateFrom) > 0 {
-		migrator := gsd.NewMigrator(cfg.ModelConfig)
+		migrator := gsd.NewMigrator()
 		var migrateInstallations []gsd.Installation
 		for _, install := range cfg.GSDMigrateFrom {
 			kimchiPath, err := gsd.KimchiManagedPath(install.Type)
