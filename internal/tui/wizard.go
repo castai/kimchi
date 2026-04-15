@@ -13,7 +13,6 @@ import (
 	"github.com/castai/kimchi/internal/telemetry"
 	"github.com/castai/kimchi/internal/tools"
 	"github.com/castai/kimchi/internal/tui/steps"
-	"github.com/castai/kimchi/internal/version"
 )
 
 type WizardConfig struct {
@@ -27,12 +26,21 @@ type WizardConfig struct {
 	GSDInstallFor  []gsd.InstallationType
 }
 
+// WizardOption configures the wizard.
+type WizardOption func(*wizard)
+
+// WithPreview enables preview features such as the coding harness update.
+func WithPreview(preview bool) WizardOption {
+	return func(w *wizard) { w.preview = preview }
+}
+
 type wizard struct {
 	stepList          []steps.Step
 	current           int
 	config            WizardConfig
 	finished          bool
 	aborted           bool
+	preview           bool
 	pendingUpdate     *steps.UpdateStep
 	pendingModelRoles *steps.ModelRolesStep
 	pendingGSD        *steps.GSDStep
@@ -43,20 +51,23 @@ type wizard struct {
 	ready             bool
 }
 
-func newWizard(ctx context.Context) *wizard {
-	welcomeStep := steps.NewWelcomeStep(version.Version)
+func newWizard(ctx context.Context, opts ...WizardOption) *wizard {
+	w := &wizard{
+		current: 0,
+	}
+	for _, o := range opts {
+		o(w)
+	}
+
+	welcomeStep := steps.NewWelcomeStep(w.preview)
 	authStep := steps.NewAuthStep()
 	installStep := steps.NewInstallStep()
 	toolsStep := steps.NewToolsStep()
 	modeStep := steps.NewModeStep()
 	scopeStep := steps.NewScopeStep()
 
-	stepList := []steps.Step{welcomeStep, authStep, installStep, toolsStep, modeStep, scopeStep}
-
-	return &wizard{
-		stepList: stepList,
-		current:  0,
-	}
+	w.stepList = []steps.Step{welcomeStep, authStep, installStep, toolsStep, modeStep, scopeStep}
+	return w
 }
 
 func (w *wizard) Init() tea.Cmd {
@@ -199,8 +210,10 @@ func (w *wizard) collectStepResult() {
 	step := w.stepList[w.current]
 	switch s := step.(type) {
 	case *steps.WelcomeStep:
-		if s.HasUpdate() {
-			w.pendingUpdate = steps.NewUpdateStep(version.Version, s.LatestVersion(), s.LatestTag())
+		cli := s.CLI()
+		harness := s.Harness()
+		if cli.HasUpdate || harness.HasUpdate || harness.Installed() {
+			w.pendingUpdate = steps.NewUpdateStep(cli, harness)
 		}
 	case *steps.AuthStep:
 		w.config.APIKey = s.APIKey()
@@ -278,8 +291,8 @@ func (w *wizard) currentStepName() string {
 	return ""
 }
 
-func RunWizard(ctx context.Context) (*WizardConfig, error) {
-	w := newWizard(ctx)
+func RunWizard(ctx context.Context, opts ...WizardOption) (*WizardConfig, error) {
+	w := newWizard(ctx, opts...)
 
 	p := tea.NewProgram(w, tea.WithAltScreen())
 	finalModel, err := p.Run()
