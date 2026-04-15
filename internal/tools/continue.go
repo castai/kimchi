@@ -32,7 +32,7 @@ func detectContinue() bool {
 	return false
 }
 
-func writeContinue(scope config.ConfigScope, apiKey string) error {
+func writeContinue(scope config.ConfigScope, apiKey string, models ModelConfig) error {
 	if apiKey == "" {
 		return fmt.Errorf("API key not configured")
 	}
@@ -47,77 +47,77 @@ func writeContinue(scope config.ConfigScope, apiKey string) error {
 		return fmt.Errorf("read existing config: %w", err)
 	}
 
-	models, _ := existing["models"].([]any)
+	existingModels, _ := existing["models"].([]any)
 	hasMainModel := false
 	hasCodingModel := false
 	hasSubModel := false
 
-	for _, m := range models {
+	for _, m := range existingModels {
 		modelMap, ok := m.(map[string]any)
 		if !ok {
 			continue
 		}
 		title, _ := modelMap["title"].(string)
-		if title == MainModel.displayName {
+		if title == models.Main.DisplayName {
 			hasMainModel = true
 		}
-		if title == CodingModel.displayName {
+		if title == models.Coding.DisplayName {
 			hasCodingModel = true
 		}
-		if title == SubModel.displayName {
+		if title == models.Sub.DisplayName {
 			hasSubModel = true
 		}
 	}
 
 	if !hasMainModel {
-		models = append(models, map[string]any{
-			"title":         MainModel.displayName,
+		existingModels = append(existingModels, map[string]any{
+			"title":         models.Main.DisplayName,
 			"provider":      "openai",
-			"model":         MainModel.Slug,
+			"model":         models.Main.Slug,
 			"apiBase":       baseURL,
 			"apiKey":        apiKey,
-			"contextLength": MainModel.limits.contextWindow,
+			"contextLength": models.Main.Limits.ContextWindow,
 			"completionOptions": map[string]any{
-				"maxTokens": MainModel.limits.maxOutputTokens,
+				"maxTokens": models.Main.Limits.MaxOutputTokens,
 			},
 		})
 	}
 
 	if !hasCodingModel {
-		models = append(models, map[string]any{
-			"title":         CodingModel.displayName,
+		existingModels = append(existingModels, map[string]any{
+			"title":         models.Coding.DisplayName,
 			"provider":      "openai",
-			"model":         CodingModel.Slug,
+			"model":         models.Coding.Slug,
 			"apiBase":       baseURL,
 			"apiKey":        apiKey,
-			"contextLength": CodingModel.limits.contextWindow,
+			"contextLength": models.Coding.Limits.ContextWindow,
 			"completionOptions": map[string]any{
-				"maxTokens": CodingModel.limits.maxOutputTokens,
+				"maxTokens": models.Coding.Limits.MaxOutputTokens,
 			},
 		})
 	}
 
 	if !hasSubModel {
-		models = append(models, map[string]any{
-			"title":         SubModel.displayName,
+		existingModels = append(existingModels, map[string]any{
+			"title":         models.Sub.DisplayName,
 			"provider":      "openai",
-			"model":         SubModel.Slug,
+			"model":         models.Sub.Slug,
 			"apiBase":       baseURL,
 			"apiKey":        apiKey,
-			"contextLength": SubModel.limits.contextWindow,
+			"contextLength": models.Sub.Limits.ContextWindow,
 			"completionOptions": map[string]any{
-				"maxTokens": SubModel.limits.maxOutputTokens,
+				"maxTokens": models.Sub.Limits.MaxOutputTokens,
 			},
 		})
 	}
 
-	existing["models"] = models
+	existing["models"] = existingModels
 
 	if existing["tabAutocompleteModel"] == nil {
 		existing["tabAutocompleteModel"] = map[string]any{
-			"title":    MainModel.displayName,
+			"title":    models.Main.DisplayName,
 			"provider": "openai",
-			"model":    MainModel.Slug,
+			"model":    models.Main.Slug,
 			"apiBase":  baseURL,
 			"apiKey":   apiKey,
 		}

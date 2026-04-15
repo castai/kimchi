@@ -37,7 +37,7 @@ type Tool struct {
 	InstallURL  string
 	InstallArgs []string
 	IsInstalled func() bool
-	Write       func(scope config.ConfigScope, apiKey string) error
+	Write       func(scope config.ConfigScope, apiKey string, models ModelConfig) error
 }
 
 func (t Tool) DetectInstalled() bool {

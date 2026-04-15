@@ -30,9 +30,16 @@ func NewOpenCodeCommand() *cobra.Command {
 				return err
 			}
 
-			printBanner(os.Stderr, "opencode", cfg)
+			fetchedModels, err := tools.FetchModels(cmd.Context(), apiKey)
+			if err != nil {
+				return fmt.Errorf("fetch models: %w", err)
+			}
 
-			env, err := opencode.Env(apiKey)
+			modelCfg := tools.BuildModelConfig(fetchedModels, cfg.ModelMain, cfg.ModelCoding, cfg.ModelSub)
+
+			printBanner(os.Stderr, "opencode", cfg, modelCfg)
+
+			env, err := opencode.Env(apiKey, modelCfg)
 			if err != nil {
 				return fmt.Errorf("prepare opencode environment: %w", err)
 			}

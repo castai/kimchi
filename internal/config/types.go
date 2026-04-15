@@ -22,6 +22,10 @@ type Config struct {
 	DeviceID             string     `json:"device_id,omitempty"`
 	TelemetryNoticeShown bool       `json:"telemetry_notice_shown,omitempty"`
 	GSDInstalledFor      []string   `json:"gsd_installed_for,omitempty"`
+	// Model role assignments saved after wizard setup.
+	ModelMain   string `json:"model_main,omitempty"`
+	ModelCoding string `json:"model_coding,omitempty"`
+	ModelSub    string `json:"model_sub,omitempty"`
 }
 
 func (c *Config) Clone() Config {

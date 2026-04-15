@@ -87,6 +87,19 @@ func SetAPIKey(key string) error {
 	return Save(cfg)
 }
 
+func SaveModelConfig(mainSlug, codingSlug, subSlug string) error {
+	cfg, err := Load()
+	if err != nil {
+		return fmt.Errorf("load existing config: %w", err)
+	}
+
+	cfg.ModelMain = mainSlug
+	cfg.ModelCoding = codingSlug
+	cfg.ModelSub = subSlug
+
+	return Save(cfg)
+}
+
 func SaveGSDInstalled(tools []string) error {
 	cfg, err := Load()
 	if err != nil {
