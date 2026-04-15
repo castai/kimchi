@@ -1,75 +1,53 @@
 package tools
 
-// ModelLimits holds the token limits for a model.
-type ModelLimits struct {
-	ContextWindow   int
-	MaxOutputTokens int
+type limits struct {
+	contextWindow   int
+	maxOutputTokens int
 }
 
-// Model describes a single AI model available through the Kimchi inference endpoint.
-type Model struct {
+type model struct {
 	Slug            string
-	DisplayName     string
-	Description     string
-	ToolCall        bool
-	Reasoning       bool
-	SupportsImages  bool
-	InputModalities []string
-	Limits          ModelLimits
+	displayName     string
+	description     string
+	toolCall        bool
+	reasoning       bool
+	supportsImages  bool
+	inputModalities []string
+	limits          limits
 }
 
-// ModelConfig groups the three role-assigned models used to configure tools,
-// plus the full ordered list returned by the API.
-type ModelConfig struct {
-	Main   Model
-	Coding Model
-	Sub    Model
-	All    []Model
-}
-
-// BuildModelConfig constructs a ModelConfig from a fetched model list and
-// optional pre-saved role slug assignments. If a slug is empty or not found in
-// the list, positional fallback is used (models[0], models[1], models[2]).
-func BuildModelConfig(models []Model, mainSlug, codingSlug, subSlug string) ModelConfig {
-	cfg := ModelConfig{All: models}
-
-	if len(models) == 0 {
-		return cfg
+var (
+	// MainModel is the primary model for reasoning, planning, code generation, and image processing.
+	MainModel = model{
+		Slug:            "kimi-k2.5",
+		displayName:     "Kimi K2.5",
+		description:     "Primary model for reasoning, planning, code generation, and image processing.",
+		toolCall:        true,
+		reasoning:       true,
+		supportsImages:  true,
+		inputModalities: []string{"text", "image"},
+		limits:          limits{contextWindow: 262144, maxOutputTokens: 32768},
+	}
+	// CodingModel is the coding subagent used where tools require a fixed model value for code tasks.
+	CodingModel = model{
+		Slug:            "nemotron-3-super-fp4",
+		displayName:     "Nemotron 3 Super FP4",
+		description:     "High-performance reasoning model for complex tasks.",
+		toolCall:        true,
+		reasoning:       true,
+		inputModalities: []string{"text"},
+		limits:          limits{contextWindow: 1048576, maxOutputTokens: 256000},
+	}
+	// SubModel is the secondary subagent available across all tool installations.
+	SubModel = model{
+		Slug:            "minimax-m2.7",
+		displayName:     "MiniMax M2.7",
+		description:     "Secondary subagent for code generation and debugging.",
+		toolCall:        true,
+		reasoning:       true,
+		inputModalities: []string{"text"},
+		limits:          limits{contextWindow: 196608, maxOutputTokens: 32768},
 	}
 
-	bySlug := make(map[string]Model, len(models))
-	for _, m := range models {
-		bySlug[m.Slug] = m
-	}
-
-	if m, ok := bySlug[mainSlug]; ok {
-		cfg.Main = m
-	}
-	if m, ok := bySlug[codingSlug]; ok {
-		cfg.Coding = m
-	}
-	if m, ok := bySlug[subSlug]; ok {
-		cfg.Sub = m
-	}
-
-	// Fill any unset roles positionally.
-	if cfg.Main.Slug == "" {
-		cfg.Main = models[0]
-	}
-	if cfg.Coding.Slug == "" {
-		if len(models) > 1 {
-			cfg.Coding = models[1]
-		} else {
-			cfg.Coding = cfg.Main
-		}
-	}
-	if cfg.Sub.Slug == "" {
-		if len(models) > 2 {
-			cfg.Sub = models[2]
-		} else {
-			cfg.Sub = cfg.Coding
-		}
-	}
-
-	return cfg
-}
+	allModels = []model{MainModel, CodingModel, SubModel}
+)

@@ -32,14 +32,15 @@ func newRootCommand() *cobra.Command {
 Connect your AI tools to powerful open-source models
 
 This tool configures AI coding assistants (OpenCode, Claude Code, Cursor, etc.)
-to use Kimchi's serverless inference endpoints with optimal model selection.
+to use Kimchi's serverless inference endpoints with optimal model selection:
 
-During setup you will be asked to assign three model roles from the available
-models fetched from the Kimchi API:
-
-  • Main model    - Primary reasoning, planning, code generation, and image processing
-  • Coding model  - Code generation, refactoring, and debugging subagent
-  • Sub model     - Secondary subagent available across all tool installations
+Model Selection Strategy:
+  • kimi-k2.5             - Primary model: reasoning, planning, code generation, and images
+                            262K context • 32K output • Vision + reasoning
+  • nemotron-3-super-fp4  - Coding subagent: writing, refactoring, and debugging code
+                            1M context • 256K output • High-performance reasoning
+  • minimax-m2.7          - Secondary subagent: available across all tool installations
+                            196K context • 32K output • Optimized for coding
 
 Each tool is automatically configured with the best model for its use case,
 removing the complexity of manual model selection while ensuring peak performance.

@@ -12,24 +12,11 @@ import (
 	"github.com/castai/kimchi/internal/tools"
 )
 
-func testModelConfig() tools.ModelConfig {
-	main := tools.Model{Slug: "kimchi-main", DisplayName: "Kimchi Main", Reasoning: true, ToolCall: true, Limits: tools.ModelLimits{ContextWindow: 200000, MaxOutputTokens: 32000}}
-	coding := tools.Model{Slug: "kimchi-coding", DisplayName: "Kimchi Coding", ToolCall: true, Limits: tools.ModelLimits{ContextWindow: 200000, MaxOutputTokens: 32000}}
-	sub := tools.Model{Slug: "kimchi-sub", DisplayName: "Kimchi Sub", ToolCall: true, Limits: tools.ModelLimits{ContextWindow: 200000, MaxOutputTokens: 32000}}
-	return tools.ModelConfig{
-		Main:   main,
-		Coding: coding,
-		Sub:    sub,
-		All:    []tools.Model{main, coding, sub},
-	}
-}
-
 func TestEnv_GeneratesConfig(t *testing.T) {
 	tmpDir := t.TempDir()
 	t.Setenv("HOME", tmpDir)
 
-	mc := testModelConfig()
-	env, err := Env("test-key", mc)
+	env, err := Env("test-key")
 	require.NoError(t, err)
 
 	managedConfigPath := filepath.Join(tmpDir, ".config", "kimchi", "opencode", "opencode.json")
@@ -58,9 +45,9 @@ func TestEnv_GeneratesConfig(t *testing.T) {
 
 	models, ok := kimchiProvider["models"].(map[string]any)
 	require.True(t, ok, "models should be a map")
-	assert.Contains(t, models, mc.Main.Slug)
-	assert.Contains(t, models, mc.Coding.Slug)
-	assert.Contains(t, models, mc.Sub.Slug)
+	assert.Contains(t, models, tools.MainModel.Slug)
+	assert.Contains(t, models, tools.CodingModel.Slug)
+	assert.Contains(t, models, tools.SubModel.Slug)
 
 	_ = env
 }
@@ -69,7 +56,7 @@ func TestEnv_ReturnsXDGConfigHome(t *testing.T) {
 	tmpDir := t.TempDir()
 	t.Setenv("HOME", tmpDir)
 
-	env, err := Env("test-key", testModelConfig())
+	env, err := Env("test-key")
 	require.NoError(t, err)
 
 	expectedXDG := filepath.Join(tmpDir, ".config", "kimchi")
@@ -93,7 +80,7 @@ func TestEnv_MergesExistingConfig(t *testing.T) {
 	require.NoError(t, err)
 	require.NoError(t, os.WriteFile(filepath.Join(existingConfigDir, "opencode.json"), data, 0644))
 
-	_, err = Env("test-key", testModelConfig())
+	_, err = Env("test-key")
 	require.NoError(t, err)
 
 	managedConfigPath := filepath.Join(tmpDir, ".config", "kimchi", "opencode", "opencode.json")
@@ -118,7 +105,7 @@ func TestEnv_WritesCompactionConfig(t *testing.T) {
 	tmpDir := t.TempDir()
 	t.Setenv("HOME", tmpDir)
 
-	_, err := Env("test-key", testModelConfig())
+	_, err := Env("test-key")
 	require.NoError(t, err)
 
 	managedConfigPath := filepath.Join(tmpDir, ".config", "kimchi", "opencode", "opencode.json")

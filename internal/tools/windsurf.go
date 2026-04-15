@@ -45,7 +45,7 @@ func detectWindsurf() bool {
 	return false
 }
 
-func writeWindsurf(scope config.ConfigScope, apiKey string, models ModelConfig) error {
+func writeWindsurf(scope config.ConfigScope, apiKey string) error {
 	if apiKey == "" {
 		return fmt.Errorf("API key not configured")
 	}
@@ -89,11 +89,11 @@ func writeWindsurf(scope config.ConfigScope, apiKey string, models ModelConfig) 
 		"apiProvider": "openai-native",
 		"apiKey":      apiKey,
 		"baseUrl":     baseURL,
-		"modelId":     models.Main.Slug,
+		"modelId":     MainModel.Slug,
 		"modelInfo": map[string]any{
-			"maxTokens":           models.Main.Limits.MaxOutputTokens,
-			"contextWindow":       models.Main.Limits.ContextWindow,
-			"supportsImages":      models.Main.SupportsImages,
+			"maxTokens":           MainModel.limits.maxOutputTokens,
+			"contextWindow":       MainModel.limits.contextWindow,
+			"supportsImages":      MainModel.supportsImages,
 			"supportsPromptCache": false,
 		},
 	}
@@ -102,11 +102,11 @@ func writeWindsurf(scope config.ConfigScope, apiKey string, models ModelConfig) 
 		"apiProvider": "openai-native",
 		"apiKey":      apiKey,
 		"baseUrl":     baseURL,
-		"modelId":     models.Coding.Slug,
+		"modelId":     CodingModel.Slug,
 		"modelInfo": map[string]any{
-			"maxTokens":           models.Coding.Limits.MaxOutputTokens,
-			"contextWindow":       models.Coding.Limits.ContextWindow,
-			"supportsImages":      models.Coding.SupportsImages,
+			"maxTokens":           CodingModel.limits.maxOutputTokens,
+			"contextWindow":       CodingModel.limits.contextWindow,
+			"supportsImages":      CodingModel.supportsImages,
 			"supportsPromptCache": false,
 		},
 	}
@@ -115,11 +115,11 @@ func writeWindsurf(scope config.ConfigScope, apiKey string, models ModelConfig) 
 		"apiProvider": "openai-native",
 		"apiKey":      apiKey,
 		"baseUrl":     baseURL,
-		"modelId":     models.Sub.Slug,
+		"modelId":     SubModel.Slug,
 		"modelInfo": map[string]any{
-			"maxTokens":           models.Sub.Limits.MaxOutputTokens,
-			"contextWindow":       models.Sub.Limits.ContextWindow,
-			"supportsImages":      models.Sub.SupportsImages,
+			"maxTokens":           SubModel.limits.maxOutputTokens,
+			"contextWindow":       SubModel.limits.contextWindow,
+			"supportsImages":      SubModel.supportsImages,
 			"supportsPromptCache": false,
 		},
 	}

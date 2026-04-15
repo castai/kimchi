@@ -28,7 +28,7 @@ func detectGSD2() bool {
 	return err == nil
 }
 
-func writeGSD2(scope config.ConfigScope, apiKey string, models ModelConfig) error {
+func writeGSD2(scope config.ConfigScope, apiKey string) error {
 	if apiKey == "" {
 		return fmt.Errorf("API key not configured")
 	}
@@ -37,25 +37,6 @@ func writeGSD2(scope config.ConfigScope, apiKey string, models ModelConfig) erro
 	if err != nil {
 		return fmt.Errorf("get models config path: %w", err)
 	}
-	var modelEntries []map[string]any
-	for _, m := range models.All {
-		entry := map[string]any{
-			"id":            m.Slug,
-			"name":          m.DisplayName,
-			"contextWindow": m.Limits.ContextWindow,
-			"maxTokens":     m.Limits.MaxOutputTokens,
-			"reasoning":     m.Reasoning,
-			"input":         m.InputModalities,
-			"cost": map[string]any{
-				"input":      0,
-				"output":     0,
-				"cacheRead":  0,
-				"cacheWrite": 0,
-			},
-		}
-		modelEntries = append(modelEntries, entry)
-	}
-
 	modelsContent := map[string]any{
 		"providers": map[string]any{
 			"kimchi": map[string]any{
@@ -63,8 +44,51 @@ func writeGSD2(scope config.ConfigScope, apiKey string, models ModelConfig) erro
 				"baseUrl":      baseURL,
 				"apiKey":       apiKey,
 				"api":          "openai-completions",
-				"defaultModel": models.Main.Slug,
-				"models":       modelEntries,
+				"defaultModel": MainModel.Slug,
+				"models": []map[string]any{
+					{
+						"id":            MainModel.Slug,
+						"name":          MainModel.displayName,
+						"contextWindow": MainModel.limits.contextWindow,
+						"maxTokens":     MainModel.limits.maxOutputTokens,
+						"reasoning":     MainModel.reasoning,
+						"input":         []string{"text", "image"},
+						"cost": map[string]any{
+							"input":      0,
+							"output":     0,
+							"cacheRead":  0,
+							"cacheWrite": 0,
+						},
+					},
+					{
+						"id":            CodingModel.Slug,
+						"name":          CodingModel.displayName,
+						"contextWindow": CodingModel.limits.contextWindow,
+						"maxTokens":     CodingModel.limits.maxOutputTokens,
+						"reasoning":     CodingModel.reasoning,
+						"input":         []string{"text"},
+						"cost": map[string]any{
+							"input":      0,
+							"output":     0,
+							"cacheRead":  0,
+							"cacheWrite": 0,
+						},
+					},
+					{
+						"id":            SubModel.Slug,
+						"name":          SubModel.displayName,
+						"contextWindow": SubModel.limits.contextWindow,
+						"maxTokens":     SubModel.limits.maxOutputTokens,
+						"reasoning":     SubModel.reasoning,
+						"input":         []string{"text"},
+						"cost": map[string]any{
+							"input":      0,
+							"output":     0,
+							"cacheRead":  0,
+							"cacheWrite": 0,
+						},
+					},
+				},
 			},
 		},
 	}
@@ -90,7 +114,7 @@ git:
   isolation: worktree
   merge_strategy: squash
 ---
-`, models.Main.Slug, models.Main.Slug, models.Coding.Slug, models.Coding.Slug)
+`, MainModel.Slug, MainModel.Slug, CodingModel.Slug, CodingModel.Slug)
 
 	if err := config.WriteFile(prefsPath, []byte(prefsContent)); err != nil {
 		return fmt.Errorf("write preferences.md: %w", err)
