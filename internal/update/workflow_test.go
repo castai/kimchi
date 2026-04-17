@@ -16,7 +16,7 @@ func TestWorkflowRun_UpdateAvailable_AppliesAndUpdatesCache(t *testing.T) {
 	t.Setenv("XDG_CACHE_HOME", t.TempDir())
 
 	newBinary := []byte("#!/bin/sh\necho v2.0.0")
-	archive := createTestArchive(t, kimchiRepo.Binary, newBinary)
+	archive := createArchive(t, []archiveFile{{Name: kimchiRepo.Binary, Content: newBinary, Mode: 0755}})
 	checksum := sha256sum(archive)
 
 	client := &mockGitHubClient{
@@ -206,7 +206,7 @@ func TestWorkflowRun_StaleCache_RefetchesAndUpdates(t *testing.T) {
 	}))
 
 	newBinary := []byte("#!/bin/sh\necho v2.0.0")
-	archive := createTestArchive(t, kimchiRepo.Binary, newBinary)
+	archive := createArchive(t, []archiveFile{{Name: kimchiRepo.Binary, Content: newBinary, Mode: 0755}})
 	checksum := sha256sum(archive)
 
 	client := &mockGitHubClient{
@@ -280,7 +280,7 @@ func TestWorkflowRun_FreshInstall_InstallsAndUpdatesCache(t *testing.T) {
 	t.Setenv("XDG_CACHE_HOME", t.TempDir())
 
 	newBinary := []byte("#!/bin/sh\necho v1.0.0")
-	archive := createTestArchive(t, kimchiDevRepo.Binary, newBinary)
+	archive := createArchive(t, []archiveFile{{Name: kimchiDevRepo.Binary, Content: newBinary, Mode: 0755}})
 	checksum := sha256sum(archive)
 
 	client := &mockGitHubClient{
@@ -379,7 +379,7 @@ func TestWorkflowRun_VerificationFails_RollsBackUpdate(t *testing.T) {
 
 	// The new binary will fail verification (exits non-zero).
 	brokenBinary := []byte("#!/bin/sh\nexit 1")
-	archive := createTestArchive(t, kimchiRepo.Binary, brokenBinary)
+	archive := createArchive(t, []archiveFile{{Name: kimchiRepo.Binary, Content: brokenBinary, Mode: 0755}})
 	checksum := sha256sum(archive)
 
 	client := &mockGitHubClient{

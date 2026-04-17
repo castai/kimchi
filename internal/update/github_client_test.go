@@ -53,7 +53,7 @@ func TestGitHubClient_MalformedJSON(t *testing.T) {
 }
 
 func TestGitHubClient_FetchChecksum(t *testing.T) {
-	archive := createTestArchive(t, kimchiRepo.Binary, []byte("binary"))
+	archive := createArchive(t, []archiveFile{{Name: kimchiRepo.Binary, Content: []byte("binary"), Mode: 0755}})
 	hash := sha256.Sum256(archive)
 	hashHex := hex.EncodeToString(hash[:])
 	asset := fmt.Sprintf("%s_%s_%s.tar.gz", kimchiRepo.Binary, runtime.GOOS, runtime.GOARCH)
