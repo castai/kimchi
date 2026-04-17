@@ -69,7 +69,7 @@ func (t Tool) Install() error {
 	if err != nil {
 		return fmt.Errorf("failed to create temp directory: %w", err)
 	}
-	defer os.RemoveAll(tmpDir)
+	defer func() { _ = os.RemoveAll(tmpDir) }()
 
 	scriptPath := filepath.Join(tmpDir, "install.sh")
 
@@ -77,7 +77,7 @@ func (t Tool) Install() error {
 	if err != nil {
 		return fmt.Errorf("failed to download %s: %w", t.InstallURL, err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
 		return fmt.Errorf("failed to download %s: HTTP %d", t.InstallURL, resp.StatusCode)
@@ -88,10 +88,10 @@ func (t Tool) Install() error {
 		return fmt.Errorf("failed to create install script: %w", err)
 	}
 	if _, err := io.Copy(f, resp.Body); err != nil {
-		f.Close()
+		_ = f.Close()
 		return fmt.Errorf("failed to write install script: %w", err)
 	}
-	f.Close()
+	_ = f.Close()
 
 	if err := os.Chmod(scriptPath, 0o700); err != nil {
 		return fmt.Errorf("failed to make install script executable: %w", err)

@@ -69,7 +69,7 @@ func (i *Installer) Install(installType InstallationType, scope string) (*Instal
 	if err != nil {
 		return nil, fmt.Errorf("create temp home: %w", err)
 	}
-	defer os.RemoveAll(tmpHome)
+	defer func() { _ = os.RemoveAll(tmpHome) }()
 
 	tmpToolDir := filepath.Join(tmpHome, spec.tmpSubDir)
 
@@ -228,7 +228,7 @@ func copyFile(src, dst string) error {
 	if err != nil {
 		return fmt.Errorf("open source file: %w", err)
 	}
-	defer srcFile.Close()
+	defer func() { _ = srcFile.Close() }()
 
 	dstFile, err := os.OpenFile(dst, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, info.Mode())
 	if err != nil {
@@ -236,7 +236,7 @@ func copyFile(src, dst string) error {
 	}
 
 	if _, err := io.Copy(dstFile, srcFile); err != nil {
-		dstFile.Close()
+		_ = dstFile.Close()
 		return fmt.Errorf("copy file contents: %w", err)
 	}
 

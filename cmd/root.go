@@ -106,7 +106,7 @@ func initTelemetry(root *cobra.Command) {
 	root.SetContext(ctx)
 
 	if !cfg.TelemetryNoticeShown && enabled {
-		fmt.Fprintln(root.ErrOrStderr(),
+		_, _ = fmt.Fprintln(root.ErrOrStderr(),
 			"INFO: Kimchi collects anonymous usage data to improve the product. "+
 				"Run 'kimchi config telemetry off' to disable.")
 		cfg.TelemetryNoticeShown = true

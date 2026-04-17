@@ -52,7 +52,7 @@ func (v *validator) ValidateAPIKey(ctx context.Context, apiKey string) (Validate
 			},
 		}, fmt.Errorf("request failed: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	switch resp.StatusCode {
 	case http.StatusOK:

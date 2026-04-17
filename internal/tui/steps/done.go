@@ -227,7 +227,7 @@ func (s *DoneStep) runStreamBackground(ctx context.Context) {
 		s.closeStream()
 		return
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
 		if ctx.Err() == nil {
@@ -318,7 +318,7 @@ func (s *DoneStep) View() string {
 		for _, toolID := range s.toolIDs {
 			tool, ok := tools.ByID(toolID)
 			if ok {
-				b.WriteString(fmt.Sprintf("  %s %s\n", Styles.Success.Render("✓"), tool.Name))
+				fmt.Fprintf(&b, "  %s %s\n", Styles.Success.Render("✓"), tool.Name)
 			}
 		}
 		b.WriteString("\n")
@@ -333,7 +333,7 @@ func (s *DoneStep) View() string {
 	if s.streamDone {
 		b.WriteString(Styles.Help.Render("Press Enter to exit"))
 	} else {
-		b.WriteString(fmt.Sprintf("%s Generating welcome message...  %s", s.spin.View(), Styles.Help.Render("(Enter to skip)")))
+		fmt.Fprintf(&b, "%s Generating welcome message...  %s", s.spin.View(), Styles.Help.Render("(Enter to skip)"))
 	}
 
 	return b.String()

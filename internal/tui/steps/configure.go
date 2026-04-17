@@ -250,16 +250,16 @@ func (s *ConfigureStep) View() string {
 			b.WriteString("\n\n")
 			b.WriteString("Each tool has been configured with optimal models for its use case:")
 			b.WriteString("\n")
-			b.WriteString(fmt.Sprintf("• Primary model → %s", tools.MainModel.Slug))
+			fmt.Fprintf(&b, "• Primary model → %s", tools.MainModel.Slug)
 			b.WriteString("\n")
-			b.WriteString(fmt.Sprintf("• Coding subagent → %s", tools.CodingModel.Slug))
+			fmt.Fprintf(&b, "• Coding subagent → %s", tools.CodingModel.Slug)
 			b.WriteString("\n")
-			b.WriteString(fmt.Sprintf("• Secondary subagent → %s", tools.SubModel.Slug))
+			fmt.Fprintf(&b, "• Secondary subagent → %s", tools.SubModel.Slug)
 			b.WriteString("\n")
 			if s.shellProfilePath != "" {
-				b.WriteString(fmt.Sprintf("\n%s exported to %s\n", tools.APIKeyEnv, s.shellProfilePath))
+				fmt.Fprintf(&b, "\n%s exported to %s\n", tools.APIKeyEnv, s.shellProfilePath)
 			} else if s.shellProfileErr != nil {
-				b.WriteString(fmt.Sprintf("\n%s\n", Styles.Warning.Render(fmt.Sprintf("Could not export %s to shell profile: %v", tools.APIKeyEnv, s.shellProfileErr))))
+				fmt.Fprintf(&b, "\n%s\n", Styles.Warning.Render(fmt.Sprintf("Could not export %s to shell profile: %v", tools.APIKeyEnv, s.shellProfileErr)))
 			}
 			b.WriteString("\n")
 			b.WriteString(Styles.Help.Render("Press enter to exit"))
