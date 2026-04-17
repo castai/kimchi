@@ -41,20 +41,20 @@ func printBanner(w io.Writer, wrapping string, cfg *config.Config) {
 	}
 
 	if colorEnabled() {
-		fmt.Fprintf(w, "\n  %s%s\U0001F96C\U0001F336  kimchi%s\n", ansiBold, ansiRed, ansiReset)
-		fmt.Fprintf(w, "  %s%s%s\n", ansiDim, line, ansiReset)
-		fmt.Fprintf(w, "  %sTarget:%s  %s\n", ansiDim, ansiReset, wrapping)
-		fmt.Fprintf(w, "  %sModels:%s  %s\n", ansiDim, ansiReset, models)
-		fmt.Fprintf(w, "  %sGSD:%s     %s\n", ansiDim, ansiReset, gsdStatus)
-		fmt.Fprintf(w, "  %sMode:%s    %s\n", ansiDim, ansiReset, cfg.Mode)
-		fmt.Fprintf(w, "  %s%s%s\n\n", ansiDim, line, ansiReset)
+		_, _ = fmt.Fprintf(w, "\n  %s%s\U0001F96C\U0001F336  kimchi%s\n", ansiBold, ansiRed, ansiReset)
+		_, _ = fmt.Fprintf(w, "  %s%s%s\n", ansiDim, line, ansiReset)
+		_, _ = fmt.Fprintf(w, "  %sTarget:%s  %s\n", ansiDim, ansiReset, wrapping)
+		_, _ = fmt.Fprintf(w, "  %sModels:%s  %s\n", ansiDim, ansiReset, models)
+		_, _ = fmt.Fprintf(w, "  %sGSD:%s     %s\n", ansiDim, ansiReset, gsdStatus)
+		_, _ = fmt.Fprintf(w, "  %sMode:%s    %s\n", ansiDim, ansiReset, cfg.Mode)
+		_, _ = fmt.Fprintf(w, "  %s%s%s\n\n", ansiDim, line, ansiReset)
 	} else {
-		fmt.Fprintf(w, "\n  kimchi\n")
-		fmt.Fprintf(w, "  %s\n", strings.Repeat("-", 45))
-		fmt.Fprintf(w, "  Target:  %s\n", wrapping)
-		fmt.Fprintf(w, "  Models:  %s\n", models)
-		fmt.Fprintf(w, "  GSD:     %s\n", gsdStatus)
-		fmt.Fprintf(w, "  Mode:    %s\n", cfg.Mode)
-		fmt.Fprintf(w, "  %s\n\n", strings.Repeat("-", 45))
+		_, _ = fmt.Fprintf(w, "\n  kimchi\n")
+		_, _ = fmt.Fprintf(w, "  %s\n", strings.Repeat("-", 45))
+		_, _ = fmt.Fprintf(w, "  Target:  %s\n", wrapping)
+		_, _ = fmt.Fprintf(w, "  Models:  %s\n", models)
+		_, _ = fmt.Fprintf(w, "  GSD:     %s\n", gsdStatus)
+		_, _ = fmt.Fprintf(w, "  Mode:    %s\n", cfg.Mode)
+		_, _ = fmt.Fprintf(w, "  %s\n\n", strings.Repeat("-", 45))
 	}
 }

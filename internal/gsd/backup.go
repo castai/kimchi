@@ -45,7 +45,7 @@ func BackupFiles(paths []string) ([]string, error) {
 		backupPath, err := Backup(path)
 		if err != nil {
 			for _, bp := range backupPaths {
-				os.Remove(bp)
+				_ = os.Remove(bp)
 			}
 			return nil, fmt.Errorf("backup %s: %w", filepath.Base(path), err)
 		}

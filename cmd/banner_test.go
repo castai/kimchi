@@ -40,8 +40,8 @@ func TestPrintBanner_NoColor(t *testing.T) {
 }
 
 func TestPrintBanner_ColorEnabled(t *testing.T) {
-	os.Unsetenv("NO_COLOR")
-	t.Cleanup(func() { os.Unsetenv("NO_COLOR") })
+	_ = os.Unsetenv("NO_COLOR")
+	t.Cleanup(func() { _ = os.Unsetenv("NO_COLOR") })
 	t.Setenv("TERM", "xterm-256color")
 
 	var buf bytes.Buffer

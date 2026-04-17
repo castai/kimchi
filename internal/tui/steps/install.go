@@ -91,7 +91,7 @@ func downloadFile(url, destPath string) error {
 	if err != nil {
 		return fmt.Errorf("failed to download %s: %w", url, err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
 		return fmt.Errorf("failed to download %s: HTTP %d %s", url, resp.StatusCode, resp.Status)
@@ -102,8 +102,8 @@ func downloadFile(url, destPath string) error {
 		return fmt.Errorf("failed to create file %s: %w", destPath, err)
 	}
 	if _, err := io.Copy(f, resp.Body); err != nil {
-		f.Close()
-		os.Remove(destPath)
+		_ = f.Close()
+		_ = os.Remove(destPath)
 		return fmt.Errorf("failed to write file %s: %w", destPath, err)
 	}
 	return f.Close()
@@ -121,7 +121,7 @@ func (s *InstallStep) installOpenCode() tea.Cmd {
 		if err != nil {
 			return installCompleteMsg{err: fmt.Errorf("failed to create temp directory: %w", err)}
 		}
-		defer os.RemoveAll(tmpDir)
+		defer func() { _ = os.RemoveAll(tmpDir) }()
 
 		scriptPath := filepath.Join(tmpDir, "install.sh")
 		if err := downloadFile(openCodeInstallURL, scriptPath); err != nil {

@@ -37,8 +37,8 @@ func WriteTOML(path string, data map[string]any) error {
 	}
 
 	if err := toml.NewEncoder(f).Encode(data); err != nil {
-		f.Close()
-		os.Remove(tmpPath)
+		_ = f.Close()
+		_ = os.Remove(tmpPath)
 		return fmt.Errorf("encode TOML: %w", err)
 	}
 
