@@ -5,17 +5,39 @@ import (
 	"testing"
 )
 
+func TestHarnessDataDir(t *testing.T) {
+	t.Run("uses XDG_DATA_HOME when set", func(t *testing.T) {
+		xdg := t.TempDir()
+		t.Setenv("XDG_DATA_HOME", xdg)
+
+		got := harnessDataDir()
+		want := filepath.Join(xdg, "kimchi")
+		if got != want {
+			t.Errorf("got %q, want %q", got, want)
+		}
+	})
+
+	t.Run("falls back to HOME/.local/share/kimchi", func(t *testing.T) {
+		t.Setenv("XDG_DATA_HOME", "")
+		home := t.TempDir()
+		t.Setenv("HOME", home)
+
+		got := harnessDataDir()
+		want := filepath.Join(home, ".local", "share", "kimchi")
+		if got != want {
+			t.Errorf("got %q, want %q", got, want)
+		}
+	})
+}
+
 func TestDataDir(t *testing.T) {
 	t.Run("uses XDG_DATA_HOME when set", func(t *testing.T) {
-		xdgDataHome := t.TempDir()
-		t.Setenv("XDG_DATA_HOME", xdgDataHome)
+		xdg := t.TempDir()
+		t.Setenv("XDG_DATA_HOME", xdg)
 
-		got, err := dataDir()
-		if err != nil {
-			t.Fatalf("unexpected error: %v", err)
-		}
-		if got != xdgDataHome {
-			t.Errorf("got %q, want %q", got, xdgDataHome)
+		got := dataDir()
+		if got != xdg {
+			t.Errorf("got %q, want %q", got, xdg)
 		}
 	})
 
@@ -24,10 +46,7 @@ func TestDataDir(t *testing.T) {
 		home := t.TempDir()
 		t.Setenv("HOME", home)
 
-		got, err := dataDir()
-		if err != nil {
-			t.Fatalf("unexpected error: %v", err)
-		}
+		got := dataDir()
 		want := filepath.Join(home, ".local", "share")
 		if got != want {
 			t.Errorf("got %q, want %q", got, want)
@@ -39,10 +58,7 @@ func TestDataDir(t *testing.T) {
 		home := t.TempDir()
 		t.Setenv("HOME", home)
 
-		got, err := dataDir()
-		if err != nil {
-			t.Fatalf("unexpected error: %v", err)
-		}
+		got := dataDir()
 		want := filepath.Join(home, ".local", "share")
 		if got != want {
 			t.Errorf("got %q, want %q", got, want)

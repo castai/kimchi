@@ -152,7 +152,6 @@ func runHarnessUpdate(cmd *cobra.Command, ctx context.Context, force, dryRun, sk
 		update.WithProgressFn(runUpdateWithSpinner),
 	)
 	wf := update.NewHarnessWorkflow(opts...)
-
 	result, err := wf.Run(ctx)
 	if err != nil {
 		_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "Warning: %v\n", err)

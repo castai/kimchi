@@ -416,6 +416,175 @@ func TestWorkflowRun_VerificationFails_RollsBackUpdate(t *testing.T) {
 	assert.Equal(t, originalContent, got)
 }
 
+func TestWorkflowRun_HarnessUpdate_PlacesSupportingFilesInDataDir(t *testing.T) {
+	t.Setenv("XDG_CACHE_HOME", t.TempDir())
+
+	newBinary := []byte("#!/bin/sh\necho v2.0.0")
+	packageJSON := []byte(`{"name":"kimchi-code","version":"2.0.0"}`)
+	themeContent := []byte(`{"background":"#000"}`)
+
+	archive := createArchive(t, []archiveFile{
+		{Name: "bin", IsDir: true},
+		{Name: "bin/" + kimchiDevRepo.Binary, Content: newBinary, Mode: 0755},
+		{Name: "share/kimchi", IsDir: true},
+		{Name: "share/kimchi/package.json", Content: packageJSON},
+		{Name: "share/kimchi/theme", IsDir: true},
+		{Name: "share/kimchi/theme/dark.json", Content: themeContent},
+	})
+	checksum := sha256sum(archive)
+
+	client := &mockGitHubClient{
+		latestRelease: &ReleaseInfo{
+			TagName: "v2.0.0",
+			HTMLURL: "https://github.com/castai/kimchi-dev/releases/tag/v2.0.0",
+		},
+		checksum: checksum,
+		downloadFn: func(_ context.Context, _ Repo, _, dest string) error {
+			return os.WriteFile(dest, archive, 0644)
+		},
+	}
+
+	binDir := t.TempDir()
+	dataDir := t.TempDir()
+	targetPath := filepath.Join(binDir, kimchiDevRepo.Binary)
+	require.NoError(t, os.WriteFile(targetPath, []byte("#!/bin/sh\necho v1.0.0"), 0755))
+
+	w := NewWorkflow(kimchiDevRepo,
+		WithClient(client),
+		WithDataDir(dataDir),
+		WithCurrentVersionFn(func(_ context.Context) (*semver.Version, error) {
+			return mustVersion("1.0.0"), nil
+		}),
+		WithExecutablePathFn(func() (string, error) { return targetPath, nil }),
+	)
+
+	result, err := w.Run(context.Background())
+	require.NoError(t, err)
+	assert.True(t, result.Updated)
+
+	// Binary should be updated at the target path.
+	got, err := os.ReadFile(targetPath)
+	require.NoError(t, err)
+	assert.Equal(t, newBinary, got)
+
+	// Supporting files should be in dataDir, NOT next to the binary.
+	gotPkg, err := os.ReadFile(filepath.Join(dataDir, "package.json"))
+	require.NoError(t, err)
+	assert.Equal(t, packageJSON, gotPkg)
+
+	gotTheme, err := os.ReadFile(filepath.Join(dataDir, "theme", "dark.json"))
+	require.NoError(t, err)
+	assert.Equal(t, themeContent, gotTheme)
+
+	// Verify no supporting files leaked next to the binary.
+	assert.NoFileExists(t, filepath.Join(binDir, "package.json"))
+	assert.NoDirExists(t, filepath.Join(binDir, "theme"))
+}
+
+func TestWorkflowRun_HarnessFreshInstall_PlacesSupportingFilesInDataDir(t *testing.T) {
+	t.Setenv("XDG_CACHE_HOME", t.TempDir())
+
+	newBinary := []byte("#!/bin/sh\necho v1.0.0")
+	packageJSON := []byte(`{"name":"kimchi-code","version":"1.0.0"}`)
+	themeContent := []byte(`{"background":"#000"}`)
+
+	archive := createArchive(t, []archiveFile{
+		{Name: "bin", IsDir: true},
+		{Name: "bin/" + kimchiDevRepo.Binary, Content: newBinary, Mode: 0755},
+		{Name: "share/kimchi", IsDir: true},
+		{Name: "share/kimchi/package.json", Content: packageJSON},
+		{Name: "share/kimchi/theme", IsDir: true},
+		{Name: "share/kimchi/theme/dark.json", Content: themeContent},
+	})
+	checksum := sha256sum(archive)
+
+	client := &mockGitHubClient{
+		latestRelease: &ReleaseInfo{
+			TagName: "v1.0.0",
+			HTMLURL: "https://github.com/castai/kimchi-dev/releases/tag/v1.0.0",
+		},
+		checksum: checksum,
+		downloadFn: func(_ context.Context, _ Repo, _, dest string) error {
+			return os.WriteFile(dest, archive, 0644)
+		},
+	}
+
+	binDir := t.TempDir()
+	dataDir := t.TempDir()
+	targetPath := filepath.Join(binDir, kimchiDevRepo.Binary)
+
+	w := NewWorkflow(kimchiDevRepo,
+		WithClient(client),
+		WithDataDir(dataDir),
+		WithCurrentVersionFn(func(_ context.Context) (*semver.Version, error) {
+			return nil, nil // not installed
+		}),
+		WithExecutablePathFn(func() (string, error) { return targetPath, nil }),
+	)
+
+	result, err := w.Run(context.Background())
+	require.NoError(t, err)
+	assert.True(t, result.Updated)
+	assert.Nil(t, result.InstalledVersion)
+
+	// Binary installed at target path.
+	got, err := os.ReadFile(targetPath)
+	require.NoError(t, err)
+	assert.Equal(t, newBinary, got)
+
+	// Supporting files in dataDir.
+	gotPkg, err := os.ReadFile(filepath.Join(dataDir, "package.json"))
+	require.NoError(t, err)
+	assert.Equal(t, packageJSON, gotPkg)
+
+	assert.NoFileExists(t, filepath.Join(binDir, "package.json"))
+}
+
+func TestWorkflowRun_CLIUpdate_UnchangedWithDataDirUnset(t *testing.T) {
+	t.Setenv("XDG_CACHE_HOME", t.TempDir())
+
+	newBinary := []byte("#!/bin/sh\necho v2.0.0")
+	supportFile := []byte("support-data")
+	archive := createArchive(t, []archiveFile{
+		{Name: kimchiRepo.Binary, Content: newBinary, Mode: 0755},
+		{Name: "support.txt", Content: supportFile},
+	})
+	checksum := sha256sum(archive)
+
+	client := &mockGitHubClient{
+		latestRelease: &ReleaseInfo{
+			TagName: "v2.0.0",
+			HTMLURL: "https://github.com/castai/kimchi/releases/tag/v2.0.0",
+		},
+		checksum: checksum,
+		downloadFn: func(_ context.Context, _ Repo, _, dest string) error {
+			return os.WriteFile(dest, archive, 0644)
+		},
+	}
+
+	targetDir := t.TempDir()
+	targetPath := filepath.Join(targetDir, kimchiRepo.Binary)
+	require.NoError(t, os.WriteFile(targetPath, []byte("#!/bin/sh\necho v1.0.0"), 0755))
+
+	// No WithDataDir — CLI workflow uses flat extraction.
+	w := NewWorkflow(kimchiRepo,
+		WithClient(client),
+		WithCurrentVersionFn(func(_ context.Context) (*semver.Version, error) {
+			return mustVersion("1.0.0"), nil
+		}),
+		WithExecutablePathFn(func() (string, error) { return targetPath, nil }),
+	)
+
+	result, err := w.Run(context.Background())
+	require.NoError(t, err)
+	assert.True(t, result.Updated)
+
+	// Supporting files should be next to the binary (flat layout).
+	gotSupport, err := os.ReadFile(filepath.Join(targetDir, "support.txt"))
+	require.NoError(t, err)
+	assert.Equal(t, supportFile, gotSupport)
+}
+
 func TestNewWorkflow_DefaultClient_IsUsable(t *testing.T) {
 	t.Setenv("XDG_CACHE_HOME", t.TempDir())
 
