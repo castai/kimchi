@@ -26,7 +26,7 @@ func TestExtractStructuredArchive_SplitsBinAndData(t *testing.T) {
 
 	root, err := extractStructuredArchive(bytes.NewReader(archive), "kimchi-code")
 	require.NoError(t, err)
-	defer os.RemoveAll(root)
+	defer func() { _ = os.RemoveAll(root) }()
 
 	gotBinary, err := os.ReadFile(filepath.Join(root, "bin", "kimchi-code"))
 	require.NoError(t, err)
@@ -60,7 +60,7 @@ func TestExtractStructuredArchive_PreservesFilePermissions(t *testing.T) {
 
 	root, err := extractStructuredArchive(bytes.NewReader(archive), "kimchi-code")
 	require.NoError(t, err)
-	defer os.RemoveAll(root)
+	defer func() { _ = os.RemoveAll(root) }()
 
 	info, err := os.Stat(filepath.Join(root, "bin", "kimchi-code"))
 	require.NoError(t, err)
@@ -76,7 +76,7 @@ func TestExtractStructuredArchive_SkipsDirectoryTraversal(t *testing.T) {
 
 	root, err := extractStructuredArchive(bytes.NewReader(archive), "kimchi-code")
 	require.NoError(t, err)
-	defer os.RemoveAll(root)
+	defer func() { _ = os.RemoveAll(root) }()
 
 	assert.FileExists(t, filepath.Join(root, "bin", "kimchi-code"))
 	assert.FileExists(t, filepath.Join(root, "share", "kimchi", "package.json"))
