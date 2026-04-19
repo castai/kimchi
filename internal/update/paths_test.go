@@ -3,6 +3,8 @@ package update
 import (
 	"path/filepath"
 	"testing"
+
+	"github.com/stretchr/testify/assert"
 )
 
 func TestHarnessDataDir(t *testing.T) {
@@ -10,11 +12,7 @@ func TestHarnessDataDir(t *testing.T) {
 		xdg := t.TempDir()
 		t.Setenv("XDG_DATA_HOME", xdg)
 
-		got := harnessDataDir()
-		want := filepath.Join(xdg, "kimchi")
-		if got != want {
-			t.Errorf("got %q, want %q", got, want)
-		}
+		assert.Equal(t, filepath.Join(xdg, "kimchi"), harnessDataDir())
 	})
 
 	t.Run("falls back to HOME/.local/share/kimchi", func(t *testing.T) {
@@ -22,11 +20,7 @@ func TestHarnessDataDir(t *testing.T) {
 		home := t.TempDir()
 		t.Setenv("HOME", home)
 
-		got := harnessDataDir()
-		want := filepath.Join(home, ".local", "share", "kimchi")
-		if got != want {
-			t.Errorf("got %q, want %q", got, want)
-		}
+		assert.Equal(t, filepath.Join(home, ".local", "share", "kimchi"), harnessDataDir())
 	})
 }
 
@@ -35,10 +29,7 @@ func TestDataDir(t *testing.T) {
 		xdg := t.TempDir()
 		t.Setenv("XDG_DATA_HOME", xdg)
 
-		got := dataDir()
-		if got != xdg {
-			t.Errorf("got %q, want %q", got, xdg)
-		}
+		assert.Equal(t, xdg, dataDir())
 	})
 
 	t.Run("falls back to HOME/.local/share when XDG_DATA_HOME unset", func(t *testing.T) {
@@ -46,11 +37,7 @@ func TestDataDir(t *testing.T) {
 		home := t.TempDir()
 		t.Setenv("HOME", home)
 
-		got := dataDir()
-		want := filepath.Join(home, ".local", "share")
-		if got != want {
-			t.Errorf("got %q, want %q", got, want)
-		}
+		assert.Equal(t, filepath.Join(home, ".local", "share"), dataDir())
 	})
 
 	t.Run("empty XDG_DATA_HOME treated as unset", func(t *testing.T) {
@@ -58,10 +45,6 @@ func TestDataDir(t *testing.T) {
 		home := t.TempDir()
 		t.Setenv("HOME", home)
 
-		got := dataDir()
-		want := filepath.Join(home, ".local", "share")
-		if got != want {
-			t.Errorf("got %q, want %q", got, want)
-		}
+		assert.Equal(t, filepath.Join(home, ".local", "share"), dataDir())
 	})
 }
