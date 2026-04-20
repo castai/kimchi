@@ -573,6 +573,10 @@ func copySupportingFiles(srcDir, dstDir, skipName string) error {
 		return fmt.Errorf("read extract directory: %w", err)
 	}
 
+	if err := os.MkdirAll(dstDir, 0755); err != nil {
+		return fmt.Errorf("create destination directory %s: %w", dstDir, err)
+	}
+
 	for _, entry := range entries {
 		if entry.Name() == skipName {
 			continue
