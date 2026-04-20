@@ -21,6 +21,9 @@ const (
 	authStateValidating
 	authStateValid
 	authStateInvalid
+	authStateSaved
+	authStateValidatingSaved
+	authStateValidSaved
 )
 
 type validationCompleteMsg struct {
@@ -37,6 +40,7 @@ type AuthStep struct {
 	spin      spinner.Model
 	state     authState
 	errMsg    string
+	savedKey  string
 	validator auth.Validator
 }
 
@@ -45,12 +49,10 @@ func NewAuthStep() *AuthStep {
 	ti.Placeholder = "Enter your Kimchi API key"
 	ti.EchoMode = textinput.EchoPassword
 	ti.EchoCharacter = '●'
-	ti.Width = 50
+	// Width is intentionally left at the default: a fixed cap scrolls the
+	// masked viewport on backspace instead of shrinking visible dots, which
+	// reads as an unresponsive terminal when editing long pasted keys.
 	ti.Focus()
-
-	if key, _ := config.GetAPIKey(); key != "" {
-		ti.SetValue(key)
-	}
 
 	sp := spinner.New()
 	sp.Spinner = spinner.Dot
@@ -58,16 +60,30 @@ func NewAuthStep() *AuthStep {
 	return &AuthStep{
 		input:     ti,
 		spin:      sp,
-		state:     authStateInput,
 		validator: auth.NewValidator(nil),
 	}
 }
 
 func (s *AuthStep) APIKey() string {
+	return s.activeKey()
+}
+
+func (s *AuthStep) activeKey() string {
+	if s.inSavedFrame() {
+		return s.savedKey
+	}
 	return strings.TrimSpace(s.input.Value())
 }
 
 func (s *AuthStep) Init() tea.Cmd {
+	// Re-entering the step (via back/forward) snaps back to the saved view so
+	// the user gets a fresh chance to keep or replace the stored key instead
+	// of resuming a half-typed edit.
+	if key, _ := config.GetAPIKey(); key != "" {
+		s.savedKey = key
+		s.state = authStateSaved
+		s.errMsg = ""
+	}
 	return textinput.Blink
 }
 
@@ -81,6 +97,9 @@ func (s *AuthStep) Update(msg tea.Msg) (Step, tea.Cmd) {
 			return s, func() tea.Msg { return PrevStepMsg{} }
 		case "enter":
 			switch s.state {
+			case authStateSaved:
+				s.state = authStateValidatingSaved
+				return s, tea.Batch(s.spin.Tick, s.validate(s.savedKey))
 			case authStateInput, authStateInvalid:
 				apiKey := strings.TrimSpace(s.input.Value())
 				if apiKey == "" {
@@ -90,18 +109,31 @@ func (s *AuthStep) Update(msg tea.Msg) (Step, tea.Cmd) {
 				}
 				s.state = authStateValidating
 				return s, tea.Batch(s.spin.Tick, s.validate(apiKey))
-			case authStateValid:
+			case authStateValid, authStateValidSaved:
 				return s, func() tea.Msg { return NextStepMsg{} }
+			}
+		case "e":
+			if s.state == authStateSaved {
+				s.state = authStateInput
+				return s, nil
 			}
 		}
 
 	case validationCompleteMsg:
+		fromSaved := s.state == authStateValidatingSaved
+		if s.state != authStateValidating && !fromSaved {
+			return s, nil
+		}
 		if msg.valid {
-			s.state = authStateValid
-			if err := config.SetAPIKey(strings.TrimSpace(s.input.Value())); err != nil {
-				s.state = authStateInvalid
-				s.errMsg = fmt.Sprintf("Failed to save API key: %v", err)
-				return s, nil
+			if fromSaved {
+				s.state = authStateValidSaved
+			} else {
+				s.state = authStateValid
+				if err := config.SetAPIKey(s.activeKey()); err != nil {
+					s.state = authStateInvalid
+					s.errMsg = fmt.Sprintf("Failed to save API key: %v", err)
+					return s, nil
+				}
 			}
 			return s, tea.Tick(800*time.Millisecond, func(t time.Time) tea.Msg {
 				return advanceMsg{}
@@ -112,10 +144,13 @@ func (s *AuthStep) Update(msg tea.Msg) (Step, tea.Cmd) {
 		return s, nil
 
 	case advanceMsg:
+		if s.state != authStateValid && s.state != authStateValidSaved {
+			return s, nil
+		}
 		return s, func() tea.Msg { return NextStepMsg{} }
 
 	case spinner.TickMsg:
-		if s.state == authStateValidating {
+		if s.state == authStateValidating || s.state == authStateValidatingSaved {
 			var cmd tea.Cmd
 			s.spin, cmd = s.spin.Update(msg)
 			return s, cmd
@@ -145,8 +180,31 @@ func (s *AuthStep) validate(apiKey string) tea.Cmd {
 	}
 }
 
+func (s *AuthStep) inSavedFrame() bool {
+	switch s.state {
+	case authStateSaved, authStateValidatingSaved, authStateValidSaved:
+		return true
+	}
+	return false
+}
+
 func (s *AuthStep) View() string {
 	var b strings.Builder
+
+	if s.inSavedFrame() {
+		b.WriteString("An API key is already saved for Kimchi.\n")
+		switch s.state {
+		case authStateValidatingSaved:
+			b.WriteString("\n")
+			b.WriteString(Styles.Spinner.Render(fmt.Sprintf("%s Validating saved API key...", s.spin.View())))
+			b.WriteString("\n")
+		case authStateValidSaved:
+			b.WriteString("\n")
+			b.WriteString(Styles.Success.Render("✓ API key validated successfully"))
+			b.WriteString("\n")
+		}
+		return b.String()
+	}
 
 	b.WriteString("You need an API key to use Kimchi's open-source models.\n")
 	b.WriteString("To create one:\n\n")
@@ -184,12 +242,13 @@ func (s *AuthStep) Name() string {
 }
 
 func (s *AuthStep) Info() StepInfo {
+	bindings := []KeyBinding{BindingsConfirm}
+	if s.state == authStateSaved {
+		bindings = append(bindings, KeyBinding{Key: "e", Text: "change"})
+	}
+	bindings = append(bindings, BindingsBack, BindingsQuit)
 	return StepInfo{
-		Name: "Kimchi API Key",
-		KeyBindings: []KeyBinding{
-			BindingsConfirm,
-			BindingsBack,
-			BindingsQuit,
-		},
+		Name:        "Kimchi API Key",
+		KeyBindings: bindings,
 	}
 }
