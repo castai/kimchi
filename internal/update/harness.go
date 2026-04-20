@@ -16,6 +16,7 @@ func NewHarnessWorkflow(opts ...WorkflowOpt) *Workflow {
 	defaults := []WorkflowOpt{
 		WithExecutablePathFn(ResolveHarnessPath),
 		WithCurrentVersionFn(HarnessCurrentVersion),
+		WithDataDir(harnessDataDir()),
 	}
 	return NewWorkflow(kimchiDevRepo, append(defaults, opts...)...)
 }
@@ -37,8 +38,8 @@ func CheckHarnessUpdate(ctx context.Context, opts ...WorkflowOpt) (*UpdateStatus
 }
 
 // HarnessCurrentVersion returns the installed harness version, or nil if the
-// harness is not installed. It reads the version from package.json next to the
-// binary, which is instant compared to invoking the binary itself.
+// harness is not installed. It reads the version from package.json in the XDG
+// data directory, falling back to next to the binary for pre-split installs.
 func HarnessCurrentVersion(_ context.Context) (*semver.Version, error) {
 	path, err := ResolveHarnessPath()
 	if err != nil {
@@ -47,7 +48,10 @@ func HarnessCurrentVersion(_ context.Context) (*semver.Version, error) {
 	if !HarnessInstalled(path) {
 		return nil, nil
 	}
-	pkgPath := filepath.Join(filepath.Dir(path), "package.json")
+	pkgPath, err := resolveHarnessPackageJSON(path)
+	if err != nil {
+		return nil, err
+	}
 	data, err := os.ReadFile(pkgPath)
 	if err != nil {
 		return nil, fmt.Errorf("read package.json: %w", err)
@@ -62,6 +66,16 @@ func HarnessCurrentVersion(_ context.Context) (*semver.Version, error) {
 		return nil, nil
 	}
 	return semver.NewVersion(pkg.Version)
+}
+
+// resolveHarnessPackageJSON returns the path to package.json, checking the XDG
+// data directory first and falling back to next to the binary for pre-split installs.
+func resolveHarnessPackageJSON(binaryPath string) (string, error) {
+	p := filepath.Join(harnessDataDir(), "package.json")
+	if _, err := os.Stat(p); err == nil {
+		return p, nil
+	}
+	return filepath.Join(filepath.Dir(binaryPath), "package.json"), nil
 }
 
 // HarnessPathInDir returns the harness binary path within the given directory.

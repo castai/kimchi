@@ -43,18 +43,39 @@ func (m *mockGitHubClient) DownloadArchive(ctx context.Context, repo Repo, versi
 	return nil
 }
 
-func createTestArchive(t *testing.T, binaryName string, binaryContent []byte) []byte {
+type archiveFile struct {
+	Name    string
+	Content []byte
+	Mode    int64
+	IsDir   bool
+}
+
+func createArchive(t *testing.T, files []archiveFile) []byte {
 	t.Helper()
 	var buf bytes.Buffer
 	gw := gzip.NewWriter(&buf)
 	tw := tar.NewWriter(gw)
-	require.NoError(t, tw.WriteHeader(&tar.Header{
-		Name: binaryName,
-		Mode: 0755,
-		Size: int64(len(binaryContent)),
-	}))
-	_, err := tw.Write(binaryContent)
-	require.NoError(t, err)
+	for _, f := range files {
+		if f.IsDir {
+			require.NoError(t, tw.WriteHeader(&tar.Header{
+				Name:     f.Name + "/",
+				Typeflag: tar.TypeDir,
+				Mode:     0755,
+			}))
+			continue
+		}
+		mode := f.Mode
+		if mode == 0 {
+			mode = 0644
+		}
+		require.NoError(t, tw.WriteHeader(&tar.Header{
+			Name: f.Name,
+			Mode: mode,
+			Size: int64(len(f.Content)),
+		}))
+		_, err := tw.Write(f.Content)
+		require.NoError(t, err)
+	}
 	require.NoError(t, tw.Close())
 	require.NoError(t, gw.Close())
 	return buf.Bytes()

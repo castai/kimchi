@@ -41,6 +41,13 @@ func (r *WorkflowResult) HasUpdate() bool {
 	return r.FreshInstall() || (r.AvailableVersion != nil && r.AvailableVersion.GreaterThan(r.InstalledVersion))
 }
 
+// WithDataDir sets the directory for supporting files (package.json, theme/).
+// When set, the workflow uses structured archive extraction and places
+// supporting files in this directory instead of next to the binary.
+func WithDataDir(path string) WorkflowOpt {
+	return func(w *Workflow) { w.dataDir = path }
+}
+
 func WithDryRun() WorkflowOpt {
 	return func(w *Workflow) { w.dryRun = true }
 }
@@ -90,6 +97,7 @@ type Workflow struct {
 	confirmFn           func(current, latest *semver.Version) (bool, error)
 	progressFn          func(tag string, work func() error) error
 
+	dataDir   string
 	skipCache bool
 	dryRun    bool
 }
@@ -284,7 +292,12 @@ func (w *Workflow) apply(ctx context.Context, tag string, freshInstall bool) err
 	}
 	defer func() { _ = os.RemoveAll(extractDir) }()
 
-	binaryPath := filepath.Join(extractDir, w.repo.Binary)
+	var binaryPath string
+	if w.dataDir != "" {
+		binaryPath = filepath.Join(extractDir, "bin", w.repo.Binary)
+	} else {
+		binaryPath = filepath.Join(extractDir, w.repo.Binary)
+	}
 	f, err := os.Open(binaryPath)
 	if err != nil {
 		return fmt.Errorf("open downloaded binary: %w", err)
@@ -308,11 +321,18 @@ func (w *Workflow) apply(ctx context.Context, tag string, freshInstall bool) err
 	klog.V(1).InfoS("binary installed", "repo", w.repo.Name, "path", executablePath)
 
 	// Copy supporting files before verification — the binary may depend on them.
-	targetDir := filepath.Dir(executablePath)
-	if err := copySupportingFiles(extractDir, targetDir, w.repo.Binary); err != nil {
+	var supportSrc, supportDst string
+	if w.dataDir != "" {
+		supportSrc = filepath.Join(extractDir, "share", "kimchi")
+		supportDst = w.dataDir
+	} else {
+		supportSrc = extractDir
+		supportDst = filepath.Dir(executablePath)
+	}
+	if err := copySupportingFiles(supportSrc, supportDst, w.repo.Binary); err != nil {
 		return err
 	}
-	klog.V(1).InfoS("supporting files copied", "repo", w.repo.Name, "targetDir", targetDir)
+	klog.V(1).InfoS("supporting files copied", "repo", w.repo.Name, "targetDir", supportDst)
 
 	klog.V(1).InfoS("verifying binary", "repo", w.repo.Name, "path", executablePath)
 	if err := verifyBinary(executablePath); err != nil {
@@ -421,7 +441,12 @@ func (w *Workflow) downloadAndVerify(ctx context.Context, version string, expect
 	}
 
 	klog.V(1).InfoS("extracting archive", "repo", w.repo.Name, "version", version)
-	extractDir, err := extractArchive(archiveFile, w.repo.Binary)
+	var extractDir string
+	if w.dataDir != "" {
+		extractDir, err = extractStructuredArchive(archiveFile, w.repo.Binary)
+	} else {
+		extractDir, err = extractArchive(archiveFile, w.repo.Binary)
+	}
 	_ = archiveFile.Close()
 	if err != nil {
 		_ = os.RemoveAll(tmpDir)
@@ -434,15 +459,10 @@ func (w *Workflow) downloadAndVerify(ctx context.Context, version string, expect
 }
 
 func prepareBackup(binaryName, version string) (string, error) {
-	dir, err := backupDir()
-	if err != nil {
-		return "", err
-	}
-
+	dir := backupDir()
 	if err := os.MkdirAll(dir, 0700); err != nil {
 		return "", fmt.Errorf("create backup directory: %w", err)
 	}
-
 	return filepath.Join(dir, binaryName+"-"+version), nil
 }
 
@@ -540,15 +560,25 @@ func extractArchive(r io.Reader, binaryName string) (string, error) {
 }
 
 // copySupportingFiles copies all files and directories from srcDir to dstDir,
-// skipping the binary itself (which is handled by applyFreshInstall/applyUpdate).
-func copySupportingFiles(srcDir, dstDir, binaryName string) error {
+// skipping entries that match skipName.
+//
+// For flat archives (CLI), all files including the binary live in one directory;
+// skipName is the binary name so it isn't copied twice.
+// For structured archives (harness), the binary is under bin/ and supporting
+// files are under share/; skipName has no effect since the binary isn't present
+// in the source directory.
+func copySupportingFiles(srcDir, dstDir, skipName string) error {
 	entries, err := os.ReadDir(srcDir)
 	if err != nil {
 		return fmt.Errorf("read extract directory: %w", err)
 	}
 
+	if err := os.MkdirAll(dstDir, 0755); err != nil {
+		return fmt.Errorf("create destination directory %s: %w", dstDir, err)
+	}
+
 	for _, entry := range entries {
-		if entry.Name() == binaryName {
+		if entry.Name() == skipName {
 			continue
 		}
 		src := filepath.Join(srcDir, entry.Name())

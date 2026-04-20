@@ -36,20 +36,12 @@ func repoKey(repo Repo) string {
 	return repo.Owner + "/" + repo.Name
 }
 
-func statePath() (string, error) {
-	dir, err := cacheDir()
-	if err != nil {
-		return "", err
-	}
-	return filepath.Join(dir, appDir, stateFile), nil
+func statePath() string {
+	return filepath.Join(cacheDir(), appDir, stateFile)
 }
 
 func loadState() (*state, error) {
-	path, err := statePath()
-	if err != nil {
-		return nil, err
-	}
-
+	path := statePath()
 	data, err := os.ReadFile(path)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -68,11 +60,7 @@ func loadState() (*state, error) {
 }
 
 func saveState(s *state) error {
-	path, err := statePath()
-	if err != nil {
-		return err
-	}
-
+	path := statePath()
 	dir := filepath.Dir(path)
 	if err := os.MkdirAll(dir, 0700); err != nil {
 		return fmt.Errorf("create state directory: %w", err)
