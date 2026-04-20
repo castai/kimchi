@@ -17,15 +17,16 @@ import (
 type ToolID string
 
 const (
-	ToolOpenCode ToolID = "opencode"
-	ToolContinue ToolID = "continue"
-	ToolWindsurf ToolID = "windsurf"
-	ToolZed      ToolID = "zed"
-	ToolCodex    ToolID = "codex"
-	ToolCline    ToolID = "cline"
-	ToolGSD2     ToolID = "gsd2"
-	ToolOpenClaw ToolID = "openclaw"
-	ToolGeneric  ToolID = "generic"
+	ToolOpenCode   ToolID = "opencode"
+	ToolContinue   ToolID = "continue"
+	ToolWindsurf   ToolID = "windsurf"
+	ToolZed        ToolID = "zed"
+	ToolCodex      ToolID = "codex"
+	ToolCline      ToolID = "cline"
+	ToolGSD2       ToolID = "gsd2"
+	ToolOpenClaw   ToolID = "openclaw"
+	ToolClaudeCode ToolID = "claudecode"
+	ToolGeneric    ToolID = "generic"
 )
 
 type Tool struct {

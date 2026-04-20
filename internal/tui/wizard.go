@@ -218,8 +218,10 @@ func (w *wizard) collectStepResult() {
 		}
 	case *steps.ToolsStep:
 		w.config.SelectedTools = s.SelectedTools()
-		// TODO: add this back once we have telemetry for opencode
-		// w.pendingTelemetry = steps.NewTelemetryStep()
+		// Enable telemetry step if Claude Code is selected
+		if hasClaudeCode(w.config.SelectedTools) {
+			w.pendingTelemetry = steps.NewTelemetryStep()
+		}
 	case *steps.ModeStep:
 		w.config.Mode = s.SelectedMode()
 		if w.config.Mode == config.ModeInject {
@@ -278,6 +280,16 @@ func (w *wizard) currentStepName() string {
 		return w.stepList[w.current].Info().Name
 	}
 	return ""
+}
+
+// hasClaudeCode checks if Claude Code is in the selected tools list.
+func hasClaudeCode(selectedTools []tools.ToolID) bool {
+	for _, t := range selectedTools {
+		if t == tools.ToolClaudeCode {
+			return true
+		}
+	}
+	return false
 }
 
 func RunWizard(ctx context.Context, opts ...WizardOption) (*WizardConfig, error) {
