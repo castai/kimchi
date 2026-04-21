@@ -200,7 +200,7 @@ func (s *AuthStep) View() string {
 		b.WriteString("An API key is already saved for Kimchi.\n")
 		if s.state == authStateSaved {
 			b.WriteString("\n")
-			b.WriteString("Do you want to continue with the API key used previously? [Y/n]\n")
+			b.WriteString("Use the saved API key? [Y/n]\n")
 		}
 		switch s.state {
 		case authStateValidatingSaved:
@@ -256,6 +256,7 @@ func (s *AuthStep) Info() StepInfo {
 		bindings = []KeyBinding{
 			{Key: "Y", Text: "use saved"},
 			{Key: "n", Text: "change"},
+			BindingsConfirm,
 		}
 	} else {
 		bindings = []KeyBinding{BindingsConfirm}
