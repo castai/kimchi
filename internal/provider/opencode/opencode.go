@@ -88,7 +88,12 @@ func Env(apiKey string) (map[string]string, error) {
 	if !found {
 		plugins = append(plugins, kimchiPlugin)
 	}
-	existing["plugin"] = plugins
+
+	if tools.IsPluginArraySupported() {
+		existing["plugin"] = plugins
+	} else {
+		existing["plugin"] = tools.PluginPackage
+	}
 
 	managedConfigPath := filepath.Join(managedOCDir, "opencode.json")
 	if err := config.WriteJSON(managedConfigPath, existing); err != nil {

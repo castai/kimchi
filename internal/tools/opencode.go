@@ -9,13 +9,50 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Masterminds/semver/v3"
+
 	"github.com/castai/kimchi/internal/config"
 )
 
 const (
-	npmRegistryBaseURL = "https://registry.npmjs.org"
-	pluginPackage      = "@kimchi-dev/opencode-kimchi"
+	npmRegistryBaseURL    = "https://registry.npmjs.org"
+	pluginPackage         = "@kimchi-dev/opencode-kimchi"
+	PluginPackage         = pluginPackage
+	PluginArrayMinVersion = "1.14.0"
 )
+
+var opencodeVersionRegexp = regexp.MustCompile(`opencode\s+v?(\d+\.\d+\.\d+)`)
+
+// GetOpenCodeVersion returns the installed OpenCode version by running `opencode --version`.
+// Returns empty string if the version cannot be determined.
+func GetOpenCodeVersion() string {
+	cmd := exec.Command("opencode", "--version")
+	out, err := cmd.Output()
+	if err != nil {
+		return ""
+	}
+	matches := opencodeVersionRegexp.FindStringSubmatch(string(out))
+	if len(matches) < 2 {
+		return ""
+	}
+	return matches[1]
+}
+
+// IsPluginArraySupported returns true if the given OpenCode version supports
+// the array plugin format (>= 1.14.0). Returns false for older versions or
+// if version is empty/unparseable.
+func IsPluginArraySupported() bool {
+	version := GetOpenCodeVersion()
+	if version == "" {
+		return false
+	}
+	v, err := semver.NewVersion(version)
+	if err != nil {
+		return false
+	}
+	min, _ := semver.NewVersion(PluginArrayMinVersion)
+	return v.GreaterThan(min) || v.Equal(min)
+}
 
 func init() {
 	register(Tool{
@@ -161,11 +198,15 @@ func writeOpenCode(scope config.ConfigScope, apiKey string) error {
 	if shouldUpdate {
 		kimchiPlugin := []any{pluginPackage + "@" + latestVersion, pluginConfig}
 		plugins = append(filteredPlugins, kimchiPlugin)
-		existing["plugin"] = plugins
 	} else {
 		// Keep existing plugin configuration
 		plugins = append(filteredPlugins, []any{pluginPackage + "@" + existingVersion, pluginConfig})
+	}
+
+	if IsPluginArraySupported() {
 		existing["plugin"] = plugins
+	} else {
+		existing["plugin"] = pluginPackage
 	}
 
 	if err := config.WriteJSON(path, existing); err != nil {
