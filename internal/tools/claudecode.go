@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 
 	"github.com/castai/kimchi/internal/config"
+	"github.com/castai/kimchi/internal/provider/claudecode"
 )
 
 const claudeCodeConfigPath = "~/.claude/settings.json"
@@ -37,17 +38,9 @@ func writeClaudeCode(scope config.ConfigScope, apiKey string) error {
 		return fmt.Errorf("create claude config directory: %w", err)
 	}
 
-	// Read existing config or create new
-	var existing map[string]any
-	if data, err := os.ReadFile(configPath); err == nil {
-		if err := json.Unmarshal(data, &existing); err != nil {
-			// If unmarshal fails, start fresh but preserve file for debugging
-			existing = make(map[string]any)
-		}
-	} else if !os.IsNotExist(err) {
-		return fmt.Errorf("read claude config: %w", err)
-	} else {
-		existing = make(map[string]any)
+	existing, err := config.ReadJSON(configPath)
+	if err != nil {
+		return fmt.Errorf("read existing config: %w", err)
 	}
 
 	// Get or create env block
@@ -56,11 +49,7 @@ func writeClaudeCode(scope config.ConfigScope, apiKey string) error {
 		env = make(map[string]any)
 	}
 
-	// Configure Kimchi proxy URLs only (no model selection - CC handles that internally)
-	env["ANTHROPIC_BASE_URL"] = anthropicBaseURL
-	env["ANTHROPIC_API_KEY"] = apiKey
-	// Disable beta headers if proxy doesn't support them
-	env["CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS"] = "1"
+	claudecode.InjectInto(env, anthropicBaseURL, apiKey)
 
 	existing["env"] = env
 

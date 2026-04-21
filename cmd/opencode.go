@@ -30,7 +30,7 @@ func NewOpenCodeCommand() *cobra.Command {
 				return err
 			}
 
-			printBanner(os.Stderr, "opencode", cfg)
+			printBanner(os.Stderr, tools.ToolOpenCode, cfg)
 
 			env, err := opencode.Env(apiKey)
 			if err != nil {

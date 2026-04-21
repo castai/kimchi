@@ -30,7 +30,7 @@ func NewClaudeCommand() *cobra.Command {
 				return err
 			}
 
-			printBanner(os.Stderr, "claude-code", cfg)
+			printBanner(os.Stderr, tools.ToolClaudeCode, cfg)
 
 			env := claudecode.Env(apiKey)
 
