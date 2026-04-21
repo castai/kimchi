@@ -30,7 +30,7 @@ func NewCodexCommand() *cobra.Command {
 				return err
 			}
 
-			printBanner(os.Stderr, "codex", cfg)
+			printBanner(os.Stderr, tools.ToolCodex, cfg)
 
 			env, err := codex.Env(apiKey)
 			if err != nil {

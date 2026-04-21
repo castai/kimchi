@@ -291,6 +291,8 @@ func (s *ConfigureStep) getModelInfoForTool(toolID tools.ToolID) string {
 		return fmt.Sprintf("→ %s (default) + %s (coding) + %s (sub)", m, c, s2)
 	case tools.ToolOpenClaw:
 		return fmt.Sprintf("→ %s (primary) + %s (fallback) + %s (fallback)", m, c, s2)
+	case tools.ToolClaudeCode:
+		return "→ Kimchi endpoint configured (Claude Code manages models)"
 	case tools.ToolGeneric:
 		return "→ Environment variables for Kimchi endpoint"
 	default:

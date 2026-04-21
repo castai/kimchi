@@ -300,6 +300,8 @@ func (s *DoneStep) getToolTip(toolID tools.ToolID) string {
 		return fmt.Sprintf("Run 'codex' with a prompt. Ensure %s is set in your environment.", tools.APIKeyEnv)
 	case tools.ToolCline:
 		return "Open VS Code with Cline extension installed and start a new task."
+	case tools.ToolClaudeCode:
+		return "Run 'claude' in any project directory. Claude Code will use Kimchi endpoint for API calls."
 	case tools.ToolGeneric:
 		return "Source the exported environment variables in your shell."
 	default:

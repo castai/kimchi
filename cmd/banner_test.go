@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/castai/kimchi/internal/config"
+	"github.com/castai/kimchi/internal/tools"
 	"github.com/stretchr/testify/assert"
 )
 
@@ -21,7 +22,7 @@ func TestPrintBanner_ContainsKimchi(t *testing.T) {
 	t.Setenv("NO_COLOR", "1")
 
 	var buf bytes.Buffer
-	printBanner(&buf, "opencode", testConfig())
+	printBanner(&buf, tools.ToolOpenCode, testConfig())
 
 	output := buf.String()
 	assert.Contains(t, output, "kimchi")
@@ -33,7 +34,7 @@ func TestPrintBanner_NoColor(t *testing.T) {
 	t.Setenv("TERM", "")
 
 	var buf bytes.Buffer
-	printBanner(&buf, "opencode", testConfig())
+	printBanner(&buf, tools.ToolOpenCode, testConfig())
 
 	output := buf.String()
 	assert.NotContains(t, output, "\033[", "output should not contain ANSI escape codes when NO_COLOR is set")
@@ -45,7 +46,7 @@ func TestPrintBanner_ColorEnabled(t *testing.T) {
 	t.Setenv("TERM", "xterm-256color")
 
 	var buf bytes.Buffer
-	printBanner(&buf, "opencode", testConfig())
+	printBanner(&buf, tools.ToolOpenCode, testConfig())
 
 	output := buf.String()
 	assert.Contains(t, output, "\033[", "output should contain ANSI escape codes when color is enabled")
@@ -56,7 +57,7 @@ func TestPrintBanner_ShowsModels(t *testing.T) {
 	t.Setenv("NO_COLOR", "1")
 
 	var buf bytes.Buffer
-	printBanner(&buf, "opencode", testConfig())
+	printBanner(&buf, tools.ToolOpenCode, testConfig())
 
 	output := buf.String()
 	assert.Contains(t, output, "Models:")
@@ -68,7 +69,7 @@ func TestPrintBanner_ShowsGSDActive(t *testing.T) {
 	t.Setenv("NO_COLOR", "1")
 
 	var buf bytes.Buffer
-	printBanner(&buf, "opencode", testConfig())
+	printBanner(&buf, tools.ToolOpenCode, testConfig())
 
 	assert.Contains(t, buf.String(), "active")
 }
@@ -78,7 +79,7 @@ func TestPrintBanner_ShowsGSDNotInstalled(t *testing.T) {
 
 	cfg := &config.Config{Mode: config.ModeInject}
 	var buf bytes.Buffer
-	printBanner(&buf, "codex", cfg)
+	printBanner(&buf, tools.ToolCodex, cfg)
 
 	assert.Contains(t, buf.String(), "not installed")
 }
@@ -87,7 +88,7 @@ func TestPrintBanner_OutputEndsWithNewline(t *testing.T) {
 	t.Setenv("NO_COLOR", "1")
 
 	var buf bytes.Buffer
-	printBanner(&buf, "opencode", testConfig())
+	printBanner(&buf, tools.ToolOpenCode, testConfig())
 
 	output := buf.String()
 	assert.True(t, strings.HasSuffix(output, "\n"), "banner output should end with a newline")

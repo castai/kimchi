@@ -71,6 +71,7 @@ Get your API key at: https://app.kimchi.dev`,
 	root.AddCommand(NewConfigCommand())
 	root.AddCommand(NewOpenCodeCommand())
 	root.AddCommand(NewCodexCommand())
+	root.AddCommand(NewClaudeCommand())
 	root.AddCommand(NewSetupCommand())
 
 	return root
