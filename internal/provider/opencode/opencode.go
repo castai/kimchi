@@ -92,7 +92,7 @@ func Env(apiKey string) (map[string]string, error) {
 	if tools.IsPluginArraySupported() {
 		existing["plugin"] = plugins
 	} else {
-		existing["plugin"] = tools.PluginPackage
+		existing["plugin"] = []string{tools.PluginPackage}
 	}
 
 	managedConfigPath := filepath.Join(managedOCDir, "opencode.json")

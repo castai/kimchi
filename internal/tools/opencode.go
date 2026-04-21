@@ -206,7 +206,7 @@ func writeOpenCode(scope config.ConfigScope, apiKey string) error {
 	if IsPluginArraySupported() {
 		existing["plugin"] = plugins
 	} else {
-		existing["plugin"] = pluginPackage
+		existing["plugin"] = []string{pluginPackage}
 	}
 
 	if err := config.WriteJSON(path, existing); err != nil {
