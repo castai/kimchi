@@ -14,6 +14,13 @@ import (
 	_ "modernc.org/sqlite"
 )
 
+func testCursorDBPath(t *testing.T) string {
+	t.Helper()
+	p, err := config.ScopePaths(config.ScopeGlobal, getCursorDBPath())
+	require.NoError(t, err)
+	return p
+}
+
 func createTestCursorDB(t *testing.T, dbPath string) *sql.DB {
 	t.Helper()
 	require.NoError(t, os.MkdirAll(filepath.Dir(dbPath), 0755))
@@ -28,7 +35,7 @@ func readCursorStorage(t *testing.T, dbPath string) map[string]any {
 	t.Helper()
 	db, err := sql.Open("sqlite", dbPath)
 	require.NoError(t, err)
-	defer db.Close()
+	defer db.Close() //nolint:errcheck
 
 	var blob []byte
 	err = db.QueryRow("SELECT value FROM ItemTable WHERE key = ?", cursorReactiveStorageKey).Scan(&blob)
@@ -43,9 +50,9 @@ func TestWriteCursor_FreshDB(t *testing.T) {
 	tmpDir := t.TempDir()
 	t.Setenv("HOME", tmpDir)
 
-	dbPath := filepath.Join(tmpDir, "Library", "Application Support", "Cursor", "User", "globalStorage", "state.vscdb")
+	dbPath := testCursorDBPath(t)
 	db := createTestCursorDB(t, dbPath)
-	db.Close()
+	require.NoError(t, db.Close())
 
 	err := writeCursor(config.ScopeGlobal, "test-api-key")
 	require.NoError(t, err)
@@ -74,10 +81,9 @@ func TestWriteCursor_FreshDB(t *testing.T) {
 	require.True(t, ok)
 	assert.Equal(t, cursorModelSlug(MainModel), composer["modelName"])
 
-	// Verify API key row.
 	rdb, err := sql.Open("sqlite", dbPath)
 	require.NoError(t, err)
-	defer rdb.Close()
+	defer rdb.Close() //nolint:errcheck
 	var apiKeyVal string
 	err = rdb.QueryRow("SELECT value FROM ItemTable WHERE key = ?", cursorAPIKeyRow).Scan(&apiKeyVal)
 	require.NoError(t, err)
@@ -88,16 +94,16 @@ func TestWriteCursor_PreservesExistingSettings(t *testing.T) {
 	tmpDir := t.TempDir()
 	t.Setenv("HOME", tmpDir)
 
-	dbPath := filepath.Join(tmpDir, "Library", "Application Support", "Cursor", "User", "globalStorage", "state.vscdb")
+	dbPath := testCursorDBPath(t)
 	db := createTestCursorDB(t, dbPath)
 
 	existing := map[string]any{
-		"cppEnabled":    true,
+		"cppEnabled":     true,
 		"membershipType": "pro",
 		"aiSettings": map[string]any{
-			"cmdKModel":     "gpt-4",
-			"userAddedModels":      []any{"my-custom-model"},
-			"modelOverrideEnabled": []any{"default", "my-custom-model"},
+			"cmdKModel":             "gpt-4",
+			"userAddedModels":       []any{"my-custom-model"},
+			"modelOverrideEnabled":  []any{"default", "my-custom-model"},
 			"modelOverrideDisabled": []any{cursorModelSlug(MainModel), "some-other-model"},
 			"modelConfig": map[string]any{
 				"cmd-k": map[string]any{
@@ -110,33 +116,28 @@ func TestWriteCursor_PreservesExistingSettings(t *testing.T) {
 	require.NoError(t, err)
 	_, err = db.Exec("INSERT INTO ItemTable (key, value) VALUES (?, ?)", cursorReactiveStorageKey, string(blob))
 	require.NoError(t, err)
-	db.Close()
+	require.NoError(t, db.Close())
 
 	err = writeCursor(config.ScopeGlobal, "test-key")
 	require.NoError(t, err)
 
 	storage := readCursorStorage(t, dbPath)
 
-	// Existing top-level settings preserved.
 	assert.Equal(t, true, storage["cppEnabled"])
 	assert.Equal(t, "pro", storage["membershipType"])
 
 	aiSettings := storage["aiSettings"].(map[string]any)
 
-	// Existing aiSettings preserved.
 	assert.Equal(t, "gpt-4", aiSettings["cmdKModel"])
 
-	// Existing custom model preserved in userAddedModels.
 	userModels := toStringSlice(aiSettings["userAddedModels"])
 	assert.Contains(t, userModels, "my-custom-model")
 	assert.Contains(t, userModels, cursorModelSlug(MainModel))
 
-	// Model removed from disabled list.
 	disabled := toStringSlice(aiSettings["modelOverrideDisabled"])
 	assert.NotContains(t, disabled, cursorModelSlug(MainModel))
 	assert.Contains(t, disabled, "some-other-model")
 
-	// All modelConfig entries overridden with kimchi models.
 	modelConfig := aiSettings["modelConfig"].(map[string]any)
 	cmdK, ok := modelConfig["cmd-k"].(map[string]any)
 	require.True(t, ok)
@@ -153,9 +154,9 @@ func TestWriteCursor_Idempotent(t *testing.T) {
 	tmpDir := t.TempDir()
 	t.Setenv("HOME", tmpDir)
 
-	dbPath := filepath.Join(tmpDir, "Library", "Application Support", "Cursor", "User", "globalStorage", "state.vscdb")
+	dbPath := testCursorDBPath(t)
 	db := createTestCursorDB(t, dbPath)
-	db.Close()
+	require.NoError(t, db.Close())
 
 	require.NoError(t, writeCursor(config.ScopeGlobal, "key1"))
 	require.NoError(t, writeCursor(config.ScopeGlobal, "key2"))
@@ -172,10 +173,9 @@ func TestWriteCursor_Idempotent(t *testing.T) {
 	}
 	assert.Equal(t, 1, count, "model should appear exactly once after two writes")
 
-	// API key should be the latest.
 	rdb, err := sql.Open("sqlite", dbPath)
 	require.NoError(t, err)
-	defer rdb.Close()
+	defer rdb.Close() //nolint:errcheck
 	var apiKeyVal string
 	require.NoError(t, rdb.QueryRow("SELECT value FROM ItemTable WHERE key = ?", cursorAPIKeyRow).Scan(&apiKeyVal))
 	assert.Equal(t, "key2", apiKeyVal)
@@ -185,15 +185,15 @@ func TestWriteCursor_StoresAsText(t *testing.T) {
 	tmpDir := t.TempDir()
 	t.Setenv("HOME", tmpDir)
 
-	dbPath := filepath.Join(tmpDir, "Library", "Application Support", "Cursor", "User", "globalStorage", "state.vscdb")
+	dbPath := testCursorDBPath(t)
 	db := createTestCursorDB(t, dbPath)
-	db.Close()
+	require.NoError(t, db.Close())
 
 	require.NoError(t, writeCursor(config.ScopeGlobal, "test-key"))
 
 	rdb, err := sql.Open("sqlite", dbPath)
 	require.NoError(t, err)
-	defer rdb.Close()
+	defer rdb.Close() //nolint:errcheck
 
 	var valType string
 	err = rdb.QueryRow("SELECT typeof(value) FROM ItemTable WHERE key = ?", cursorReactiveStorageKey).Scan(&valType)

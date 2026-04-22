@@ -65,7 +65,7 @@ func writeCursor(_ config.ConfigScope, apiKey string) error {
 	}
 
 	if _, err := os.Stat(dbPath); os.IsNotExist(err) {
-		return fmt.Errorf("Cursor database not found at %s", dbPath)
+		return fmt.Errorf("cursor database not found at %s", dbPath)
 	}
 
 	dsn := fmt.Sprintf("file:%s?_pragma=busy_timeout(5000)&_pragma=journal_mode(wal)", dbPath)
@@ -73,7 +73,7 @@ func writeCursor(_ config.ConfigScope, apiKey string) error {
 	if err != nil {
 		return fmt.Errorf("open database: %w", err)
 	}
-	defer db.Close()
+	defer db.Close() //nolint:errcheck
 
 	tx, err := db.Begin()
 	if err != nil {
