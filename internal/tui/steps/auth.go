@@ -112,7 +112,12 @@ func (s *AuthStep) Update(msg tea.Msg) (Step, tea.Cmd) {
 			case authStateValid, authStateValidSaved:
 				return s, func() tea.Msg { return NextStepMsg{} }
 			}
-		case "e":
+		case "y", "Y":
+			if s.state == authStateSaved {
+				s.state = authStateValidatingSaved
+				return s, tea.Batch(s.spin.Tick, s.validate(s.savedKey))
+			}
+		case "n", "N":
 			if s.state == authStateSaved {
 				s.state = authStateInput
 				return s, nil
@@ -193,6 +198,10 @@ func (s *AuthStep) View() string {
 
 	if s.inSavedFrame() {
 		b.WriteString("An API key is already saved for Kimchi.\n")
+		if s.state == authStateSaved {
+			b.WriteString("\n")
+			b.WriteString("Use the saved API key? [Y/n]\n")
+		}
 		switch s.state {
 		case authStateValidatingSaved:
 			b.WriteString("\n")
@@ -242,9 +251,15 @@ func (s *AuthStep) Name() string {
 }
 
 func (s *AuthStep) Info() StepInfo {
-	bindings := []KeyBinding{BindingsConfirm}
+	var bindings []KeyBinding
 	if s.state == authStateSaved {
-		bindings = append(bindings, KeyBinding{Key: "e", Text: "change"})
+		bindings = []KeyBinding{
+			{Key: "Y", Text: "use saved"},
+			{Key: "n", Text: "change"},
+			BindingsConfirm,
+		}
+	} else {
+		bindings = []KeyBinding{BindingsConfirm}
 	}
 	bindings = append(bindings, BindingsBack, BindingsQuit)
 	return StepInfo{
