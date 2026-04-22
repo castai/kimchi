@@ -26,6 +26,7 @@ const (
 	ToolGSD2       ToolID = "gsd2"
 	ToolOpenClaw   ToolID = "openclaw"
 	ToolClaudeCode ToolID = "claudecode"
+	ToolCursor     ToolID = "cursor"
 	ToolGeneric    ToolID = "generic"
 )
 

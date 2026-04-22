@@ -87,6 +87,8 @@ The interactive wizard will guide you through:
 | [OpenCode](https://opencode.ai) | Agentic coding CLI | `~/.config/opencode/opencode.json` |
 | [Claude Code](https://claude.ai/code) | Anthropic's coding agent | `~/.claude/settings.json` |
 | [Codex](https://github.com/openai/codex) | OpenAI's coding CLI | `~/.codex/.env` |
+| [Cursor](https://cursor.com) | AI-powered code editor | `state.vscdb` (SQLite) |
+| [Windsurf](https://windsurf.com) | AI-powered IDE | `globalStorage/storage.json` |
 | [Zed](https://zed.dev) | High-performance editor | `~/.zed/settings.json` |
 | [Cline](https://cline.bot) | VS Code extension | `~/.cline/data/globalState.json` |
 | [OpenClaw](https://openclaw.ai) | AI agent framework | `~/.openclaw/openclaw.json` |
