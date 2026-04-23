@@ -1,5 +1,10 @@
 package config
 
+import (
+	"reflect"
+	"strings"
+)
+
 // ConfigMode determines how kimchi configures tools.
 type ConfigMode string
 
@@ -31,6 +36,25 @@ func (c *Config) Clone() Config {
 		clone.TelemetryEnabled = &v
 	}
 	return clone
+}
+
+// kimchiConfigKeys returns the JSON key names kimchi owns in the shared
+// config file. Derived from Config's json tags so the list cannot drift when
+// fields are added or renamed.
+func kimchiConfigKeys() []string {
+	t := reflect.TypeFor[Config]()
+	keys := make([]string, 0, t.NumField())
+	for f := range t.Fields() {
+		tag := f.Tag.Get("json")
+		if tag == "" || tag == "-" {
+			continue
+		}
+		name, _, _ := strings.Cut(tag, ",")
+		if name != "" {
+			keys = append(keys, name)
+		}
+	}
+	return keys
 }
 
 func (c *Config) Equal(other *Config) bool {
