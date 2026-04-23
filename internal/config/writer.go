@@ -41,6 +41,12 @@ func ReadJSON(path string) (map[string]any, error) {
 		return nil, fmt.Errorf("parse JSON: %w", err)
 	}
 
+	// Literal `null` unmarshals to a nil map; normalize so callers can
+	// always delete/insert without a nil check.
+	if result == nil {
+		result = make(map[string]any)
+	}
+
 	return result, nil
 }
 
