@@ -3,6 +3,7 @@ package config
 import (
 	"encoding/json"
 	"fmt"
+	"maps"
 	"os"
 	"path/filepath"
 	"strings"
@@ -160,23 +161,28 @@ func Save(cfg *Config) error {
 		return fmt.Errorf("get config path: home directory not found")
 	}
 
-	dir := filepath.Dir(path)
-	if err := os.MkdirAll(dir, 0755); err != nil {
-		return fmt.Errorf("create config directory: %w", err)
+	existing, err := ReadJSON(path)
+	if err != nil {
+		return fmt.Errorf("read existing config: %w", err)
 	}
 
-	data, err := json.MarshalIndent(cfg, "", "  ")
+	cfgData, err := json.Marshal(cfg)
 	if err != nil {
 		return fmt.Errorf("marshal config: %w", err)
 	}
 
-	tmpPath := path + ".tmp"
-	if err := os.WriteFile(tmpPath, data, 0600); err != nil {
-		return fmt.Errorf("write config: %w", err)
+	var cfgMap map[string]any
+	if err := json.Unmarshal(cfgData, &cfgMap); err != nil {
+		return fmt.Errorf("unmarshal config to map: %w", err)
 	}
 
-	if err := os.Rename(tmpPath, path); err != nil {
-		return fmt.Errorf("atomic rename config: %w", err)
+	for _, k := range kimchiConfigKeys() {
+		delete(existing, k)
+	}
+	maps.Copy(existing, cfgMap)
+
+	if err := WriteJSON(path, existing); err != nil {
+		return fmt.Errorf("write config: %w", err)
 	}
 
 	if err := os.Chmod(path, 0600); err != nil {
