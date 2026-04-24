@@ -54,6 +54,8 @@ func detectCursor() bool {
 	return false
 }
 
+// Scope is ignored: Cursor stores its state in a single per-user SQLite database,
+// so there is no project-local equivalent to write to.
 func writeCursor(_ config.ConfigScope, apiKey string) error {
 	if apiKey == "" {
 		return fmt.Errorf("API key not configured")
@@ -68,7 +70,7 @@ func writeCursor(_ config.ConfigScope, apiKey string) error {
 		return fmt.Errorf("cursor database not found at %s", dbPath)
 	}
 
-	dsn := fmt.Sprintf("file:%s?_pragma=busy_timeout(5000)&_pragma=journal_mode(wal)", dbPath)
+	dsn := fmt.Sprintf("file:%s?_pragma=busy_timeout(5000)", dbPath)
 	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		return fmt.Errorf("open database: %w", err)

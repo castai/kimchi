@@ -126,7 +126,8 @@ func TestWriteCursor_PreservesExistingSettings(t *testing.T) {
 	assert.Equal(t, true, storage["cppEnabled"])
 	assert.Equal(t, "pro", storage["membershipType"])
 
-	aiSettings := storage["aiSettings"].(map[string]any)
+	aiSettings, ok := storage["aiSettings"].(map[string]any)
+	require.True(t, ok)
 
 	assert.Equal(t, "gpt-4", aiSettings["cmdKModel"])
 
@@ -138,7 +139,8 @@ func TestWriteCursor_PreservesExistingSettings(t *testing.T) {
 	assert.NotContains(t, disabled, cursorModelSlug(MainModel))
 	assert.Contains(t, disabled, "some-other-model")
 
-	modelConfig := aiSettings["modelConfig"].(map[string]any)
+	modelConfig, ok := aiSettings["modelConfig"].(map[string]any)
+	require.True(t, ok)
 	cmdK, ok := modelConfig["cmd-k"].(map[string]any)
 	require.True(t, ok)
 	assert.Equal(t, cursorModelSlug(CodingModel), cmdK["modelName"])
@@ -162,7 +164,8 @@ func TestWriteCursor_Idempotent(t *testing.T) {
 	require.NoError(t, writeCursor(config.ScopeGlobal, "key2"))
 
 	storage := readCursorStorage(t, dbPath)
-	aiSettings := storage["aiSettings"].(map[string]any)
+	aiSettings, ok := storage["aiSettings"].(map[string]any)
+	require.True(t, ok)
 
 	userModels := toStringSlice(aiSettings["userAddedModels"])
 	count := 0
