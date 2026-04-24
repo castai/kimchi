@@ -137,10 +137,8 @@ func (s *ConfigureStep) writeToolConfig(index int) tea.Cmd {
 			return writeCompleteMsg{index: index, status: "done"}
 		}
 
-		// A nil Write means the tool has no on-disk config to produce
-		// (e.g. Generic, which only surfaces env-var instructions in the TUI).
 		if tool.Write == nil {
-			return writeCompleteMsg{index: index, status: "done"}
+			return writeCompleteMsg{index: index, status: "skipped", err: fmt.Errorf("no writer for tool")}
 		}
 
 		// Install the tool first if it's not present and has an installer.
