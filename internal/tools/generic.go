@@ -1,11 +1,5 @@
 package tools
 
-import (
-	"fmt"
-
-	"github.com/castai/kimchi/internal/config"
-)
-
 func init() {
 	register(Tool{
 		ID:          ToolGeneric,
@@ -14,18 +8,7 @@ func init() {
 		ConfigPath:  "",
 		BinaryName:  "",
 		IsInstalled: func() bool { return false },
-		Write:       writeGeneric,
+		// No Write handler: the Generic tool has no on-disk config. The
+		// configure step renders the env-var instructions inside the TUI.
 	})
-}
-
-func writeGeneric(scope config.ConfigScope, apiKey string) error {
-	if apiKey == "" {
-		return fmt.Errorf("API key not configured")
-	}
-
-	fmt.Printf("export %s=%s\n", APIKeyEnv, apiKey)
-	fmt.Printf("export OPENAI_API_KEY=%s\n", apiKey)
-	fmt.Printf("export OPENAI_BASE_URL=%s\n", baseURL)
-
-	return nil
 }

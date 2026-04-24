@@ -137,8 +137,10 @@ func (s *ConfigureStep) writeToolConfig(index int) tea.Cmd {
 			return writeCompleteMsg{index: index, status: "done"}
 		}
 
+		// A nil Write means the tool has no on-disk config to produce
+		// (e.g. Generic, which only surfaces env-var instructions in the TUI).
 		if tool.Write == nil {
-			return writeCompleteMsg{index: index, status: "skipped", err: fmt.Errorf("no writer for tool")}
+			return writeCompleteMsg{index: index, status: "done"}
 		}
 
 		// Install the tool first if it's not present and has an installer.
@@ -261,6 +263,9 @@ func (s *ConfigureStep) View() string {
 			} else if s.shellProfileErr != nil {
 				fmt.Fprintf(&b, "\n%s\n", Styles.Warning.Render(fmt.Sprintf("Could not export %s to shell profile: %v", tools.APIKeyEnv, s.shellProfileErr)))
 			}
+			if s.hasGenericTool() {
+				b.WriteString(s.renderGenericEnvBlock())
+			}
 			b.WriteString("\n")
 			b.WriteString(Styles.Help.Render("Press enter to exit"))
 		}
@@ -300,6 +305,25 @@ func (s *ConfigureStep) getModelInfoForTool(toolID tools.ToolID) string {
 	default:
 		return ""
 	}
+}
+
+func (s *ConfigureStep) hasGenericTool() bool {
+	for _, id := range s.toolIDs {
+		if id == tools.ToolGeneric {
+			return true
+		}
+	}
+	return false
+}
+
+func (s *ConfigureStep) renderGenericEnvBlock() string {
+	var b strings.Builder
+	b.WriteString("\n")
+	b.WriteString("Set these in your shell to use the Generic integration:\n")
+	fmt.Fprintf(&b, "  export %s=%s\n", tools.APIKeyEnv, s.apiKey)
+	fmt.Fprintf(&b, "  export OPENAI_API_KEY=%s\n", s.apiKey)
+	fmt.Fprintf(&b, "  export OPENAI_BASE_URL=%s\n", tools.BaseURL())
+	return b.String()
 }
 
 func (s *ConfigureStep) Name() string {
