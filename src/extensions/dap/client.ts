@@ -419,6 +419,14 @@ async function startMessageReader(client: DapClient, stateTarget?: DapClient): P
 							break
 						}
 						case "terminated": {
+							// Nested js-debug: the manager/root connection can also
+							// emit `terminated`, and it races AHEAD of the child
+							// connection's final `output` frames — the child emits
+							// terminated in-order AFTER its own output. Drop the
+							// root's terminated once a child session exists, else
+							// run-to-completion callers read outputLines before the
+							// trailing stdout has streamed in.
+							if (client === state && client.childClient) break
 							const body = message.body as TerminatedEvent
 							state.terminated = true
 							while (state.terminatedWaiters.length > 0) {
@@ -609,6 +617,7 @@ async function startChildSession(parent: DapClient, configuration: Record<string
 		outputLines: [],
 		terminated: false,
 		initializedPromise: undefined as unknown as Promise<void>,
+		childConfigForwards: new Map(),
 		// The child can itself receive a startDebugging (deeper nesting) — store
 		// the same server address so a grandchild can connect if ever needed.
 		parentServer: parent.parentServer,
@@ -656,6 +665,15 @@ async function startChildSession(parent: DapClient, configuration: Record<string
 	// Wait for the child's `initialized` event (per-connection) before sending
 	// configurationDone, matching the DAP ordering: initialized → configurationDone.
 	await Promise.race([child.initializedPromise, new Promise((r) => setTimeout(r, 5000))])
+	// Replay config requests the caller already sent to the ROOT connection
+	// (recorded in childConfigForwards). They arrived before this child existed
+	// and sit "provisional" on the manager connection — the real debuggee runs
+	// on the child, so without forwarding the target starts with zero
+	// breakpoints. Ordering per DAP: initialized → setBreakpoints →
+	// configurationDone.
+	for (const forwarded of parent.childConfigForwards.values()) {
+		await sendRequest(child, forwarded.command, forwarded.args)
+	}
 	try {
 		await sendRequest(child, "configurationDone", {}, 10_000)
 	} catch {
@@ -701,7 +719,15 @@ export class DapClientRegistry {
 
 		const existing = this.clients.get(key)
 		if (existing) {
-			return existing
+			if (existing.terminated) {
+				// Terminated (killed) clients are not reusable. The `exited` watcher
+				// deletes them from the map too, but that fires asynchronously — a
+				// caller launching a new session right after terminate() would
+				// otherwise get the dead client (EPIPE/ECONNRESET on the dead socket).
+				this.clients.delete(key)
+			} else {
+				return existing
+			}
 		}
 
 		const existingLock = this.clientLocks.get(key)
@@ -736,6 +762,7 @@ export class DapClientRegistry {
 				outputLines: [],
 				terminated: false,
 				initializedPromise: undefined as unknown as Promise<void>,
+				childConfigForwards: new Map(),
 				parentServer,
 			}
 			// Set up the initialized promise after the client object exists
@@ -874,6 +901,16 @@ export async function sendRequest(
 	}
 	if (client.childSetupError) {
 		throw new Error(`DAP child session setup failed (startDebugging): ${client.childSetupError.message}`)
+	}
+	// js-debug manager→child: remember config requests that hit this connection
+	// before a nested child session exists. js-debug only sends `startDebugging`
+	// after the root's configurationDone — which completeLaunch sends AFTER
+	// caller breakpoints — so those breakpoints would otherwise stay
+	// "provisional" on the manager while the real target runs unconfigured.
+	// startChildSession replays them onto the child before its configurationDone.
+	if (command === "setBreakpoints" || command === "setExceptionBreakpoints") {
+		const bpArgs = args as { source?: { path?: string } } | undefined
+		client.childConfigForwards.set(`${command}:${bpArgs?.source?.path ?? "-"}`, { command, args })
 	}
 	const seq = ++client.seq
 	const request: DapRequest = { seq, type: "request", command, arguments: args }

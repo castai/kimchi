@@ -227,7 +227,9 @@ function isTerminatedError(err: unknown): boolean {
 
 /** Evaluate an expression and return its string representation. */
 async function evaluateString(session: DapSession, expression: string): Promise<string> {
-	const result = await session.evaluate(expression)
+	// js-debug rejects frame-less `evaluate` — pin to the current top frame.
+	const frames = await session.getStackFrame()
+	const result = await session.evaluate(expression, frames[0]?.id)
 	return result.result
 }
 
@@ -326,13 +328,32 @@ export async function debugStateAt(deps: ComposedDeps, opts: DebugStateAtOptions
 			const evaluated: EvaluatedExpression[] = []
 			for (const expr of opts.evaluated ?? []) {
 				try {
-					const result = await session.evaluate(expr)
+					// js-debug rejects frame-less `evaluate` with an opaque
+					// success:false — always evaluate against the stopped frame.
+					const result = await session.evaluate(expr, backtrace[0]?.id)
 					evaluated.push({ expression: expr, result })
 				} catch (e) {
 					evaluated.push({
 						expression: expr,
 						error: e instanceof Error ? e.message : String(e),
 					})
+				}
+			}
+			// Ephemeral sessions: run the program to completion so stdout/stderr
+			// capture the full run — the first breakpoint hit is typically
+			// mid-execution (e.g. inside a loop), so collecting output here would
+			// miss everything printed after the hit. Subsequent hits of the same
+			// breakpoint are ignored by looping until the terminated rejection
+			// lands (same pattern as debugLastError). Caller-owned sessions are
+			// NOT run to completion — that would hijack the caller's debug
+			// position (and hang forever on servers).
+			if (shouldTerminate) {
+				try {
+					while (true) {
+						await session.continue()
+					}
+				} catch (err) {
+					if (!isTerminatedError(err)) throw err
 				}
 			}
 			const { stdout, stderr } = collectOutput(session.outputLines)
@@ -439,9 +460,13 @@ export async function debugTraceCalls(
 		timeoutMs,
 		async () => {
 			await session.completeLaunch()
-			// Run the program to completion — continue rejects on terminated.
+			// Run the program to completion — the first continue() may return a
+			// preserved entry/pause stop without actually resuming, so loop until
+			// the terminated rejection lands (same pattern as debugLastError).
 			try {
-				await session.continue()
+				while (true) {
+					await session.continue()
+				}
 			} catch (err) {
 				if (!isTerminatedError(err)) throw err
 			}

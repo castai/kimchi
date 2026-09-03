@@ -234,7 +234,12 @@ describe("debug_state_at", () => {
 
 	it("creates and terminates a new session when no sessionId is provided", async () => {
 		const stub = createStubSession()
-		stub.continue.mockResolvedValue(stop("breakpoint"))
+		// Ephemeral sessions run to completion after the first hit — the loop
+		// keeps continuing until the terminated rejection (resolveOnce, then
+		// reject like the hit:false test above).
+		stub.continue
+			.mockResolvedValueOnce(stop("breakpoint"))
+			.mockRejectedValue(new Error("Debuggee terminated before reaching a stop"))
 		stub.getVariables.mockResolvedValue([])
 		const { deps } = createDeps()
 
@@ -299,7 +304,9 @@ describe("debug_state_at", () => {
 
 	it("launches the `program` binary while the breakpoint targets `file` (compiled languages)", async () => {
 		const stub = createStubSession()
-		stub.continue.mockResolvedValue(stop("breakpoint"))
+		stub.continue
+			.mockResolvedValueOnce(stop("breakpoint"))
+			.mockRejectedValue(new Error("Debuggee terminated before reaching a stop"))
 		const { deps } = createDeps()
 
 		let launchedProgram: string | undefined

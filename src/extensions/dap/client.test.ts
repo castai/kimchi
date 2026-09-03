@@ -381,6 +381,7 @@ describe("DAP client (in-memory fake adapter)", () => {
 				outputLines: [],
 				terminated: false,
 				initializedPromise: Promise.resolve(),
+				childConfigForwards: new Map(),
 				childClient: {
 					name: "test-child",
 					cwd: CWD,
@@ -397,6 +398,7 @@ describe("DAP client (in-memory fake adapter)", () => {
 					outputLines: [],
 					terminated: false,
 					initializedPromise: Promise.resolve(),
+					childConfigForwards: new Map(),
 				},
 			}
 
@@ -448,6 +450,7 @@ describe("DAP client (in-memory fake adapter)", () => {
 				outputLines: [],
 				terminated: false,
 				initializedPromise: Promise.resolve(),
+				childConfigForwards: new Map(),
 			}
 
 			const resultP = sendRequest(parentClient, "threads", {}, 1000)

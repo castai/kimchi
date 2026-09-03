@@ -100,6 +100,7 @@ function createMockClient(capabilities: DapCapabilities | null = null): MockClie
 		outputLines: [],
 		terminated: false,
 		initializedPromise: Promise.resolve(),
+		childConfigForwards: new Map(),
 		emitEvent(event, body) {
 			if (event === "stopped") {
 				for (const w of stoppedWaiters) w.resolve(body as StoppedEvent)

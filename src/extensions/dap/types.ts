@@ -272,6 +272,22 @@ export interface DapClient {
 	 *  connection — the parent manager has no debuggee, so routing breakpoints
 	 *  there would silently no-op. sendRequest rejects with this error. */
 	childSetupError?: Error
+	/** Config requests (setBreakpoints, setExceptionBreakpoints) sent to this
+	 *  connection BEFORE a nested child session existed. js-debug defers
+	 *  `startDebugging` until after the root's configurationDone, so caller
+	 *  breakpoints arrive on the root connection where they are only
+	 *  "provisional" — the real debuggee runs on the child. startChildSession
+	 *  replays these onto the child before its configurationDone.
+	 *  Keyed `command:sourcePath`; a later request for the same source
+	 *  overwrites the earlier one (setBreakpoints is replace-full-set). */
+	childConfigForwards: Map<string, DapConfigForward>
+}
+
+/** A DAP config request recorded for forwarding into a js-debug nested child
+ *  session (see DapClient.childConfigForwards). */
+export interface DapConfigForward {
+	command: string
+	args: unknown
 }
 
 /** How the DAP client talks to the adapter subprocess.

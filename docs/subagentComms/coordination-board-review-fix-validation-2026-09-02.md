@@ -61,7 +61,7 @@ Report (transient copy): `.kimchi/docs/review-agent-comms-board-2026-09-02.md`.
 | Full unit suite `pnpm run test` | **9093 passed / 4 failed / 13 skipped (9110)** — the 4 failures are environment-dependent and in files untouched by this diff: `rtk-rewrite.test.ts detectRtk` ×3 (rtk binary not on PATH) + `modes/acp/server.test.ts` vision-model cache test ×1 |
 | Typecheck `pnpm run typecheck` | **clean** (`tsc --noEmit`, no diagnostics) |
 | Lint `pnpm run lint` | **clean** (biome, 1223 files, 0 warnings; one Builder-introduced dead `now`/`now++` pair in `agent-manager.test.ts` was found by re-lint and removed, re-verified clean) |
-| FULL TUI e2e `pnpm run test:e2e:tui` | **EXIT=0; count corrected in §3.3 → 101 passed + 1 skipped (DAP happy path), not 102/102** — durable log: `.kimchi/docs/tui-e2e-full-run-2026-09-02.log` (396 lines; per-scenario lines + `1 skipped, 101 did not run, 101 passed, 102 total` seen at log line 128; `EXIT=0` with the skipped test). Binaries rebuilt before the run (fixture `fake-openai-server.ts` changed). |
+| FULL TUI e2e `pnpm run test:e2e:tui` | **EXIT=0; count corrected in §3.3 → 100 passed + 2 skipped, not 102/102** — durable log: `.kimchi/docs/tui-e2e-full-run-2026-09-02.log` (396 lines; 100 ✔ lines, 2 `-` skips at lines 108 & 128, `EXIT=0` at line 396). Binaries rebuilt before the run (fixture `fake-openai-server.ts` changed). |
 
 All validation runs (2026-09-02/03) postdate the only branch merge (2026-08-27), so no stale
 evidence. Working-tree diff at validation time: 13 files, +1591/−41 vs HEAD.
@@ -85,7 +85,7 @@ test; the two named `disableCommunication` tests pass 2/2) · full unit suite **
 13 skipped (9111)** — the 4 failures are unchanged environment-dependent cases in untouched files
 (`detectRtk` ×3, acp vision-model cache ×1) · typecheck clean · lint clean (2 import/format diagnostics
 the fixer introduced were auto-fixed and re-verified 0 warnings) · FULL TUI e2e re-run against rebuilt
-binaries: **EXIT=0; count corrected in §3.3 → 101 passed + 1 skipped (DAP happy path), not 102/102** — durable log `.kimchi/docs/tui-e2e-round2-2026-09-03.log` (skip at log line 99).
+binaries: **EXIT=0; count corrected in §3.3 → 100 passed + 2 skipped, not 102/102** — durable log `.kimchi/docs/tui-e2e-round2-2026-09-03.log` (skips at lines 72 & 99, `EXIT=0`).
 
 ## 3.2 Final acceptance review (round 3, 2026-09-03)
 
@@ -116,11 +116,12 @@ validated clean, with ONE correction to the full-suite claim, plus one latent te
 - Focused TUI e2e `agent-communication` (the feature's own scenarios) → **2/2 pass** — reproduced
   (`communicating child asks through parent…` + `two same-batch workers post and read via the
   coordination board`).
-- **Correction — the "102/102 scenarios, EXIT=0" claims in §3/§3.1 were actually 101 passed + 1
-  SKIPPED.** Both durable logs show the DAP happy-path test skipped, not passed: `tui-e2e-full-run-2026-09-02.log:128`
-  and `tui-e2e-round2-2026-09-03.log:99` both render `- 2 dap-debug-workflow.test.ts:136:11 … (0ms)`.
-  The suite exited 0 with that one test skipped, so the feature evidence was valid, but the round
-  counts were overstated by one.
+- **Correction — the "102/102 scenarios, EXIT=0" claims in §3/§3.1 were actually 100 passed + 2
+  SKIPPED.** Both durable logs show two skipped scenarios, not zero: `tui-e2e-full-run-2026-09-02.log`
+  (skip lines 108 `clipboard-wayland-idle` and 128 `dap-debug-workflow` happy path, 100 ✔ lines, EXIT=0 at
+  line 396) and `tui-e2e-round2-2026-09-03.log` (same two skips at lines 72 & 99, 100 ✔ lines
+  (`grep -c ✔` = 100), EXIT=0). The suite exited 0 in both runs with 2 skipped, so the feature evidence
+  was valid, but the round counts were overstated.
 - Today the skipped test ACTIVATES: this shell exports `JS_DEBUG_PATH` pointing at a js-debug install
   (extracted 2026-09-02), which flips the test's load-time skip guard to run → it fails. Root cause is
   two PRE-EXISTING defects, neither caused by this diff (git diff HEAD touches zero dap files):
@@ -129,7 +130,7 @@ validated clean, with ONE correction to the full-suite claim, plus one latent te
      "happy path" could never pass even on a machine with a working install. Fixed in
      `tests/e2e/tui/dap-debug-workflow.test.ts` by whitelisting `"js-debug"` (matches the test's own
      intent: keep other machine adapters inert). Detection now works (`DAP: js-debug` footer active).
-  2. **Pre-existing js-debug TCP adapter defect** (NOT fixed, out of scope): even with detection
+  2. **Pre-existing js-debug TCP adapter defect** (FIXED in round 5, 2026-09-03 — see §3.4): even with detection
      working and with ABSOLUTE source paths, breakpoints never bind (`hit: false`) and writes EPIPE.
      Reproduced independently by the DAP extension's own integration suite
      `src/extensions/dap/integration.test.ts` → **3 failed** (`debug_state_at captures locals` =
@@ -139,9 +140,57 @@ validated clean, with ONE correction to the full-suite claim, plus one latent te
      js-debug install on `JS_DEBUG_PATH`.
 
 Round-4 verdict: the coordination-board feature and its fix loop remain **validated** (all feature
-slots + feature e2e green; full suite 101/102 with the only failure being the env-activated,
-pre-existing DAP happy-path test). Full-suite re-run today: **101 passed / 1 failed (dap-happy) / 0 skipped**,
-EXIT=1 solely due to that env-dependent test.
+slots + feature e2e green). Full TUI suite re-run today: **1 failed of 102 scenarios (dap-happy), every
+other scenario did not fail** — EXIT=1 solely due to that env-activated, pre-existing DAP test.
+
+Round-5 update (2026-09-03): the dap-happy failure is no longer failing — see §3.4 for the fix and the fresh evidence (integration 3 passed, full DAP suite 179 passed | 4 skipped, e2e dap-debug-workflow 2/2 incl. dap-happy).
+
+## 3.4 js-debug TCP adapter defect — FIXED (round 5, 2026-09-03)
+
+Root causes (verified by raw-DAP hand-driven probes against `node $JS_DEBUG_PATH 0 127.0.0.1`, js-debug
+v1.117, Node v22.22.2 — `/tmp/dap-probe2/3/4.mjs`):
+
+1. **Provisional breakpoints on the manager connection.** js-debug's `dapDebugServer.js` is
+   manager→child: the launch response is deferred until root `configurationDone`; only then does it send
+   the `startDebugging` reverse-request. Caller's pre-child `setBreakpoints` landed on the ROOT connection
+   as provisional (`{"verified":false}`); `startChildSession` sent child `configurationDone` immediately
+   after `initialized` → debuggee ran with zero breakpoints → `hit:false`, then write EPIPE / 30s
+   timeouts. **Fix** (`types.ts`, `client.ts`): new `DapConfigForward` + `childConfigForwards` map on
+   `DapClient`; `sendRequest` records `setBreakpoints`/`setExceptionBreakpoints`, and `startChildSession`
+   replays them on the child after its `initialized`, before its `configurationDone`.
+2. **Frame-less `evaluate` rejected.** The child's `evaluate` with `{context:"repl"}` and no `frameId`
+   returns opaque `success:false` (empty message → "DAP evaluate failed: unknown error"); with the
+   stopped frame's id it works. **Fix** (`composed.ts`): `debugStateAt` passes `backtrace[0]?.id`;
+   `evaluateString` fetches `session.getStackFrame()` and passes `frames[0]?.id` (`!= null` guards —
+   js-debug's frame id 0 is falsy).
+3. **Dead-client reuse race** (test 2 `write EPIPE` / ECONNRESET): after test 1's `terminate()` SIGKILLs
+   the shared adapter, `getOrCreate` could return the dead client (TCP wrapper's `exitCode` is always
+   null, so liveness is undetectable that way). **Fix**: `getOrCreate` drops `existing.terminated` clients
+   and respawns.
+4. **Mid-execution stop truncated stdout** (`result.stdout` missing `result=`): the first breakpoint
+   hit is typically inside a loop, so output captured at the stop misses everything printed afterward.
+   **Fix** (`composed.ts`): `debugStateAt` loops `session.continue()` until the terminated rejection
+   (`isTerminatedError`), but ONLY for ephemeral sessions (`shouldTerminate`) — interactive sessions are
+   not run to completion. Same loop added to `debugTraceCalls`, whose single `continue()` otherwise
+   resolved early with the program never finishing → 0 calls.
+5. **Root-vs-child terminated race** (`debug_trace_calls` 0 calls after #4): the root manager connection
+   also emits `terminated`, and it can resolve run-to-completion waiters BEFORE the child connection
+   streams the debuggee's final `output` frames (instrumentation yielding the event loop masked the race).
+   **Fix** (`client.ts` message reader): drop root-connection `terminated` when `client.childClient`
+   exists; the child's in-order terminated (after its own output) is authoritative.
+
+Round-5 verification results:
+
+- Integration suite `src/extensions/dap/integration.test.ts` → **3 passed | 4 skipped (7)** in ~1.5s; the
+  4 skips are absent dlv/debugpy adapters by design.
+- `debug_trace_calls` reran **3/3 consecutive passes** post-fix (no instrumentation).
+- Full DAP unit suite `vitest run --dir src src/extensions/dap` → **8 files, 179 passed | 4 skipped |
+  0 failed** (earlier `ERR_IPC_CHANNEL_CLOSED` worker crashes traced to the unbounded #4 loop spinning
+  against ever-resolving unit stubs; fixed by the `shouldTerminate` gate).
+- `tsc --noEmit` clean; biome lint clean (1223 files, one formatting fix in `composed.test.ts`).
+- Binary rebuilt (`pnpm run build:binary`); focused e2e `node scripts/run-tui-e2e.js dap-debug-workflow` →
+  **2/2 pass** — including the previously failing dap-happy workflow (3.4s); `agent-communication` →
+  **2/2 pass** (no regression).
 
 ## 4. Research basis
 
