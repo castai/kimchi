@@ -201,7 +201,15 @@ export async function startFakeOpenAiServer(options: StartFakeOpenAiServerOption
 			}
 
 			if (req.method === "POST" && req.url?.startsWith("/openai/v1/chat/completions")) {
-				const script = pickResponseScript(body, mainQueue, subagentQueue)
+				const request: FakeResponseRequest = { method: req.method, url: req.url, headers: req.headers, body }
+				const script = pickResponseScript(request, mainQueue, subagentQueue)
+				if (process.env.KIMCHI_FAKE_DEBUG === "1") {
+					const label = (s: FakeResponseScript) =>
+						(s.toolCalls?.map((t) => t.function?.name ?? "?").join(",") || s.stream?.join(" ") || "?").slice(0, 50)
+					console.error(
+						`[fake-serve] sub=${isSubagentRequest(request.body)} served="${label(script)}" mainLeft=${mainQueue.length} subLeft=${subagentQueue.length}`,
+					)
+				}
 				await writeChatCompletion(res, script, body)
 				return
 			}
@@ -335,7 +343,7 @@ async function writeChatCompletion(res: ServerResponse, script: FakeResponseScri
 	const fermentId = extractFermentId(body)
 	const agentId = extractAgentId(body)
 	const messageId = extractMessageId(body)
-	for (const toolCall of script.toolCalls ?? []) {
+	for (const [i, toolCall] of (script.toolCalls ?? []).entries()) {
 		const fn = { ...toolCall.function }
 		if (fermentId) fn.arguments = fn.arguments.replaceAll("__FERMENT_ID__", fermentId)
 		if (agentId) fn.arguments = fn.arguments.replaceAll("__AGENT_ID__", agentId)
@@ -346,7 +354,7 @@ async function writeChatCompletion(res: ServerResponse, script: FakeResponseScri
 				delta: {
 					tool_calls: [
 						{
-							index: toolCall.index ?? 0,
+							index: toolCall.index ?? i,
 							id: toolCall.id ?? "call_fake",
 							type: toolCall.type ?? "function",
 							function: fn,
@@ -486,17 +494,29 @@ function isSubagentRequest(body: unknown): boolean {
  * single-queue behaviour.
  */
 function pickResponseScript(
-	body: unknown,
+	request: FakeResponseRequest,
 	mainQueue: FakeResponseScript[],
 	subagentQueue: FakeResponseScript[],
 ): FakeResponseScript {
-	const useSubagent = subagentQueue.length > 0 && isSubagentRequest(body)
+	const useSubagent = subagentQueue.length > 0 && isSubagentRequest(request.body)
 	const primary = useSubagent ? subagentQueue : mainQueue
-	if (primary.length > 0) {
-		return primary.shift() ?? { stream: ["fake response"] }
-	}
 	const fallback = useSubagent ? mainQueue : subagentQueue
-	return fallback.shift() ?? { stream: ["fake response"] }
+	// Honor script `match` predicates: pick the first primary-queue script whose
+	// predicate passes. Scripts without a predicate always pass, so match-less
+	// queues keep exact FIFO behavior. When the primary queue is exhausted, fall
+	// back to the other queue (legacy behavior to avoid hangs when scripted
+	// counts are slightly off).
+	const primaryIndex = primary.findIndex((script) => !script.match || script.match(request))
+	if (primaryIndex >= 0) {
+		return primary.splice(primaryIndex, 1)[0] ?? { stream: ["fake response"] }
+	}
+	if (primary.length === 0) {
+		const fallbackIndex = fallback.findIndex((script) => !script.match || script.match(request))
+		if (fallbackIndex >= 0) {
+			return fallback.splice(fallbackIndex, 1)[0] ?? { stream: ["fake response"] }
+		}
+	}
+	return { stream: ["fake response"] }
 }
 
 function unixNow(): number {

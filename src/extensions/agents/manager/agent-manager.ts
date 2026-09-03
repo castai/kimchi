@@ -44,6 +44,15 @@ import {
 	runAgent,
 	type ToolActivity,
 } from "./agent-runner.js"
+import type { BoardEntrySummary } from "./board.js"
+import {
+	type BoardEntryKind,
+	type BoardEvent,
+	type BoardPostReceipt,
+	type BoardReadReceipt,
+	BoardStore,
+	type BoardSummary,
+} from "./board.js"
 import { runRemoteAgent } from "./remote-agent-runner.js"
 import { addUsage, type LifetimeUsage } from "./usage.js"
 
@@ -225,6 +234,8 @@ export class AgentManager {
 	private parentBridge?: AgentParentBridge
 	private userContactResolver?: (rootSessionId: string) => AgentContact
 	private onMessageEvent?: (event: AgentMessageEvent) => void
+	private onBoardEvent?: (event: BoardEvent) => void
+	private boardStore = new BoardStore()
 	private communicationDisabled = false
 	private cleanupInterval: ReturnType<typeof setInterval>
 	private onComplete?: OnAgentComplete
@@ -805,13 +816,22 @@ export class AgentManager {
 		this.onMessageEvent = handler
 	}
 
+	setBoardEventHandler(handler: ((event: BoardEvent) => void) | undefined): void {
+		this.onBoardEvent = handler
+	}
+
 	disableCommunication(rootSessionId?: string): boolean {
 		if (rootSessionId && this.communicationRootSessionId !== rootSessionId) return false
+		// Compute the board root to clean up BEFORE any mutation of this.communicationRootSessionId
+		// so the fallback captures the currently-bound root before it is cleared.
+		const cleanupRoot = rootSessionId ?? this.communicationRootSessionId
 		this.parentBridge = undefined
 		this.userContactResolver = undefined
 		this.communicationDisabled = true
+		this.communicationRootSessionId = rootSessionId === undefined ? undefined : rootSessionId
 		this.terminalizeAllPendingMessages("shutdown", false)
 		this.clearMessageBroker()
+		if (cleanupRoot) this.boardStore.cleanupRoot(cleanupRoot)
 		return true
 	}
 
@@ -840,7 +860,111 @@ export class AgentManager {
 					route: "peer" as const,
 				}))
 			: []
-		return { parent, user_via_parent: user, peers }
+		let board: { total: number; latestId?: string } | undefined
+		if (active && source?.groupId && root) {
+			const summary = this.getBoardSummary(root, source.groupId)
+			if (summary.total > 0) {
+				board = { total: summary.total, latestId: summary.latest[0]?.id }
+			}
+		}
+		return { parent, user_via_parent: user, peers, board }
+	}
+
+	/**
+	 * Post a board entry. Requires a live agent record with a groupId.
+	 * Host stamps authorAgentId, postedAt, rootSessionId, and groupId.
+	 * Host-truncates title/body at caps. Dedupe within 120s window.
+	 */
+	postBoardEntry(agentId: string, input: { kind: BoardEntryKind; title: string; body: string }): BoardPostReceipt {
+		const record = this.agents.get(agentId)
+		if (!record) return { ok: false, reason: "agent_not_live" }
+		if (!record.groupId) return { ok: false, reason: "not_authorized_for_board" }
+
+		const rootSessionId = record.communicationScope?.rootSessionId
+		const groupId = record.groupId
+		if (!rootSessionId || !groupId) return { ok: false, reason: "not_authorized_for_board" }
+		const result = this.boardStore.post(
+			rootSessionId,
+			groupId,
+			agentId,
+			input.kind,
+			input.title,
+			input.body,
+			Date.now(),
+		)
+
+		if (result.deduped) {
+			return {
+				ok: true,
+				deduped: true,
+				entry: result.entry,
+			}
+		}
+
+		// Emit body-free board events
+		this.onBoardEvent?.({
+			action: "posted",
+			entryId: result.entry.id,
+			rootSessionId,
+			groupId,
+			authorAgentId: agentId,
+			kind: input.kind,
+			title: result.entry.title,
+		})
+
+		if (result.evicted) {
+			this.onBoardEvent?.({
+				action: "evicted",
+				entryId: result.evicted.id,
+				rootSessionId: result.evicted.rootSessionId,
+				groupId: result.evicted.groupId,
+			})
+		}
+
+		return {
+			ok: true,
+			entry: result.entry,
+			truncated: result.truncated,
+		}
+	}
+
+	/**
+	 * Read board entries for an agent. Requires a live agent record with groupId.
+	 */
+	readBoardEntries(
+		agentId: string,
+		opts?: { sinceId?: string; kind?: BoardEntryKind; limit?: number },
+	): BoardReadReceipt {
+		const record = this.agents.get(agentId)
+		if (!record) return { ok: false, reason: "agent_not_live" }
+		if (!record.groupId) return { ok: false, reason: "not_authorized_for_board" }
+
+		const rootSessionId = record.communicationScope?.rootSessionId
+		const groupId = record.groupId
+		if (!rootSessionId || !groupId) return { ok: false, reason: "not_authorized_for_board" }
+
+		const entries = this.boardStore.read(rootSessionId, groupId, opts)
+		return { ok: true, entries, total: this.boardStore.getSummary(rootSessionId, groupId).total }
+	}
+
+	/**
+	 * Get board summary (no agent gating — host/coordinator use).
+	 */
+	getBoardSummary(rootSessionId: string, groupId: string): BoardSummary {
+		return this.boardStore.getSummary(rootSessionId, groupId)
+	}
+
+	/**
+	 * Get board summaries for ALL groups under a root session.
+	 * Returns only non-empty boards, in insertion order of groupIds.
+	 * The caller (coordinator/host) has no groupId — this aggregates
+	 * all boards under the root so the coordinator can observe
+	 * every group's coordination activity.
+	 */
+	getBoardSummariesForRoot(
+		rootSessionId: string,
+	): Array<{ groupId: string; total: number; latest: BoardEntrySummary[] }> {
+		return this.boardStore.getSummariesForRoot(rootSessionId)
 	}
 
 	private createMessageCapability(record: AgentRecord): AgentMessageCapability | undefined {
@@ -853,6 +977,8 @@ export class AgentManager {
 			listContacts: () => this.getCommunicationContacts(sourceAgentId),
 			sendMessage: (toolCallId, input) =>
 				this.sendChildMessage(sourceAgentId, rootSessionId, taskId, toolCallId, input),
+			postBoardEntry: (input) => this.postBoardEntry(sourceAgentId, input),
+			readBoardEntries: (opts) => this.readBoardEntries(sourceAgentId, opts ?? {}),
 		}
 	}
 
@@ -1033,6 +1159,7 @@ export class AgentManager {
 	}
 
 	private createPendingDelivery(message: AgentMessage, targetAgentId: string, bytes: number): PendingAgentMessage {
+		const correlation = message.replyTo ? ` replying to ${message.replyTo}` : ` message_id=${message.id}`
 		return {
 			messageId: message.id,
 			threadId: message.threadId,
@@ -1041,7 +1168,9 @@ export class AgentManager {
 			targetAgentId,
 			rootSessionId: message.rootSessionId,
 			kind: message.payload.kind,
-			prompt: `Host-mediated message from peer ${message.sourceAgentId}${message.replyTo ? ` replying to ${message.replyTo}` : ""}:\n${JSON.stringify(message.payload)}`,
+			// Thread-opening deliveries must carry message_id so the responder can
+			// construct reply_to; replies correlate through `replying to` instead.
+			prompt: `Host-mediated message from peer ${message.sourceAgentId}${correlation}:\n${JSON.stringify(message.payload)}`,
 			bytes,
 		}
 	}

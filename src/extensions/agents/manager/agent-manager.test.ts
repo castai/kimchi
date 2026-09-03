@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it, vi } from "vitest"
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
 vi.mock("./agent-runner.js", () => ({
 	runAgent: vi.fn(),
@@ -11,6 +11,7 @@ import type { AgentSession, ExtensionAPI, ExtensionContext } from "@earendil-wor
 import { AGENT_MESSAGE_LIMITS, createAgentMessage } from "../messages.js"
 import { AgentManager, type AgentParentBridge, buildAgentOutcome } from "./agent-manager.js"
 import { resumeAgent, runAgent } from "./agent-runner.js"
+import { BoardStore } from "./board.js"
 
 const mockRunAgent = vi.mocked(runAgent)
 const mockResumeAgent = vi.mocked(resumeAgent)
@@ -2652,3 +2653,545 @@ async function expectStillPending(promise: Promise<unknown>): Promise<void> {
 	await Promise.resolve()
 	expect(settled).toBe(false)
 }
+
+describe("board", () => {
+	let manager: AgentManager
+
+	beforeEach(() => {
+		manager = new AgentManager(undefined, 0)
+		vi.clearAllMocks()
+	})
+
+	afterEach(() => {
+		manager?.dispose()
+	})
+
+	function spawnAgentWithGroup(groupId: string, rootSessionId: string): string {
+		const id = manager.spawn({} as ExtensionAPI, {} as ExtensionContext, "Explore", "board test", {
+			description: "board test",
+			isBackground: true,
+			communication: "group",
+			rootSessionId: "root-1",
+		})
+		const agent = manager.getRecord(id)
+		if (!agent) throw new Error("expected agent")
+		agent.groupId = groupId
+		agent.communicationScope = {
+			rootSessionId,
+			sourceAgentId: agent.id,
+			taskId: `agent-task:${agent.id}`,
+		}
+		return agent.id
+	}
+
+	it("posts an entry with host-stamped author, timestamp, rootSessionId, groupId", () => {
+		const agentId = spawnAgentWithGroup("batch-1", "root-1")
+		const receipt = manager.postBoardEntry(agentId, {
+			kind: "note",
+			title: "Test entry",
+			body: "This is a test",
+		})
+		if (!receipt.ok) throw new Error("expected ok")
+		expect(receipt.entry.authorAgentId).toBe(agentId)
+		expect(receipt.entry.rootSessionId).toBe("root-1")
+		expect(receipt.entry.groupId).toBe("batch-1")
+		expect(receipt.entry.kind).toBe("note")
+		expect(receipt.entry.id).toMatch(/^bd-/)
+		expect(receipt.entry.postedAt).toBeGreaterThan(0)
+		if (!receipt.deduped) {
+			expect(receipt.truncated).toEqual([])
+		}
+	})
+
+	it("truncates title at 120 chars and body at 2048 chars, marking truncated fields", () => {
+		const agentId = spawnAgentWithGroup("batch-1", "root-1")
+		const longTitle = "x".repeat(121)
+		const longBody = "y".repeat(2049)
+		const receipt = manager.postBoardEntry(agentId, {
+			kind: "work",
+			title: longTitle,
+			body: longBody,
+		})
+		if (!receipt.ok) throw new Error("expected ok")
+		if (!receipt.deduped) {
+			expect(receipt.truncated).toEqual(["title", "body"])
+		}
+		expect(receipt.entry.title.length).toBe(120)
+		expect(receipt.entry.body.length).toBe(2048)
+	})
+
+	it("rejects agent_not_live for unknown agent", () => {
+		const receipt = manager.postBoardEntry("nonexistent", {
+			kind: "note",
+			title: "test",
+			body: "test",
+		})
+		expect(receipt).toEqual({ ok: false, reason: "agent_not_live" })
+	})
+
+	it("rejects not_authorized_for_board when agent has no groupId", () => {
+		const id = manager.spawn({} as ExtensionAPI, {} as ExtensionContext, "Explore", "test", {
+			description: "test",
+			isBackground: true,
+			communication: "group",
+			rootSessionId: "root-1",
+		})
+		const receipt = manager.postBoardEntry(id, {
+			kind: "note",
+			title: "test",
+			body: "test",
+		})
+		expect(receipt).toEqual({ ok: false, reason: "not_authorized_for_board" })
+	})
+
+	it("dedupes identical post within 120s window, returns deduped receipt", () => {
+		const agentId = spawnAgentWithGroup("batch-1", "root-1")
+
+		const first = manager.postBoardEntry(agentId, {
+			kind: "finding",
+			title: "  Duplicate  test  ",
+			body: "  Same  content  ",
+		})
+		if (!first.ok) throw new Error("expected ok")
+
+		const second = manager.postBoardEntry(agentId, {
+			kind: "finding",
+			title: "Duplicate test",
+			body: "Same content",
+		})
+		if (!second.ok) throw new Error("expected ok")
+		expect(second.deduped).toBe(true)
+		expect(second.entry.id).toBe(first.entry.id)
+	})
+
+	it("does NOT dedupe after 120s window expires", () => {
+		vi.useFakeTimers()
+		const agentId = spawnAgentWithGroup("batch-1", "root-1")
+
+		const first = manager.postBoardEntry(agentId, {
+			kind: "warning",
+			title: "Expiring",
+			body: "Soon",
+		})
+		if (!first.ok) throw new Error("expected ok")
+		const firstId = first.entry.id
+
+		vi.advanceTimersByTime(120_001)
+
+		const second = manager.postBoardEntry(agentId, {
+			kind: "warning",
+			title: "Expiring",
+			body: "Soon",
+		})
+		if (!second.ok) throw new Error("expected ok")
+		expect(second.entry.id).not.toBe(firstId)
+		expect(second.deduped).toBeUndefined()
+		vi.useRealTimers()
+	})
+
+	it("filters entries by kind on read", () => {
+		const agentId = spawnAgentWithGroup("batch-1", "root-1")
+
+		manager.postBoardEntry(agentId, { kind: "note", title: "Note 1", body: "a" })
+		manager.postBoardEntry(agentId, { kind: "work", title: "Work 1", body: "b" })
+		manager.postBoardEntry(agentId, { kind: "finding", title: "Finding 1", body: "c" })
+
+		const read = manager.readBoardEntries(agentId, { kind: "work" })
+		if (!read.ok) throw new Error("expected ok")
+		expect(read.entries).toHaveLength(1)
+		expect(read.entries[0]?.kind).toBe("work")
+	})
+
+	it("limits read to default 50, max 200", () => {
+		const agentId = spawnAgentWithGroup("batch-1", "root-1")
+
+		for (let i = 0; i < 100; i++) {
+			manager.postBoardEntry(agentId, {
+				kind: "note",
+				title: `Post ${i}`,
+				body: `Content ${i}`,
+			})
+		}
+
+		const read = manager.readBoardEntries(agentId)
+		if (!read.ok) throw new Error("expected ok")
+		expect(read.entries).toHaveLength(50)
+		expect(read.total).toBe(100)
+
+		const max = manager.readBoardEntries(agentId, { limit: 200 })
+		if (!max.ok) throw new Error("expected ok")
+		expect(max.entries).toHaveLength(100)
+	})
+
+	it("filters entries by sinceId (unknown sinceId returns full list)", () => {
+		const agentId = spawnAgentWithGroup("batch-1", "root-1")
+
+		const first = manager.postBoardEntry(agentId, {
+			kind: "note",
+			title: "First",
+			body: "a",
+		})
+		if (!first.ok) throw new Error("expected ok")
+		manager.postBoardEntry(agentId, { kind: "note", title: "Second", body: "b" })
+		manager.postBoardEntry(agentId, { kind: "note", title: "Third", body: "c" })
+
+		const sinceFirst = manager.readBoardEntries(agentId, {
+			sinceId: first.entry.id,
+		})
+		if (!sinceFirst.ok) throw new Error("expected ok")
+		expect(sinceFirst.entries).toHaveLength(2)
+		expect(sinceFirst.entries[0]?.title).toBe("Second")
+
+		// Unknown sinceId returns full list
+		const unknown = manager.readBoardEntries(agentId, { sinceId: "unknown" })
+		if (!unknown.ok) throw new Error("expected ok")
+		expect(unknown.entries).toHaveLength(3)
+	})
+
+	it("evicts oldest per-board entry at 200 (FIFO) with evicted event", () => {
+		const agentId = spawnAgentWithGroup("batch-1", "root-1")
+		const boardHandler = vi.fn()
+		manager.setBoardEventHandler(boardHandler)
+
+		let firstId: string | undefined
+		for (let i = 1; i <= 201; i++) {
+			const received = manager.postBoardEntry(agentId, {
+				kind: "note",
+				title: `Entry ${i}`,
+				body: `Content ${i}`,
+			})
+			if (i === 1 && received.ok) firstId = received.entry.id
+		}
+		expect(firstId).toBeDefined()
+
+		const entries = manager.readBoardEntries(agentId, { limit: 200 })
+		if (!entries.ok) throw new Error("expected ok")
+		expect(entries.entries).toHaveLength(200)
+		expect(entries.entries[0]?.title).toBe("Entry 2")
+
+		const evictedEvents = boardHandler.mock.calls.map((call) => call[0]).filter((event) => event.action === "evicted")
+		expect(evictedEvents).toHaveLength(1)
+		expect(evictedEvents[0]).toEqual({
+			action: "evicted",
+			entryId: firstId,
+			rootSessionId: "root-1",
+			groupId: "batch-1",
+		})
+	})
+
+	it("returns board summary with total and up to 3 latest", () => {
+		const agentId = spawnAgentWithGroup("batch-1", "root-1")
+
+		manager.postBoardEntry(agentId, { kind: "note", title: "A", body: "a" })
+		manager.postBoardEntry(agentId, { kind: "note", title: "B", body: "b" })
+		manager.postBoardEntry(agentId, { kind: "note", title: "C", body: "c" })
+		manager.postBoardEntry(agentId, { kind: "note", title: "D", body: "d" })
+
+		const summary = manager.getBoardSummary("root-1", "batch-1")
+		expect(summary.total).toBe(4)
+		expect(summary.latest).toHaveLength(3)
+		expect(summary.latest[0]?.title).toBe("D")
+		expect(summary.latest[1]?.title).toBe("C")
+		expect(summary.latest[2]?.title).toBe("B")
+	})
+
+	it("getBoardSummariesForRoot returns empty for unknown root", () => {
+		const agentId = spawnAgentWithGroup("batch-1", "root-1")
+		manager.postBoardEntry(agentId, { kind: "note", title: "A", body: "a" })
+
+		const summaries = manager.getBoardSummariesForRoot("root-unknown")
+		expect(summaries).toEqual([])
+	})
+
+	it("getBoardSummariesForRoot returns only non-empty groups", () => {
+		const agentId = spawnAgentWithGroup("batch-1", "root-1")
+		manager.postBoardEntry(agentId, { kind: "note", title: "A", body: "a" })
+		manager.postBoardEntry(agentId, { kind: "note", title: "B", body: "b" })
+		manager.postBoardEntry(agentId, { kind: "note", title: "C", body: "c" })
+		// Second group with zero entries — should not appear in results.
+		const id2 = manager.spawn({} as ExtensionAPI, {} as ExtensionContext, "Explore", "empty board test", {
+			description: "empty",
+			isBackground: true,
+			communication: "group",
+			rootSessionId: "root-1",
+		})
+		const agent2 = manager.getRecord(id2)
+		if (!agent2) throw new Error("expected")
+		agent2.groupId = "batch-2"
+		agent2.communicationScope = { rootSessionId: "root-1", sourceAgentId: agent2.id, taskId: `agent-task:${agent2.id}` }
+
+		const summaries = manager.getBoardSummariesForRoot("root-1")
+		expect(summaries).toHaveLength(1)
+		expect(summaries[0]?.groupId).toBe("batch-1")
+		expect(summaries[0]?.total).toBe(3)
+		expect(summaries[0]?.latest).toHaveLength(3)
+		expect(summaries[0]?.latest[0]?.title).toBe("C")
+		expect(summaries[0]?.latest[1]?.title).toBe("B")
+		expect(summaries[0]?.latest[2]?.title).toBe("A")
+	})
+
+	it("emits body-free board events on post and eviction", async () => {
+		const agentId = spawnAgentWithGroup("batch-1", "root-1")
+		const boardHandler = vi.fn()
+		manager.setBoardEventHandler(boardHandler)
+
+		manager.postBoardEntry(agentId, {
+			kind: "note",
+			title: "Event check",
+			body: "No body in event",
+		})
+
+		const posted = boardHandler.mock.calls[0]?.[0]
+		expect(posted).toMatchObject({
+			action: "posted",
+			entryId: expect.stringMatching(/^bd-/),
+			rootSessionId: "root-1",
+			groupId: "batch-1",
+			authorAgentId: agentId,
+			kind: "note",
+			title: "Event check",
+		})
+		expect(posted).not.toHaveProperty("body")
+	})
+
+	it("readBoardEntries denies unknown agent", () => {
+		const read = manager.readBoardEntries("nonexistent")
+		expect(read).toEqual({ ok: false, reason: "agent_not_live" })
+	})
+
+	it("readBoardEntries denies live agent without groupId", () => {
+		const id = manager.spawn({} as ExtensionAPI, {} as ExtensionContext, "Explore", "test", {
+			description: "test",
+			isBackground: true,
+			communication: "group",
+			rootSessionId: "root-1",
+		})
+		const read = manager.readBoardEntries(id)
+		expect(read).toEqual({ ok: false, reason: "not_authorized_for_board" })
+	})
+
+	it("readBoardEntries with sinceId of an evicted entry returns full list (no error)", () => {
+		const agentId = spawnAgentWithGroup("batch-1", "root-1")
+		const first = manager.postBoardEntry(agentId, { kind: "note", title: "Evicted", body: "a" })
+		if (!first.ok) throw new Error("expected ok")
+
+		for (let i = 2; i <= 201; i++) {
+			manager.postBoardEntry(agentId, { kind: "note", title: `Entry ${i}`, body: `b${i}` })
+		}
+
+		// first entry was evicted by the per-board cap; sinceId fallback → full list
+		const read = manager.readBoardEntries(agentId, { sinceId: first.entry.id, limit: 200 })
+		if (!read.ok) throw new Error("expected ok")
+		expect(read.entries).toHaveLength(200)
+		expect(read.entries[0]?.title).toBe("Entry 2")
+	})
+
+	it("getBoardSummariesForRoot preserves insertion order across multiple grouped boards", () => {
+		const g1 = spawnAgentWithGroup("group-z", "root-1")
+		const g2 = spawnAgentWithGroup("group-a", "root-1")
+		const g3 = spawnAgentWithGroup("group-m", "root-1")
+
+		manager.postBoardEntry(g1, { kind: "note", title: "z1", body: "a" })
+		manager.postBoardEntry(g1, { kind: "note", title: "z2", body: "b" })
+		manager.postBoardEntry(g2, { kind: "note", title: "a1", body: "c" })
+		manager.postBoardEntry(g3, { kind: "note", title: "m1", body: "d" })
+
+		const summaries = manager.getBoardSummariesForRoot("root-1")
+		expect(summaries.map((s) => s.groupId)).toEqual(["group-z", "group-a", "group-m"])
+		expect(summaries.map((s) => s.total)).toEqual([2, 1, 1])
+		expect(summaries[0]?.latest[0]?.title).toBe("z2")
+	})
+
+	it("evicts globally-oldest entry across boards at the 2048 ceiling (BoardStore)", () => {
+		const store = new BoardStore()
+		const groups = Array.from({ length: 11 }, (_, i) => `g${i}`)
+		// Distinct postedAt so the very first entry stays the unambiguous global-oldest.
+		let now = 1000
+		const post = (i: number) => {
+			now += 1
+			store.post("root-1", groups[i % groups.length], "a1", "note", `Title ${i}`, `Body ${i}`, now)
+		}
+
+		for (let i = 1; i <= 2048; i++) post(i)
+
+		// No global eviction yet at exactly 2048.
+		let total = 0
+		let oldestPostedAt = Infinity
+		let firstEntryId: string | undefined
+		for (const g of groups) {
+			const read = store.read("root-1", g, { limit: 200 })
+			total += read.length
+			for (const e of read) {
+				if (e.postedAt < oldestPostedAt) {
+					oldestPostedAt = e.postedAt
+					firstEntryId = e.id
+				}
+			}
+		}
+		expect(total).toBe(2048)
+		expect(firstEntryId).toBeDefined()
+
+		// 2049th post crosses the ceiling → evict the globally-oldest entry.
+		post(2049)
+
+		total = 0
+		let stillPresent = false
+		for (const g of groups) {
+			const read = store.read("root-1", g, { limit: 200 })
+			total += read.length
+			if (read.some((e) => e.id === firstEntryId)) stillPresent = true
+		}
+		expect(total).toBe(2048)
+		expect(stillPresent).toBe(false)
+	})
+
+	it("emits global-evicted event when posting past 2048 entries across multiple boards", () => {
+		const agentId = manager.spawn({} as ExtensionAPI, {} as ExtensionContext, "Explore", "global evict", {
+			description: "global evict",
+			isBackground: true,
+			communication: "group",
+			rootSessionId: "root-1",
+		})
+		const agent = manager.getRecord(agentId)
+		if (!agent) throw new Error("expected agent")
+		agent.groupId = "batch-0"
+		agent.communicationScope = {
+			rootSessionId: "root-1",
+			sourceAgentId: agent.id,
+			taskId: `agent-task:${agent.id}`,
+		}
+
+		const boardHandler = vi.fn()
+		manager.setBoardEventHandler(boardHandler)
+
+		// Use multiple groups with small boards to avoid per-board cap (200).
+		// Each group gets 190 entries; 11 groups * 190 = 2090 > 2048.
+		// The oldest entries are in group "batch-0" (posted first).
+		const groups = Array.from({ length: 11 }, (_, i) => `batch-${i}`)
+		// Post 190 entries per group (well under the per-board 200 cap)
+		for (let i = 0; i < 2090; i++) {
+			const g = groups[i % groups.length]
+			const agentForGroup = manager.spawn({} as ExtensionAPI, {} as ExtensionContext, "Explore", `g-agent-${g}`, {
+				description: "global evict",
+				isBackground: true,
+				communication: "group",
+				rootSessionId: "root-1",
+			})
+			const gAgent = manager.getRecord(agentForGroup)
+			if (!gAgent) throw new Error("expected agent")
+			gAgent.groupId = g
+			gAgent.communicationScope = {
+				rootSessionId: "root-1",
+				sourceAgentId: gAgent.id,
+				taskId: `agent-task:${gAgent.id}`,
+			}
+			manager.postBoardEntry(agentForGroup, { kind: "note", title: `Entry ${i}`, body: `Body ${i}` })
+		}
+
+		const evictedEvents = boardHandler.mock.calls
+			.map((call) => call[0])
+			.filter((event: { action: string }) => event.action === "evicted")
+			.filter((event: { rootSessionId: string }) => event.rootSessionId === "root-1")
+
+		expect(evictedEvents.length).toBeGreaterThanOrEqual(1)
+		const lastGlobalEvicted = evictedEvents.at(-1)
+		expect(lastGlobalEvicted).toMatchObject({
+			action: "evicted",
+			entryId: expect.stringMatching(/^bd-/),
+			rootSessionId: "root-1",
+			groupId: expect.any(String),
+		})
+		expect(lastGlobalEvicted).not.toHaveProperty("body")
+		expect(lastGlobalEvicted).not.toHaveProperty("title")
+	})
+
+	it("cleanupRoot after disableCommunication clears board entries — repost is not deduped", () => {
+		const agentA = manager.spawn({} as ExtensionAPI, {} as ExtensionContext, "Explore", "root-a", {
+			description: "root-a",
+			isBackground: true,
+			communication: "group",
+			rootSessionId: "root-1",
+		})
+		const recordA = manager.getRecord(agentA)
+		if (!recordA) throw new Error("expected agent")
+		recordA.groupId = "batch-0"
+		recordA.communicationScope = {
+			rootSessionId: "root-1",
+			sourceAgentId: recordA.id,
+			taskId: `agent-task:${recordA.id}`,
+		}
+
+		const agentB = manager.spawn({} as ExtensionAPI, {} as ExtensionContext, "Explore", "root-b", {
+			description: "root-b",
+			isBackground: true,
+			communication: "group",
+			rootSessionId: "root-2",
+		})
+		const recordB = manager.getRecord(agentB)
+		if (!recordB) throw new Error("expected agent")
+		recordB.groupId = "batch-0"
+		recordB.communicationScope = {
+			rootSessionId: "root-2",
+			sourceAgentId: recordB.id,
+			taskId: `agent-task:${recordB.id}`,
+		}
+
+		manager.postBoardEntry(agentA, { kind: "note", title: "A1", body: "a" })
+		manager.postBoardEntry(agentB, { kind: "note", title: "B1", body: "b" })
+
+		// Bind root-1 first: disableCommunication(root) is a no-op when no root is bound.
+		manager.bindCommunicationRoot("root-1")
+		expect(manager.disableCommunication("root-1")).toBe(true)
+
+		// Cleaned root-1 board empty; untouched root-2 board intact
+		expect(manager.getBoardSummariesForRoot("root-1")).toEqual([])
+		const root2Summary = manager.getBoardSummariesForRoot("root-2")
+		expect(root2Summary.length).toBe(1)
+		expect(root2Summary[0]?.total).toBe(1)
+
+		// Repost identical content to the CLEANED root-1 within the window → NOT deduped (key was removed)
+		const repostA = manager.postBoardEntry(agentA, { kind: "note", title: "A1", body: "a" })
+		expect(repostA).toMatchObject({ ok: true })
+		expect(repostA).not.toHaveProperty("deduped")
+		expect(repostA).toMatchObject({ entry: expect.objectContaining({ rootSessionId: "root-1" }) })
+
+		// Control: repost identical content to the UNTOUCHED root-2 within the 120s window → IS deduped
+		const repostB = manager.postBoardEntry(agentB, { kind: "note", title: "B1", body: "b" })
+		expect(repostB).toMatchObject({ ok: true, deduped: true })
+	})
+
+	it("disableCommunication() no-arg cleans up the currently-bound root — repost is not deduped", () => {
+		const agentId = manager.spawn({} as ExtensionAPI, {} as ExtensionContext, "Explore", "no-arg", {
+			description: "no-arg",
+			isBackground: true,
+			communication: "group",
+			rootSessionId: "root-1",
+		})
+		const record = manager.getRecord(agentId)
+		if (!record) throw new Error("expected agent")
+		record.groupId = "batch-0"
+		record.communicationScope = {
+			rootSessionId: "root-1",
+			sourceAgentId: record.id,
+			taskId: `agent-task:${record.id}`,
+		}
+
+		// Bind communication root
+		manager.bindCommunicationRoot("root-1")
+
+		// Post one entry
+		manager.postBoardEntry(agentId, { kind: "note", title: "No-arg", body: "entry" })
+
+		// Call disableCommunication() with NO argument — should cleanup the bound root
+		expect(manager.disableCommunication()).toBe(true)
+
+		// Board for the bound root is now empty
+		expect(manager.getBoardSummariesForRoot("root-1")).toEqual([])
+
+		// Repost identical content within the 120s window is NOT deduped (key was removed)
+		const repost = manager.postBoardEntry(agentId, { kind: "note", title: "No-arg", body: "entry" })
+		expect(repost).toMatchObject({ ok: true })
+		expect(repost).not.toHaveProperty("deduped")
+		expect(repost).toMatchObject({ entry: expect.objectContaining({ rootSessionId: "root-1" }) })
+	})
+})

@@ -511,7 +511,13 @@ describe("runAgent — telemetry extension", () => {
 
 	it("injects both communication tools only for an opted-in non-isolated worker", async () => {
 		const session = makeFakeSession({
-			activeToolNames: ["submit_agent_report", "list_agent_contacts", "send_agent_message"],
+			activeToolNames: [
+				"submit_agent_report",
+				"list_agent_contacts",
+				"send_agent_message",
+				"post_agent_note",
+				"read_agent_board",
+			],
 		})
 		mockCreateAgentSession.mockResolvedValue({
 			session: session as unknown as Awaited<ReturnType<typeof createAgentSession>>["session"],
@@ -523,6 +529,8 @@ describe("runAgent — telemetry extension", () => {
 		const capability: AgentMessageCapability = {
 			listContacts: vi.fn(() => ({ parent: { reachable: true }, user_via_parent: { reachable: false }, peers: [] })),
 			sendMessage: vi.fn().mockResolvedValue({ status: "queued_for_parent" }),
+			postBoardEntry: vi.fn(),
+			readBoardEntries: vi.fn(),
 		}
 
 		await runAgent(ctx as unknown as Parameters<typeof runAgent>[0], "General-Purpose", "communicate", {
@@ -539,11 +547,15 @@ describe("runAgent — telemetry extension", () => {
 			"submit_agent_report",
 			"list_agent_contacts",
 			"send_agent_message",
+			"post_agent_note",
+			"read_agent_board",
 		])
 		expect(session.setActiveToolsByName).toHaveBeenCalledWith([
 			"list_agent_contacts",
 			"send_agent_message",
 			"submit_agent_report",
+			"post_agent_note",
+			"read_agent_board",
 		])
 	})
 
@@ -567,6 +579,8 @@ describe("runAgent — telemetry extension", () => {
 		const capability: AgentMessageCapability = {
 			listContacts: vi.fn(() => ({ parent: { reachable: true }, user_via_parent: { reachable: false }, peers: [] })),
 			sendMessage: vi.fn(),
+			postBoardEntry: vi.fn(),
+			readBoardEntries: vi.fn(),
 		}
 
 		await runAgent(ctx as unknown as Parameters<typeof runAgent>[0], "General-Purpose", "ordinary", {
@@ -591,11 +605,19 @@ describe("runAgent — telemetry extension", () => {
 		const capability: AgentMessageCapability = {
 			listContacts: vi.fn(() => ({ parent: { reachable: true }, user_via_parent: { reachable: false }, peers: [] })),
 			sendMessage,
+			postBoardEntry: vi.fn(),
+			readBoardEntries: vi.fn(),
 		}
 		const session = makeFakeSession({
 			abortSpy,
 			emitUsage: false,
-			activeToolNames: ["submit_agent_report", "list_agent_contacts", "send_agent_message"],
+			activeToolNames: [
+				"submit_agent_report",
+				"list_agent_contacts",
+				"send_agent_message",
+				"post_agent_note",
+				"read_agent_board",
+			],
 			promptAction: async (emit) => {
 				const registerTool = vi.fn()
 				const factories = mockDefaultResourceLoader.mock.calls[0]?.[0]?.extensionFactories ?? []

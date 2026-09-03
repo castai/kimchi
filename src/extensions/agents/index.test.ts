@@ -106,6 +106,11 @@ vi.mock("./manager/agent-manager.js", () => {
 				setMessageEventHandler: vi.fn(),
 				disableCommunication: vi.fn().mockReturnValue(true),
 				replyToAgentMessage: vi.fn().mockResolvedValue({ status: "queued_for_running_session" }),
+				setBoardEventHandler: vi.fn(),
+				postBoardEntry: vi.fn().mockReturnValue({ ok: true, entry: { id: "bd-mock" } as unknown, truncated: [] }),
+				readBoardEntries: vi.fn().mockReturnValue({ ok: true, entries: [], total: 0 }),
+				getBoardSummary: vi.fn().mockReturnValue({ total: 0, latest: [] }),
+				getBoardSummariesForRoot: vi.fn().mockReturnValue([]),
 			}
 			return manager
 		}),
@@ -183,7 +188,7 @@ function makeMockPi(): ExtensionAPI & {
 	const sendMessage = vi.fn()
 	const getFlag = vi.fn(() => undefined as boolean | undefined)
 	const getActiveTools = vi.fn(() => ["reply_to_agent_message"])
-	const events = { emit: vi.fn() }
+	const events = { emit: vi.fn(), on: vi.fn() }
 	const pi = {
 		on: vi.fn((event: string, handler: CapturedHandler) => {
 			const existing = handlers.get(event) ?? []
@@ -578,6 +583,160 @@ describe("agent communication lifecycle", () => {
 
 		pi.getActiveTools.mockReturnValue([])
 		expect(await beforeAgentStart({ systemPrompt: "BASE" }, undefined)).toBeUndefined()
+	})
+
+	describe("coordination board digest", () => {
+		it("renders populated digest when boards exist", async () => {
+			const pi = makeMockPi()
+			agentsExtension(pi)
+
+			// Simulate session_start to set parentCommunicationContext with a known root.
+			const sessionStart = latestHandler(pi, "session_start")
+			await sessionStart(
+				{},
+				makeMockCtx(undefined, undefined, { rootSessionId: "root-test", hasUI: false, mode: "json" }),
+			)
+
+			// Get the AgentManager instance from the mock — it was created when agentsExtension ran.
+			const manager = (MockedAgentManager as ReturnType<typeof vi.fn>).mock.results.at(-1)?.value
+			if (!manager) throw new Error("AgentManager not created")
+
+			// Wire the mock to return the populated digest.
+			manager.getBoardSummariesForRoot.mockReturnValue([
+				{
+					groupId: "batch-1",
+					total: 2,
+					latest: [
+						{ id: "bd-aaa11111", authorAgentId: "agent-x", kind: "finding", title: "parsed config", postedAt: 1 },
+					],
+				},
+			])
+
+			const beforeAgentStart = latestHandler(pi, "before_agent_start")
+			const rendered = await beforeAgentStart({ systemPrompt: "BASE" }, undefined)
+			const prompt = (rendered as { systemPrompt: string }).systemPrompt
+			expect(prompt).toContain("### Coordination board (group batch-1)")
+			expect(prompt).toContain("2 entries")
+			expect(prompt).toContain("finding | agent-x | parsed config | bd-aaa11111")
+		})
+
+		it("skips digest when board is empty", async () => {
+			const pi = makeMockPi()
+			agentsExtension(pi)
+
+			// No session_start called, so parentCommunicationContext is undefined.
+			const beforeAgentStart = latestHandler(pi, "before_agent_start")
+			const rendered = await beforeAgentStart({ systemPrompt: "BASE" }, undefined)
+			const prompt = (rendered as { systemPrompt: string }).systemPrompt
+			expect(prompt).not.toContain("### Coordination board")
+			expect(prompt).toContain("## Subagent messages")
+			expect(prompt).toContain("## Subagent tasks")
+		})
+
+		it("does not strip or rebuild digest — prompt with existing digest gets same digest appended", async () => {
+			const pi = makeMockPi()
+			agentsExtension(pi)
+			const manager = (MockedAgentManager as ReturnType<typeof vi.fn>).mock.results.at(-1)?.value
+			if (!manager) throw new Error("AgentManager not created")
+
+			const sessionStart = latestHandler(pi, "session_start")
+			await sessionStart(
+				{},
+				makeMockCtx(undefined, undefined, { rootSessionId: "root-test", hasUI: false, mode: "json" }),
+			)
+
+			// Populate digest
+			manager.getBoardSummariesForRoot.mockReturnValue([
+				{
+					groupId: "batch-1",
+					total: 2,
+					latest: [
+						{ id: "bd-aaa11111", authorAgentId: "agent-x", kind: "finding", title: "parsed config", postedAt: 1 },
+					],
+				},
+			])
+
+			const beforeAgentStart = latestHandler(pi, "before_agent_start")
+			// First call with empty prompt
+			const first = await beforeAgentStart({ systemPrompt: "BASE" }, undefined)
+			const firstPrompt = (first as { systemPrompt: string }).systemPrompt
+			expect(firstPrompt).toContain("## Coordination board digest")
+
+			// Second call with same summaries — handler returns undefined (no change)
+			const second = await beforeAgentStart({ systemPrompt: firstPrompt }, undefined)
+			expect(second).toBeUndefined()
+		})
+
+		it("leaves digest section in place when boards become empty — no per-turn strip", async () => {
+			const pi = makeMockPi()
+			agentsExtension(pi)
+			const manager = (MockedAgentManager as ReturnType<typeof vi.fn>).mock.results.at(-1)?.value
+			if (!manager) throw new Error("AgentManager not created")
+
+			const sessionStart = latestHandler(pi, "session_start")
+			await sessionStart(
+				{},
+				makeMockCtx(undefined, undefined, { rootSessionId: "root-test", hasUI: false, mode: "json" }),
+			)
+
+			// Populate digest
+			manager.getBoardSummariesForRoot.mockReturnValue([
+				{
+					groupId: "batch-1",
+					total: 2,
+					latest: [
+						{ id: "bd-aaa11111", authorAgentId: "agent-x", kind: "finding", title: "parsed config", postedAt: 1 },
+					],
+				},
+			])
+
+			const beforeAgentStart = latestHandler(pi, "before_agent_start")
+			const first = await beforeAgentStart({ systemPrompt: "BASE" }, undefined)
+			const firstPrompt = (first as { systemPrompt: string }).systemPrompt
+			expect(firstPrompt).toContain("## Coordination board digest")
+			expect(firstPrompt).toContain("### Coordination board")
+
+			// Second call — boards now empty; handler returns undefined (no change)
+			const second = await beforeAgentStart({ systemPrompt: firstPrompt }, undefined)
+			expect(second).toBeUndefined()
+		})
+
+		it("appears on second call when first call had empty boards", async () => {
+			const pi = makeMockPi()
+			agentsExtension(pi)
+			const manager = (MockedAgentManager as ReturnType<typeof vi.fn>).mock.results.at(-1)?.value
+			if (!manager) throw new Error("AgentManager not created")
+
+			const sessionStart = latestHandler(pi, "session_start")
+			await sessionStart(
+				{},
+				makeMockCtx(undefined, undefined, { rootSessionId: "root-test", hasUI: false, mode: "json" }),
+			)
+
+			// First call — no digest (empty boards)
+			manager.getBoardSummariesForRoot.mockReturnValue([])
+
+			const beforeAgentStart = latestHandler(pi, "before_agent_start")
+			const first = await beforeAgentStart({ systemPrompt: "BASE" }, undefined)
+			const firstPrompt = (first as { systemPrompt: string }).systemPrompt
+			// Dynamic-only needle (static guidance text mentions the section name)
+			expect(firstPrompt).not.toContain("## Coordination board digest\n### Coordination board")
+
+			// Second call — boards now populated
+			manager.getBoardSummariesForRoot.mockReturnValue([
+				{
+					groupId: "batch-sec",
+					total: 1,
+					latest: [{ id: "bd-ccc33333", authorAgentId: "agent-z", kind: "finding", title: "late config", postedAt: 3 }],
+				},
+			])
+
+			const second = await beforeAgentStart({ systemPrompt: "BASE" }, undefined)
+			const secondPrompt = (second as { systemPrompt: string }).systemPrompt
+			expect(secondPrompt).toContain("## Coordination board digest\n### Coordination board (group batch-sec)")
+			expect(secondPrompt).toContain("1 entries")
+			expect(secondPrompt).toContain("finding | agent-z | late config | bd-ccc33333")
+		})
 	})
 
 	it("keeps parent and user routes distinct and rejects unavailable user delivery before Pi", async () => {
