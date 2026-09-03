@@ -151,7 +151,7 @@ testWithJsDebug(
 					},
 					{ stream: ["State captured at the breakpoint."] },
 				],
-				env: { KIMCHI_DAP_BINARIES: "" }, // keep other machine adapters inert
+				env: { KIMCHI_DAP_BINARIES: "js-debug" }, // whitelist only js-debug so other machine adapters stay inert
 				seedHome: (_homeDir, workDir) => {
 					writeFileSync(join(workDir, "package.json"), '{"name":"debugme","version":"1.0.0"}\n')
 					// Breakpoint at line 2 stops inside add() with a=2, b=3.
