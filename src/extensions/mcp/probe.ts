@@ -10,6 +10,7 @@ import type {
 import { createMcpAdapter } from "pi-mcp-adapter"
 import { inspectMcpOAuthTokensForUrl } from "pi-mcp-adapter/oauth"
 import type { ServerEntry } from "pi-mcp-adapter/types"
+import { loadKimchiMcpConfig } from "./config.js"
 import { installKeyringRequireBridge } from "./keyring-require-bridge.js"
 
 export interface ProbeTool {
@@ -172,12 +173,27 @@ function resultMessage(result: GatewayResult): string {
 		.join("\n")
 }
 
-function resolveProbeName(name: string, definition: ServerEntry): string {
+function resolveProbeName(name: string, definition: ServerEntry, cwd: string): string {
 	if (!definition.url) return name
 	try {
-		const status = inspectMcpOAuthTokensForUrl(name, definition.url) as { status: string }
-		return status.status === "url-mismatch" ? `__probe_${randomUUID()}` : name
+		if (inspectMcpOAuthTokensForUrl(name, definition.url).status === "present") return name
+
+		// The adapter's public OAuth inspector reports both missing credentials and
+		// credentials bound to another URL as "absent". Use Kimchi's effective
+		// configuration to disambiguate the common edit flow without depending on
+		// the adapter's private keyring format.
+		const configuredUrl = loadKimchiMcpConfig({ cwd }).config.mcpServers[name]?.url
+		if (
+			configuredUrl &&
+			configuredUrl !== definition.url &&
+			inspectMcpOAuthTokensForUrl(name, configuredUrl).status === "present"
+		) {
+			return `__probe_${randomUUID()}`
+		}
+		return name
 	} catch {
+		// Config or credential inspection is best-effort. Probing must remain
+		// available when either store cannot be read.
 		return name
 	}
 }
@@ -199,7 +215,7 @@ export class UpstreamMcpProbe implements McpProbe {
 	async probeTools(name: string, definition: ServerEntry, options: McpProbeOptions = {}): Promise<ProbeResult> {
 		installKeyringRequireBridge()
 		const cwd = options.cwd ?? process.cwd()
-		const probeName = resolveProbeName(name, definition)
+		const probeName = resolveProbeName(name, definition, cwd)
 		const throwaway = probeName !== name
 		const host = createProbeHost(cwd, options.signal)
 		const config = {

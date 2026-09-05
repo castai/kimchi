@@ -20,6 +20,12 @@ function mockStdin(data: string): void {
 	})
 }
 
+function mockOpenStdin(data: string): void {
+	process.nextTick(() => {
+		process.stdin.emit("data", data)
+	})
+}
+
 function captureStdout(): { readonly json: Record<string, unknown> } {
 	const writes: string[] = []
 	vi.spyOn(process.stdout, "write").mockImplementation(
@@ -162,6 +168,102 @@ describe("kimchi mcp probe", () => {
 
 		expect(await result).toBe(1)
 		expect(output.json.error).toContain("timed out after 15 seconds")
+	})
+
+	it("aborts a hanging URL probe after sixty seconds", async () => {
+		vi.useFakeTimers()
+		probeTools.mockImplementation(
+			(_name, _server, options: { signal: AbortSignal }) =>
+				new Promise((_resolve, reject) => {
+					options.signal.addEventListener("abort", () => reject(options.signal.reason), { once: true })
+				}),
+		)
+		mockStdin(input("remote", { url: "https://example.test/mcp" }))
+		const output = captureStdout()
+		const result = runMcp(["probe", "--json"])
+		await vi.advanceTimersByTimeAsync(60_000)
+
+		expect(await result).toBe(1)
+		expect(output.json.error).toContain("timed out after 60 seconds")
+	})
+
+	it("returns an error when the upstream probe rejects", async () => {
+		probeTools.mockRejectedValue(new Error("probe crashed"))
+		mockStdin(input())
+		const output = captureStdout()
+
+		expect(await runMcp(["probe", "--json"])).toBe(1)
+		expect(output.json).toEqual({ tools: [], needsAuth: false, error: "probe crashed" })
+	})
+
+	it("rejects interactive stdin instead of waiting for input", async () => {
+		const originalIsTTY = process.stdin.isTTY
+		Object.defineProperty(process.stdin, "isTTY", { value: true, configurable: true, writable: true })
+		const output = captureStdout()
+
+		try {
+			expect(await runMcp(["probe", "--json"])).toBe(1)
+			expect(output.json.error).toContain("No input on stdin")
+		} finally {
+			Object.defineProperty(process.stdin, "isTTY", {
+				value: originalIsTTY,
+				configurable: true,
+				writable: true,
+			})
+		}
+	})
+
+	it("rejects stdin that remains open for five seconds", async () => {
+		vi.useFakeTimers()
+		mockOpenStdin(input())
+		const output = captureStdout()
+		const result = runMcp(["probe", "--json"])
+		await vi.advanceTimersByTimeAsync(5_000)
+
+		expect(await result).toBe(1)
+		expect(output.json.error).toContain("Timed out after 5000ms")
+	})
+
+	it("rejects stdin larger than one megabyte", async () => {
+		mockOpenStdin("x".repeat(1024 * 1024 + 1))
+		const output = captureStdout()
+
+		expect(await runMcp(["probe", "--json"])).toBe(1)
+		expect(output.json.error).toContain("stdin input exceeded 1MB")
+	})
+
+	it("waits for a large stdout payload to flush before resolving", async () => {
+		const tools = Array.from({ length: 5_000 }, (_, index) => ({
+			name: `tool_${index}_${"x".repeat(30)}`,
+			description: "y".repeat(30),
+		}))
+		probeTools.mockResolvedValue({ tools, needsAuth: false, error: null })
+		mockStdin(input())
+		let written = ""
+		let finishWrite: ((error?: Error | null) => void) | undefined
+		vi.spyOn(process.stdout, "write").mockImplementation(
+			(
+				chunk: string | Uint8Array,
+				encodingOrCallback?: BufferEncoding | ((error?: Error | null) => void),
+				callback?: (error?: Error | null) => void,
+			) => {
+				written += typeof chunk === "string" ? chunk : Buffer.from(chunk).toString()
+				finishWrite = typeof encodingOrCallback === "function" ? encodingOrCallback : callback
+				return false
+			},
+		)
+
+		let resolved = false
+		const result = runMcp(["probe", "--json"]).then((code) => {
+			resolved = true
+			return code
+		})
+		await vi.waitFor(() => expect(finishWrite).toBeTypeOf("function"))
+		expect(resolved).toBe(false)
+
+		finishWrite?.(null)
+		expect(await result).toBe(0)
+		expect(JSON.parse(written)).toEqual({ tools, needsAuth: false, error: null })
 	})
 
 	it("rejects invalid JSON", async () => {

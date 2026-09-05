@@ -6,14 +6,12 @@
  * the result as JSON to stdout, and exits.
  *
  * The `name` field selects the OAuth token-store key. Before any OAuth
- * write, the probe checks whether an auth entry already exists under that
- * name for a *different* URL (e.g. the user edited the URL but kept the
- * name). If so, it probes under a throwaway `__probe_<uuid>` name and
- * cleans it up afterwards so the real server's stored tokens are never
- * overwritten. If no entry exists, the URL matches, or the entry is
- * residue from an incomplete OAuth flow (no serverUrl), the real name is
- * used — so a repeat probe of an already-authorized server finds stored
- * OAuth tokens and an interrupted flow completes on the correct entry.
+ * write, the probe compares the requested URL with Kimchi's effective
+ * configuration. If the same name is configured with a different URL and
+ * that saved URL has credentials, it probes under a throwaway
+ * `__probe_<uuid>` name and cleans it up afterwards so the real server's
+ * stored tokens are never overwritten. Matching URLs and new servers use
+ * the real name, allowing existing OAuth tokens to be reused.
  *
  * Used by Kimchi Desktop's MCP server configuration UI to populate a
  * multiselect dropdown of available tools when the user picks
