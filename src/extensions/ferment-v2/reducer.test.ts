@@ -34,15 +34,15 @@ describe("Ferment V2 reducer", () => {
 		})
 	})
 
-	it("persists approved-plan presentation metadata and preserves it across edits", () => {
+	it("drops obsolete approved-plan presentation when the user edits the objective", () => {
 		const presentation = { kind: "approved-plan" as const, title: "Cache plan", planPath: "/tmp/cache-plan.md" }
 		const fermentV2 = createFermentV2(undefined, "execute it", "ferment-v2-a", T1, undefined, presentation)
 		const edited = editFermentV2(fermentV2, "ferment-v2-a", 1, "execute it better", T2)
 
 		expect(restoreFermentV2([putFermentV2Entry(edited)])).toMatchObject({
 			objective: "execute it better",
-			presentation,
 		})
+		expect(edited).not.toHaveProperty("presentation")
 	})
 
 	it("round-trips inline approved-plan metadata and still restores legacy entries", () => {

@@ -49,11 +49,17 @@ export function editFermentV2(
 	now: string,
 ): SessionFermentV2 {
 	const current = requireCurrentFermentV2(state, expectedId, expectedRevision)
-	const { completionConfidence: _completionConfidence, lastEvaluation: _lastEvaluation, ...editable } = current
+	const {
+		completionConfidence: _completionConfidence,
+		lastEvaluation: _lastEvaluation,
+		presentation: _presentation,
+		...editable
+	} = current
 	return {
 		...editable,
 		revision: current.revision + 1,
 		objective: normalizeObjective(objective),
+		status: current.status === "complete" ? "paused" : current.status,
 		updatedAt: now,
 	}
 }

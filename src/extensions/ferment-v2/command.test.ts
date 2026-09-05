@@ -3,6 +3,7 @@ import {
 	FERMENT_V2_COMMAND_COMPLETIONS,
 	formatFermentV2Accounting,
 	formatFermentV2Duration,
+	formatFermentV2Status,
 	formatFermentV2Summary,
 	parseFermentV2Command,
 } from "./command.js"
@@ -64,7 +65,17 @@ describe("Ferment V2 command", () => {
 
 		expect(manual.startsWith("Ferment V2\n")).toBe(true)
 		expect(automatic).toContain("Plan: Cache Layer")
-		expect(automatic).not.toMatch(/ferment[- ]v2/i)
+		expect(automatic).toContain("Commands: /ferment-v2 edit, /ferment-v2 pause, /ferment-v2 clear")
+	})
+
+	it("shows the run state and resume hint without adding a prompt decoration", () => {
+		expect(formatFermentV2Status(undefined)).toBeUndefined()
+		expect(formatFermentV2Status(fermentV2("active"))).toBe("◈ running · ship it")
+		expect(formatFermentV2Status(fermentV2("active"), true)).toBe("◈ checking · ship it")
+		expect(formatFermentV2Status(fermentV2("paused"), true)).toBe("◈ paused · ship it · /ferment-v2 resume")
+		expect(formatFermentV2Status(fermentV2("blocked"))).toBe("◈ blocked · ship it · /ferment-v2 resume")
+		expect(formatFermentV2Status(fermentV2("complete"))).toBe("◈ complete · ship it")
+		expect(formatFermentV2Status(fermentV2("budget_limited"))).toBe("◈ budget limited · ship it")
 	})
 
 	it("shows evaluation details only in the full command summary", () => {

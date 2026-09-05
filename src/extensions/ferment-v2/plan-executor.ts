@@ -1,5 +1,4 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
-import type { FermentV2Presentation } from "./types.js"
 
 export interface FermentV2PlanExecution {
 	readonly objective: string
@@ -41,21 +40,6 @@ export function buildApprovedPlanObjective(planPath: string | undefined, planTex
 	return planPath
 		? `Read the approved plan at "${planPath}" before continuing.\nExecute and verify every requirement in that plan.`
 		: `Execute and verify the approved plan below.\n\n${planText.trim()}`
-}
-
-function approvedPlanInstruction(presentation: FermentV2Presentation): string | undefined {
-	if (presentation.planPath || presentation.planText) {
-		return buildApprovedPlanObjective(presentation.planPath, presentation.planText ?? "")
-	}
-	return undefined
-}
-
-export function composeApprovedPlanEditObjective(objective: string, presentation?: FermentV2Presentation): string {
-	const instruction = presentation?.kind === "approved-plan" ? approvedPlanInstruction(presentation) : undefined
-	if (!instruction) return objective
-	const trimmed = objective.trim()
-	if (trimmed === instruction || trimmed.startsWith(`${instruction}\n\n`)) return trimmed
-	return trimmed ? `${instruction}\n\n${trimmed}` : instruction
 }
 
 function isFermentV2PlanExecutorLookup(value: unknown): value is FermentV2PlanExecutorLookup {

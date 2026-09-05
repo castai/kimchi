@@ -1,3 +1,4 @@
+import { truncateToWidth } from "@earendil-works/pi-tui"
 import { formatCount } from "../format.js"
 import { FERMENT_V2_COMMAND_NAME } from "./constants.js"
 import type { SessionFermentV2 } from "./types.js"
@@ -11,6 +12,15 @@ export type FermentV2Command =
 	| { action: "clear" }
 
 export const FERMENT_V2_COMMAND_COMPLETIONS = ["edit", "pause", "resume", "clear"] as const
+
+export function formatFermentV2Status(fermentV2: SessionFermentV2 | undefined, evaluating = false): string | undefined {
+	if (!fermentV2) return undefined
+	const title = truncateToWidth((fermentV2.presentation?.title ?? fermentV2.objective).replace(/\s+/g, " ").trim(), 44)
+	const state =
+		fermentV2.status === "active" ? (evaluating ? "checking" : "running") : fermentV2.status.replace("_", " ")
+	const hint = fermentV2.status === "paused" || fermentV2.status === "blocked" ? " · /ferment-v2 resume" : ""
+	return `◈ ${state} · ${title}${hint}`
+}
 
 export function parseFermentV2Command(args: string): FermentV2Command {
 	const trimmed = args.trim()
@@ -51,7 +61,7 @@ export function formatFermentV2Summary(fermentV2: SessionFermentV2 | undefined, 
 		...(fermentV2.evaluationCount === undefined ? [] : [`Evaluations: ${fermentV2.evaluationCount}`]),
 		...(evaluation ? [`Last evaluation: ${evaluation.verdict} — ${evaluation.reason}`] : []),
 		"",
-		approvedPlan ? `Actions: ${approvedPlanActions(fermentV2)}` : `Commands: ${fermentV2Commands(fermentV2)}`,
+		`Commands: ${fermentV2Commands(fermentV2)}`,
 	].join("\n")
 }
 
@@ -76,12 +86,6 @@ function fermentV2Commands(fermentV2: SessionFermentV2): string {
 		return `/${FERMENT_V2_COMMAND_NAME} edit, /${FERMENT_V2_COMMAND_NAME} resume, /${FERMENT_V2_COMMAND_NAME} clear`
 	}
 	return `/${FERMENT_V2_COMMAND_NAME} <objective>, /${FERMENT_V2_COMMAND_NAME} clear`
-}
-
-function approvedPlanActions(fermentV2: SessionFermentV2): string {
-	if (fermentV2.status === "active") return "edit, pause, clear"
-	if (fermentV2.status === "paused" || fermentV2.status === "blocked") return "edit, resume, clear"
-	return "start a new objective, clear"
 }
 
 function parseTokenBudget(input: string): { objective: string; tokenBudget?: number } {

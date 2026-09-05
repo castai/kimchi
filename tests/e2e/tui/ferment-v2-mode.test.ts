@@ -9,6 +9,54 @@ test.use(TUI_TEST_CONFIG)
 
 const COMPACTION_SUMMARY_MARKER = "FERMENT_V2_COMPACTION_SUMMARY"
 
+test("stopping a run preserves a paused goal that can be edited, resumed and cleared", async ({ terminal }) => {
+	await runKimchiSession(
+		terminal,
+		{
+			artifactName: "ferment-v2-stop-edit-resume",
+			seedHome: enableFermentV2Mode,
+			responses: [
+				{ stream: Array.from({ length: 40 }, () => "Still working. "), textDelayMs: 500 },
+				{
+					stream: ["The new setup requires a credential."],
+					toolCalls: [
+						{
+							id: "new-goal-blocked",
+							function: {
+								name: "update_ferment_v2",
+								arguments: JSON.stringify({ status: "blocked", reason: "Missing setup credential." }),
+							},
+						},
+					],
+				},
+			],
+		},
+		async (fixture, trace) => {
+			terminal.submit("/ferment-v2 original work")
+			await waitForChatRequest(fixture.fake.requests, 1)
+			await waitForText(terminal, "◈ running · original work", { timeoutMs: 5_000 })
+			terminal.keyCtrlC()
+			await waitForText(terminal, "◈ paused · original work", { timeoutMs: 5_000 })
+			trace.step("Ctrl+C paused the running goal")
+			terminal.submit("/ferment-v2 edit finish authenticated setup")
+			await waitForText(terminal, "◈ paused · finish authenticated setup", { timeoutMs: 5_000 })
+			expect(chatRequests(fixture.fake.requests)).toHaveLength(1)
+			trace.step("editing while paused did not start work")
+			terminal.submit("/ferment-v2 resume")
+			const request = await waitForChatRequest(fixture.fake.requests, 2)
+			expect(fermentV2Snapshot(request)).toMatchObject({
+				objective: "finish authenticated setup",
+				status: "active",
+			})
+			await waitForText(terminal, "◈ blocked · finish authenticated setup", { timeoutMs: 5_000 })
+			trace.step("resume used the new objective and surfaced its blockage")
+			terminal.submit("/ferment-v2 clear")
+			await waitForText(terminal, "Ferment V2 cleared.", { timeoutMs: 5_000 })
+			expect(viewText(terminal).split("\n").slice(-4).join("\n")).not.toContain("◈")
+		},
+	)
+})
+
 test("experimental Ferment V2 leaves Plan mode, writes, and completes", async ({ terminal }) => {
 	const outputFile = "plan-mode-ferment.txt"
 	const acceptedFinal = "PLAN_MODE_FERMENT_COMPLETE"

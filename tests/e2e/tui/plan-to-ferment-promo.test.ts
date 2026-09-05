@@ -1,7 +1,7 @@
 /**
  * E2E TUI test: plan-to-ferment promotion flow.
  *
- * This file has four test cases:
+ * This file covers:
  *
  * 1. "plan-to-ferment promotion — dropdown UI":
  *    Exercises the START_AS_FERMENT dropdown path end-to-end.
@@ -17,6 +17,7 @@
  *
  * 3. Normal Execute routes an approved plan through the neutral automatic run.
  * 4. Enabling that route does not affect ordinary no-plan work.
+ * 5. Disabled V2 preserves legacy Execute without V2 context or status.
  */
 
 import { existsSync, readdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs"
@@ -271,7 +272,7 @@ test("approved plan Execute starts a neutral named Ferment V2 run when enabled",
 
 			terminal.keyPress(Key.Enter)
 			await waitForText(terminal, "Approved plan started.", { timeoutMs: STREAM_TIMEOUT_MS })
-			await waitForText(terminal, "Plan: Implement a streaming think parser.", { timeoutMs: STREAM_TIMEOUT_MS })
+			await waitForText(terminal, "◈ running · Implement a streaming think parser.", { timeoutMs: STREAM_TIMEOUT_MS })
 			trace.step("execute selected and neutral approved-plan run started")
 
 			const snapshot = fermentV2Snapshot(await waitForChatRequest(fixture.fake.requests, 2))
@@ -282,8 +283,49 @@ test("approved plan Execute starts a neutral named Ferment V2 run when enabled",
 			})
 			expect(readFileSync(planPath, "utf-8")).toBe(planText)
 			await waitForText(terminal, "Approved plan blocked.", { timeoutMs: STREAM_TIMEOUT_MS })
-			expect(fullText(terminal)).not.toMatch(/ferment[- ]v2/i)
+			expect(fullText(terminal)).not.toContain("Ferment V2 created.")
 			trace.step("model request carried the saved-plan objective and the terminal stayed neutral")
+		},
+	)
+})
+
+test("disabled Ferment V2 keeps approved-plan Execute on the legacy path", async ({ terminal }) => {
+	await runKimchiSession(
+		terminal,
+		{
+			artifactName: "approved-plan-execute-v2-disabled",
+			gitInit: true,
+			extraArgs: ["--plan=true"],
+			responses: [
+				{
+					stream: ["The plan is ready for review."],
+					toolCalls: [
+						{
+							id: "submit-disabled",
+							function: {
+								name: "submit_plan",
+								arguments: JSON.stringify({
+									plan: "## Goal\nCreate example.txt.\n\n## Verification Strategy\nRead the file.",
+								}),
+							},
+						},
+					],
+				},
+				{ stream: ["LEGACY_EXECUTION_STARTED"] },
+			],
+		},
+		async (fixture, trace) => {
+			terminal.submit("Plan creating example.txt")
+			await waitForText(terminal, "Execute the plan", { timeoutMs: STREAM_TIMEOUT_MS })
+			terminal.keyPress(Key.Enter)
+			await waitForText(terminal, "LEGACY_EXECUTION_STARTED", { timeoutMs: STREAM_TIMEOUT_MS })
+			const requests = chatRequests(fixture.fake.requests)
+			expect(requests).toHaveLength(2)
+			expect(JSON.stringify(requests)).not.toContain("kimchi_session_ferment_v2")
+			expect(JSON.stringify(requests)).not.toContain('"name":"update_ferment_v2"')
+			expect(fullText(terminal)).not.toContain("◈")
+			expect(fullText(terminal)).not.toContain("Approved plan started.")
+			trace.step("legacy execution continued with no V2 tools, context, or footer")
 		},
 	)
 })

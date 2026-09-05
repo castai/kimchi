@@ -38,6 +38,16 @@ Management mutations are serialized per session. Edit commits the next revision 
 
 Creating or explicitly resuming a V2 run from Plan mode switches the session to Auto so the run can use write tools. Entering Plan mode while V2 is active pauses the run; `/ferment-v2 resume` switches back to Auto and continues it.
 
+Editing a paused run leaves it paused. Editing a completed run reopens it as paused; explicitly resume to start work. An edit replaces the objective, including any approved-plan instruction and title. Editing a blocked or budget-limited run preserves that stop condition; replacing a budget-limited run is required to get a new budget.
+
+### Approved plans
+
+With V2 enabled, approving a plan with **Execute** starts the same persistent controller and switches Plan to Auto. The initial objective references the saved approved plan, or uses its Markdown if saving failed. With V2 disabled, approval retains the legacy execution path.
+
+The footer displays `◈ running · <plan title or objective>`, changes to `checking` during evaluation, and shows paused, blocked, complete, or budget-limited state. Narrow terminals shorten it to the state; `/ferment-v2` shows full details. There is no extra plan title or gradient in the prompt editor.
+
+The optional Plannotator adapter feeds the same approval path. It does not install Plannotator: without the external extension, use the TUI review popup. Browser results must match the current review ID; an old browser tab cannot approve a newer plan. The first decision from either surface wins.
+
 ## Settings
 
 Under the `fermentV2` key in `~/.config/kimchi/harness/settings.json`, the defaults are `autoResume: true`, `maxUnchangedContinuations: 3`, `maxConsecutiveErrors: 3`, `defaultTokenBudget: unset`, and `evaluationTimeoutMs: 600000`. `autoResume` affects only the interactive session-start kick; invalid or missing values fall back to these defaults. An explicit command-line `--tokens` value overrides `defaultTokenBudget`; a positive `evaluationTimeoutMs` overrides the deadline for each evaluator attempt.
@@ -122,7 +132,7 @@ Runtime-only state is rebuilt on replay; pending continuation, terminal-feedback
 
 ## Visibility, telemetry, and benchmark accounting
 
-V2 control/context messages and the `get_ferment_v2`/`update_ferment_v2` tools are hidden from normal tool rendering and bypass permission prompts. Evaluation details are not emitted as visible transcript text. The existing working indicator remains active while an interactive completion candidate is evaluated, and prompt-summary display waits for true session idle so it cannot become an accidental model steer during a slow evaluation. `/ferment-v2` is the supported user-facing status surface; there is no dedicated V2 status-line segment.
+V2 control/context messages and the `get_ferment_v2`/`update_ferment_v2` tools are hidden from normal tool rendering and bypass permission prompts. Evaluation details are not emitted as visible transcript text. The existing working indicator remains active while an interactive completion candidate is evaluated, and prompt-summary display waits for true session idle so it cannot become an accidental model steer during a slow evaluation. V2 uses the existing Ferment footer slot, including the controls row above a custom status-line script. `/ferment-v2` shows full status details.
 
 The extension emits these lifecycle events: `ferment-v2:started`, `ferment-v2:replaced`, `ferment-v2:edited`, `ferment-v2:completed`, `ferment-v2:blocked`, `ferment-v2:paused`, `ferment-v2:stalled`, and `ferment-v2:evaluated`. Built-in telemetry subscribes only to `ferment-v2:evaluated` and records the V2 ID, verdict, count, evaluator model, token buckets, total tokens, and cost. It does not record the evaluator reason or objective, and unavailable evaluations do not emit an evaluated telemetry record.
 

@@ -18,7 +18,6 @@ import { TODO_CUSTOM_ENTRY_TYPE } from "../todos/constants.js"
 import { __resetTodoStore, applyWriteTodos, GLOBAL_TODO_SCOPE, getTodosForScope } from "../todos/store.js"
 import { MARK_TODO_TOOL_NAME, TODO_TOOL_NAMES, UPDATE_TODOS_TOOL_NAME } from "../todos/tool.js"
 import { TODO_TOOL_RESULT_SCHEMA_VERSION, type TodoItem } from "../todos/types.js"
-import { setActivePlanTitle } from "../ui.js"
 import {
 	FERMENT_V2_CONTEXT_MESSAGE_TYPE,
 	FERMENT_V2_CONTROL_MESSAGE_TYPE,
@@ -35,17 +34,12 @@ import { DEFAULT_FERMENT_V2_SETTINGS, getFermentV2Settings } from "./settings.js
 import type { FermentV2JournalEntry, SessionFermentV2 } from "./types.js"
 
 vi.mock("./evaluator.js", () => ({ evaluateFermentV2: vi.fn() }))
-vi.mock("../ui.js", async (importOriginal) => {
-	const actual = await importOriginal<typeof import("../ui.js")>()
-	return { ...actual, setActivePlanTitle: vi.fn() }
-})
 vi.mock("./settings.js", async (importOriginal) => {
 	const actual = await importOriginal<typeof import("./settings.js")>()
 	return { ...actual, getFermentV2Settings: vi.fn() }
 })
 
 const evaluateFermentV2Mock = vi.mocked(evaluateFermentV2)
-const setActivePlanTitleMock = vi.mocked(setActivePlanTitle)
 const fermentV2SettingsMock = vi.mocked(getFermentV2Settings)
 const TEST_SESSION_ID = "session-a"
 const EVALUATOR_USAGE = {
@@ -92,7 +86,6 @@ describe("Ferment V2 extension", () => {
 			usage: EVALUATOR_USAGE,
 		})
 		fermentV2SettingsMock.mockReturnValue({ ...DEFAULT_FERMENT_V2_SETTINGS })
-		setActivePlanTitleMock.mockClear()
 		harness = createHarness()
 		await harness.fire("session_start", { type: "session_start", reason: "new" })
 	})
@@ -298,7 +291,7 @@ describe("Ferment V2 extension", () => {
 		expect(harness.ui.notify).toHaveBeenLastCalledWith("Approved plan started.", "info")
 		expect(JSON.stringify(harness.ui.notify.mock.calls)).not.toMatch(/ferment[- ]v2/i)
 		expect(JSON.stringify(harness.ui.confirm.mock.calls)).not.toMatch(/ferment[- ]v2/i)
-		expect(setActivePlanTitleMock).toHaveBeenLastCalledWith("Cache plan")
+		expect(harness.ui.setStatus).toHaveBeenLastCalledWith("ferment-v2", "◈ running · Cache plan")
 	})
 
 	it("fails an automatic approved-plan start silently when its required tools are unavailable", async () => {
@@ -321,7 +314,7 @@ describe("Ferment V2 extension", () => {
 		expect(harness.ui.notify).not.toHaveBeenCalled()
 	})
 
-	it("restores and clears the active plan title across state and session-tree changes", async () => {
+	it("restores and clears the run status across state and session-tree changes", async () => {
 		const executor = getFermentV2PlanExecutor(harness.pi)
 		if (!executor) throw new Error("expected approved-plan executor")
 		await executor(
@@ -334,16 +327,16 @@ describe("Ferment V2 extension", () => {
 			harness.ctx,
 		)
 
-		setActivePlanTitleMock.mockClear()
+		harness.ui.setStatus.mockClear()
 		await harness.fire("session_tree", { type: "session_tree" })
-		expect(setActivePlanTitleMock).toHaveBeenLastCalledWith("Cache plan")
+		expect(harness.ui.setStatus).toHaveBeenLastCalledWith("ferment-v2", "◈ running · Cache plan")
 
 		harness.setBranch([])
 		await harness.fire("session_tree", { type: "session_tree" })
-		expect(setActivePlanTitleMock).toHaveBeenLastCalledWith(null)
+		expect(harness.ui.setStatus).toHaveBeenLastCalledWith("ferment-v2", undefined)
 
 		await harness.fire("session_shutdown", { type: "session_shutdown" })
-		expect(setActivePlanTitleMock).toHaveBeenLastCalledWith(null)
+		expect(harness.ui.setStatus).toHaveBeenLastCalledWith("ferment-v2", undefined)
 	})
 
 	it("keeps the existing Ferment V2 when approved-plan replacement is declined", async () => {
@@ -375,59 +368,54 @@ describe("Ferment V2 extension", () => {
 		expect(JSON.stringify(harness.ui.confirm.mock.calls)).not.toMatch(/ferment[- ]v2/i)
 	})
 
-	it("preserves one approved-plan path instruction when editing an automatic plan objective", async () => {
+	it.each([true, false])("lets an explicit edit replace the approved plan objective (saved=%s)", async (saved) => {
 		const executor = getFermentV2PlanExecutor(harness.pi)
 		if (!executor) throw new Error("expected approved-plan executor")
 		await executor(
 			{
-				objective:
-					'Read the approved plan at "/tmp/plan.md" before continuing.\nExecute and verify every requirement in that plan.',
-				title: "Cache plan",
-				planText: "# Cache plan",
-				planPath: "/tmp/plan.md",
+				objective: "Execute every requirement in the original plan",
+				title: "Original plan",
+				planText: "# Original plan",
+				...(saved ? { planPath: "/tmp/plan.md" } : {}),
 			},
 			harness.ctx,
 		)
-
-		await harness.command("edit Add smoke coverage too.")
-
-		expect(harness.currentFermentV2()?.objective).toBe(
-			'Read the approved plan at "/tmp/plan.md" before continuing.\nExecute and verify every requirement in that plan.\n\nAdd smoke coverage too.',
+		await harness.command("pause")
+		await harness.command("edit Only verify the new requirement.")
+		expect(harness.currentFermentV2()).toMatchObject({
+			objective: "Only verify the new requirement.",
+			status: "paused",
+			revision: 2,
+		})
+		expect(harness.currentFermentV2()).not.toHaveProperty("presentation")
+		expect(harness.ui.setStatus).toHaveBeenLastCalledWith(
+			"ferment-v2",
+			"◈ paused · Only verify the new requirement. · /ferment-v2 resume",
 		)
-		harness.ui.editor.mockResolvedValueOnce(
-			'Read the approved plan at "/tmp/plan.md" before continuing.\nExecute and verify every requirement in that plan.\n\nAdd smoke coverage too.',
-		)
-		await harness.command("edit")
-		expect(harness.currentFermentV2()?.objective).toBe(
-			'Read the approved plan at "/tmp/plan.md" before continuing.\nExecute and verify every requirement in that plan.\n\nAdd smoke coverage too.',
-		)
+		const before = harness.sendMessage.mock.calls.length
+		await harness.fire("session_tree", { type: "session_tree" })
+		expect(harness.sendMessage).toHaveBeenCalledTimes(before)
+		await harness.command("resume")
+		expect(harness.currentFermentV2()).toMatchObject({
+			status: "active",
+			objective: "Only verify the new requirement.",
+		})
 	})
 
-	it("preserves one inline approved-plan instruction when editing an automatic plan without a file path", async () => {
-		const executor = getFermentV2PlanExecutor(harness.pi)
-		if (!executor) throw new Error("expected approved-plan executor")
-		const planText = "# Inline plan\n\n- Ship it"
-		await executor(
-			{
-				objective: `Execute and verify the approved plan below.\n\n${planText}`,
-				title: "Inline plan",
-				planText,
-			},
-			harness.ctx,
-		)
-
-		await harness.command("edit Add smoke coverage too.")
-
-		expect(harness.currentFermentV2()?.objective).toBe(
-			`Execute and verify the approved plan below.\n\n${planText}\n\nAdd smoke coverage too.`,
-		)
-		harness.ui.editor.mockResolvedValueOnce(
-			`Execute and verify the approved plan below.\n\n${planText}\n\nAdd smoke coverage too.`,
-		)
-		await harness.command("edit")
-		expect(harness.currentFermentV2()?.objective).toBe(
-			`Execute and verify the approved plan below.\n\n${planText}\n\nAdd smoke coverage too.`,
-		)
+	it("reopens an edited completed goal as paused and permits explicit resume", async () => {
+		await harness.command("old objective")
+		const completed = { ...harness.currentFermentV2(), status: "complete" as const }
+		harness.setBranch([
+			customEntry(FERMENT_V2_CUSTOM_ENTRY_TYPE, { schemaVersion: 1, op: "put", fermentV2: completed }),
+		])
+		await harness.fire("session_tree", { type: "session_tree" })
+		harness.sendMessage.mockClear()
+		await harness.command("edit new objective")
+		expect(harness.currentFermentV2()).toMatchObject({ status: "paused", revision: 2, objective: "new objective" })
+		expect(harness.sendMessage).not.toHaveBeenCalled()
+		await harness.command("resume")
+		expect(harness.currentFermentV2()?.status).toBe("active")
+		expect(harness.sendMessage).toHaveBeenCalledOnce()
 	})
 
 	it("rejects Ferment V2 replacement before asking when required tools are unavailable", async () => {

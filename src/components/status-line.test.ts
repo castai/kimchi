@@ -16,6 +16,7 @@ import {
 	buildModelAbbrev,
 	buildPhaseCompact,
 	buildScriptPayload,
+	buildStatusLineSegments,
 	renderFittedLine,
 	SHORTCUT_TAIL,
 	StatusLine,
@@ -123,6 +124,26 @@ function createMockStatusLineData(opts?: {
 }
 
 describe("buildScriptPayload", () => {
+	it("shows a V2 run in both the default footer and custom-script controls", () => {
+		const data = createMockStatusLineData()
+		vi.mocked(data.getExtensionStatuses).mockReturnValue(
+			new Map([["ferment-v2", "◈ paused · Cache layer · /ferment-v2 resume"]]),
+		)
+		const context = { ctx: createMockContext(), theme: createMockTheme(), statusLineData: data }
+		const standard = buildStatusLineSegments(context, new Set())
+		expect(stripAnsi(standard.find((segment) => segment.id === "ferment")?.text ?? "")).toBe(
+			"◈ paused · Cache layer · /ferment-v2 resume",
+		)
+		expect(buildControlsLineSegments(context).some((segment) => segment.id === "ferment")).toBe(true)
+		vi.mocked(data.getExtensionStatuses).mockReturnValue(
+			new Map([["ferment-v2", `◈ paused · ${"long objective ".repeat(4)} · /ferment-v2 resume`]]),
+		)
+		for (const segments of [buildStatusLineSegments(context, new Set()), buildControlsLineSegments(context)]) {
+			const line = renderFittedLine(segments, 80, context.theme)
+			expect(stripAnsi(line)).toContain("◈ paused")
+			expect(visibleWidth(line)).toBeLessThanOrEqual(80)
+		}
+	})
 	afterEach(() => setBillingStatusForTest(undefined))
 
 	it("passes credits and budget to custom status-line scripts", () => {

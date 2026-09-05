@@ -23,8 +23,13 @@ import { getWriteTodosDetails, isTodoWriteToolName, isWriteTodosDetails } from "
 import { GLOBAL_TODO_SCOPE, getTodosForScope, resolveTodoScope } from "../todos/store.js"
 import { MARK_TODO_TOOL_NAME, TODO_TOOL_NAMES, UPDATE_TODOS_TOOL_NAME } from "../todos/tool.js"
 import { holdWorkedDuration } from "../tool-rendering.js"
-import { holdWorkedForMessage, holdWorkingIndicator, setActivePlanTitle } from "../ui.js"
-import { FERMENT_V2_COMMAND_COMPLETIONS, formatFermentV2Summary, parseFermentV2Command } from "./command.js"
+import { holdWorkedForMessage, holdWorkingIndicator } from "../ui.js"
+import {
+	FERMENT_V2_COMMAND_COMPLETIONS,
+	formatFermentV2Status,
+	formatFermentV2Summary,
+	parseFermentV2Command,
+} from "./command.js"
 import {
 	FERMENT_V2_COMMAND_NAME,
 	FERMENT_V2_CONTROL_MESSAGE_TYPE,
@@ -46,11 +51,7 @@ import {
 	recoverAcceptedFinalAnswerDraft,
 } from "./final-answer.js"
 import { type FermentV2Lesson, updateFermentV2Lessons } from "./lessons.js"
-import {
-	composeApprovedPlanEditObjective,
-	type FermentV2PlanExecutorResult,
-	registerFermentV2PlanExecutor,
-} from "./plan-executor.js"
+import { type FermentV2PlanExecutorResult, registerFermentV2PlanExecutor } from "./plan-executor.js"
 import {
 	buildFermentV2Continuation,
 	buildFermentV2EditSteer,
@@ -398,7 +399,7 @@ export default function fermentV2Extension(pi: ExtensionAPI): void {
 		const branch = ctx.sessionManager.getBranch()
 		const restored = restoreFermentV2Runtime(branch, currentSessionId, getTodoScopeKey(resolveTodoScope()))
 		currentFermentV2 = restored.fermentV2
-		syncActivePlanIndicator(currentFermentV2)
+		syncRunStatus(currentFermentV2)
 		resetFermentV2Runtime()
 		todoStateFor = restored.todoState
 		fermentV2Lessons = restored.lessons
@@ -463,12 +464,12 @@ export default function fermentV2Extension(pi: ExtensionAPI): void {
 	function commitFermentV2(fermentV2: SessionFermentV2, resolveTerminalWaiter = true): void {
 		const previous = currentFermentV2
 		currentFermentV2 = fermentV2
-		syncActivePlanIndicator(fermentV2)
+		syncRunStatus(fermentV2)
 		try {
 			pi.appendEntry(FERMENT_V2_CUSTOM_ENTRY_TYPE, putFermentV2Entry(fermentV2))
 		} catch (error) {
 			currentFermentV2 = previous
-			syncActivePlanIndicator(previous)
+			syncRunStatus(previous)
 			throw error
 		}
 		if (previous && previous.id !== fermentV2.id) resolveFermentV2Waiter(currentSessionId, previous.id)
@@ -482,15 +483,14 @@ export default function fermentV2Extension(pi: ExtensionAPI): void {
 	function commitClear(fermentV2: SessionFermentV2): void {
 		pi.appendEntry(FERMENT_V2_CUSTOM_ENTRY_TYPE, clearFermentV2Entry(fermentV2, timestamp()))
 		currentFermentV2 = clearFermentV2(fermentV2, fermentV2.id, fermentV2.revision)
-		syncActivePlanIndicator(currentFermentV2)
+		syncRunStatus(currentFermentV2)
 		releaseFermentV2WorkedForMessage()
 		releaseFermentV2WorkedDuration()
 		resolveFermentV2Waiter(currentSessionId, fermentV2.id)
 	}
 
-	function syncActivePlanIndicator(fermentV2: FermentV2State): void {
-		const presentation = fermentV2?.status === "active" ? fermentV2.presentation : undefined
-		setActivePlanTitle(presentation?.kind === "approved-plan" ? presentation.title : null)
+	function syncRunStatus(fermentV2: FermentV2State): void {
+		currentContext?.ui.setStatus("ferment-v2", formatFermentV2Status(fermentV2, evaluationAbort !== undefined))
 	}
 
 	function displayName(fermentV2: SessionFermentV2 | undefined): string {
@@ -825,6 +825,7 @@ export default function fermentV2Extension(pi: ExtensionAPI): void {
 		const startFingerprint = turnStartFingerprint
 		const abort = new AbortController()
 		evaluationAbort = abort
+		syncRunStatus(currentFermentV2)
 		const evaluation = evaluateFermentV2(
 			{
 				objective: fermentV2.objective,
@@ -851,6 +852,7 @@ export default function fermentV2Extension(pi: ExtensionAPI): void {
 		} finally {
 			if (evaluationAbort === abort) evaluationAbort = undefined
 			if (evaluationSettled === settled) evaluationSettled = undefined
+			syncRunStatus(currentFermentV2)
 		}
 	}
 
@@ -1078,13 +1080,7 @@ export default function fermentV2Extension(pi: ExtensionAPI): void {
 					const nowMs = Date.now()
 					const now = timestamp(nowMs)
 					const accounted = checkpointFermentV2(current, 0, nowMs)
-					const edited = editFermentV2(
-						accounted,
-						current.id,
-						current.revision,
-						composeApprovedPlanEditObjective(editedObjective, current.presentation),
-						now,
-					)
+					const edited = editFermentV2(accounted, current.id, current.revision, editedObjective, now)
 					// Reset both guard counters in the committed revision so a later restart
 					// doesn't restore a streak that belonged to a superseded objective.
 					const next = setFermentV2UnchangedContinuationTurns(
@@ -2197,10 +2193,10 @@ export default function fermentV2Extension(pi: ExtensionAPI): void {
 		void abortEvaluation()
 		resolveSessionWaiters(currentSessionId)
 		currentSessionId = undefined
+		syncRunStatus(undefined)
 		currentContext = undefined
 		resetFermentV2Runtime()
 		currentFermentV2 = undefined
-		syncActivePlanIndicator(undefined)
 	})
 }
 
