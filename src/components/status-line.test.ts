@@ -1293,3 +1293,38 @@ describe("StatusLineScript", () => {
 		expect(sls.render(80)).toEqual(["one"])
 	})
 })
+
+describe("StatusLine narrow-terminal width invariant", () => {
+	// The status line renders on the main screen, where pi-tui's doRender
+	// hard-crashes on any line wider than the terminal. Sweep widths 1-12
+	// with every segment family active — permissions/model/context, usage,
+	// agents, billing, router — and assert the invariant.
+	afterEach(() => {
+		vi.restoreAllMocks()
+		setBillingStatusForTest(undefined)
+	})
+
+	it("never emits a line wider than the requested width at widths 1-12", () => {
+		const theme = createMockTheme()
+		withPinned(["agents", "credits", "budget"], () => {
+			vi.spyOn(AGENTS, "getActiveAgentCount").mockReturnValue(3)
+			setTestBilling()
+			setAutoRoutingState("test-session", { status: "resolved", model: concreteModel("kimi-k2.6") })
+			const ctx = createMockContext({
+				percent: 87,
+				modelId: "auto",
+				assistantMessages: [
+					{ input: 1200, output: 340 },
+					{ input: 800, output: 200 },
+				],
+			})
+			const sl = new StatusLine(ctx, theme, createMockStatusLineData())
+			for (let width = 1; width <= 12; width++) {
+				const lines = sl.render(width)
+				for (const line of lines) {
+					expect(visibleWidth(line)).toBeLessThanOrEqual(width)
+				}
+			}
+		})
+	})
+})

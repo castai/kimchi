@@ -1082,7 +1082,7 @@ export function wrapMarkedLine(line: string, width: number): string[] {
 	return wrapped.map((part, index) => (index === 0 ? `${prefix}${part}` : `${continuation}${part}`))
 }
 
-class ToolText extends Text {
+export class ToolText extends Text {
 	private value = ""
 	private toolCachedValue?: string
 	private toolCachedWidth?: number
