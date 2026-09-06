@@ -1,11 +1,9 @@
 import { createHash } from "node:crypto"
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { afterEach, describe, expect, it, vi } from "vitest"
-import { configureMcpKeyringRecoveryHelper, inspectMcpCredentialAccount } from "./keyring-require-bridge.js"
-
-const RECOVERY_HELPER_ENV = "PI_MCP_ADAPTER_KEYRING_RECOVERY_HELPER"
+import { inspectMcpCredentialAccount } from "./keyring-require-bridge.js"
 
 function credentialAccount(serverName: string): string {
 	return `sha256-${createHash("sha256").update(serverName, "utf8").digest("hex")}`
@@ -15,47 +13,12 @@ function credentialPath(keyringDir: string, account: string): string {
 	return join(keyringDir, createHash("sha256").update(`pi-mcp-adapter.oauth\0${account}`, "utf8").digest("hex"))
 }
 
-describe("configureMcpKeyringRecoveryHelper", () => {
+describe("inspectMcpCredentialAccount", () => {
 	const tempDirs: string[] = []
 
 	afterEach(() => {
 		vi.unstubAllEnvs()
 		for (const dir of tempDirs.splice(0)) rmSync(dir, { recursive: true, force: true })
-	})
-
-	it("points the adapter at the materialized helper in the auxiliary directory", () => {
-		const packageDir = mkdtempSync(join(tmpdir(), "kimchi-keyring-helper-"))
-		tempDirs.push(packageDir)
-		const helperPath = join(packageDir, "mcp-keyring", "mcp-keyring-helper.cjs")
-		mkdirSync(join(packageDir, "mcp-keyring"), { recursive: true })
-		writeFileSync(helperPath, "module.exports = {}")
-		vi.stubEnv("PI_PACKAGE_DIR", packageDir)
-		vi.stubEnv(RECOVERY_HELPER_ENV, "")
-
-		configureMcpKeyringRecoveryHelper()
-
-		expect(existsSync(helperPath)).toBe(true)
-		expect(process.env[RECOVERY_HELPER_ENV]).toBe(helperPath)
-	})
-
-	it("preserves an explicit adapter helper override", () => {
-		vi.stubEnv("PI_PACKAGE_DIR", "/package")
-		vi.stubEnv(RECOVERY_HELPER_ENV, "/custom/helper.cjs")
-
-		configureMcpKeyringRecoveryHelper()
-
-		expect(process.env[RECOVERY_HELPER_ENV]).toBe("/custom/helper.cjs")
-	})
-
-	it("does not configure a helper path that is not materialized", () => {
-		const packageDir = mkdtempSync(join(tmpdir(), "kimchi-keyring-helper-"))
-		tempDirs.push(packageDir)
-		vi.stubEnv("PI_PACKAGE_DIR", packageDir)
-		vi.stubEnv(RECOVERY_HELPER_ENV, "")
-
-		configureMcpKeyringRecoveryHelper()
-
-		expect(process.env[RECOVERY_HELPER_ENV]).toBe("")
 	})
 
 	it("distinguishes an empty account from a secure credential entry", () => {

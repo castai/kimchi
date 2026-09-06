@@ -64,10 +64,27 @@ file-backed implementation is available only to isolated E2E processes. The
 `mcp keyring-check --json` command always exercises native credential-store
 CRUD and is run by release and canary workflows on each target OS.
 
+On Linux, revoked session keyrings are recovered through `keyctl session -`.
+Compiled builds configure the adapter's existing runtime/helper overrides to
+launch the Kimchi executable with the internal `mcp-keyring-helper` command.
+The binary bundles the pinned adapter's helper unchanged and installs the
+native require bridge before running it. This path bypasses normal CLI startup
+and needs neither system Node nor copied helper/native packages. Explicit
+runtime or helper overrides are preserved; source runs retain the adapter's
+installed helper. macOS and Windows do not use this Linux recovery path.
+
+The integration uses the adapter layer: the pinned Pi SDK exposes no keyring
+recovery hook, and the pi.dev catalog identifies the already-used MCP adapter.
+Upstream [PR #256](https://github.com/nicobailon/pi-mcp-adapter/pull/256)
+supplies the recovery protocol and overrides, so no new patch or credential
+protocol implementation is needed.
+
 Relevant code:
 
 - [`src/extensions/mcp/oauth-migration.ts`](../src/extensions/mcp/oauth-migration.ts)
 - [`src/extensions/mcp/keyring-require-bridge.ts`](../src/extensions/mcp/keyring-require-bridge.ts)
+- [`src/extensions/mcp/keyring-recovery.ts`](../src/extensions/mcp/keyring-recovery.ts)
+- [`src/binary-entry.ts`](../src/binary-entry.ts)
 - [`src/commands/mcp.ts`](../src/commands/mcp.ts)
 - [`.github/workflows/release.yml`](../.github/workflows/release.yml)
 - [`.github/workflows/canary.yml`](../.github/workflows/canary.yml)

@@ -4,9 +4,9 @@ import { createRequire, Module } from "node:module"
 import { join } from "node:path"
 import { getAgentDir } from "@earendil-works/pi-coding-agent"
 import * as keyring from "@napi-rs/keyring"
+import { configureMcpKeyringRecoveryHelper } from "./keyring-recovery.js"
 
 const KEYRING_PACKAGE = "@napi-rs/keyring"
-const KEYRING_RECOVERY_HELPER_ENV = "PI_MCP_ADAPTER_KEYRING_RECOVERY_HELPER"
 const VIRTUAL_KEYRING_PATH = "/$bunfs/kimchi/@napi-rs/keyring/index.js"
 const INSTALLED_MARKER = Symbol.for("kimchi.mcp.keyring-require-bridge")
 const TEST_KEYRING_DIR_ENV = "KIMCHI_MCP_E2E_KEYRING_DIR"
@@ -48,14 +48,6 @@ class FileBackedTestEntry {
 function keyringExports(): unknown {
 	if (!process.env[TEST_KEYRING_DIR_ENV]) return keyring
 	return { ...keyring, Entry: FileBackedTestEntry }
-}
-
-export function configureMcpKeyringRecoveryHelper(): void {
-	if (process.env[KEYRING_RECOVERY_HELPER_ENV]?.trim()) return
-	const packageDir = process.env.PI_PACKAGE_DIR?.trim()
-	if (!packageDir) return
-	const helperPath = join(packageDir, "mcp-keyring", "mcp-keyring-helper.cjs")
-	if (existsSync(helperPath)) process.env[KEYRING_RECOVERY_HELPER_ENV] = helperPath
 }
 
 export type McpCredentialAccountStatus =

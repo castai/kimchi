@@ -1,6 +1,15 @@
 import { spawnSync } from "node:child_process"
 import { createHash } from "node:crypto"
-import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs"
+import {
+	copyFileSync,
+	existsSync,
+	mkdirSync,
+	mkdtempSync,
+	readdirSync,
+	readFileSync,
+	rmSync,
+	writeFileSync,
+} from "node:fs"
 import { tmpdir } from "node:os"
 import { join, resolve } from "node:path"
 import { fileURLToPath } from "node:url"
@@ -13,7 +22,8 @@ import {
 } from "../tui/support/mcp-fixture.js"
 
 const REPO_ROOT = fileURLToPath(new URL("../../../", import.meta.url))
-const BINARY_PATH = resolve(REPO_ROOT, "dist/bin/kimchi")
+const BINARY_NAME = process.platform === "win32" ? "kimchi.exe" : "kimchi"
+const BINARY_PATH = resolve(REPO_ROOT, "dist/bin", BINARY_NAME)
 const PACKAGE_DIR = resolve(REPO_ROOT, "dist/share/kimchi")
 
 function keyringCredentialPath(keyringDir: string, serverName: string): string {
@@ -31,15 +41,48 @@ describe("compiled kimchi mcp probe command", () => {
 		for (const dir of tempDirs.splice(0)) rmSync(dir, { recursive: true, force: true })
 	})
 
-	it("stages a Node-readable keyring recovery helper with its native dependencies", () => {
-		const recoveryDir = join(PACKAGE_DIR, "mcp-keyring")
-		const keyringScopeDir = join(recoveryDir, "node_modules", "@napi-rs")
+	it("runs keyring recovery from the executable without Node or auxiliary files", () => {
+		const workDir = mkdtempSync(join(tmpdir(), "kimchi-embedded-keyring-"))
+		tempDirs.push(workDir)
+		const executable = join(workDir, BINARY_NAME)
+		copyFileSync(BINARY_PATH, executable)
+		const run = (operation: string, payload?: string) => {
+			const result = spawnSync(executable, ["mcp-keyring-helper"], {
+				cwd: workDir,
+				input: JSON.stringify({ operation, service: "kimchi-test", account: "recovery", payload }),
+				encoding: "utf8",
+				env: { HOME: workDir, PATH: "", KIMCHI_MCP_E2E_KEYRING_DIR: join(workDir, "credentials") },
+				timeout: 10_000,
+			})
+			expect(result.error).toBeUndefined()
+			expect(result.status, result.stderr).toBe(0)
+			expect(result.stderr).toBe("")
+			return JSON.parse(result.stdout)
+		}
 
-		expect(readFileSync(join(recoveryDir, "mcp-keyring-helper.cjs"), "utf8")).toContain("loadKeyringEntryClass")
-		expect(readFileSync(join(keyringScopeDir, "keyring", "package.json"), "utf8")).toContain(
-			'"name": "@napi-rs/keyring"',
-		)
-		expect(readdirSync(keyringScopeDir).some((name) => name.startsWith("keyring-") && name !== "keyring")).toBe(true)
+		expect(run("read")).toEqual({ ok: true, found: false })
+		expect(run("write", "test-credential")).toEqual({ ok: true })
+		expect(run("read")).toEqual({ ok: true, found: true, value: "test-credential" })
+		expect(run("remove")).toEqual({ ok: true })
+		expect(run("read")).toEqual({ ok: true, found: false })
+		expect(existsSync(join(PACKAGE_DIR, "mcp-keyring"))).toBe(false)
+	})
+
+	it.each([
+		"not-json",
+		"{}",
+		'{"operation":"unknown","service":"test","account":"test"}',
+	])("rejects malformed helper requests with a JSON error: %s", (input) => {
+		const result = spawnSync(BINARY_PATH, ["mcp-keyring-helper"], {
+			input,
+			encoding: "utf8",
+			env: { PATH: "" },
+			timeout: 10_000,
+		})
+		expect(result.error).toBeUndefined()
+		expect(result.status).toBe(1)
+		expect(result.stderr).toBe("")
+		expect(JSON.parse(result.stdout)).toEqual({ ok: false, error: expect.any(String) })
 	})
 
 	it.each([
@@ -114,7 +157,9 @@ describe("compiled kimchi mcp probe command", () => {
 		expect(fixture.hasEvent("process_exited", { code: 0 })).toBe(true)
 	})
 
-	it("uses legacy OAuth credentials on the first CLI probe without opening a browser", async () => {
+	it.each(
+		process.platform === "linux" ? [false, true] : [false],
+	)("uses legacy OAuth credentials without opening a browser (revoked keyring: %s)", async (revokedKeyring) => {
 		const homeDir = mkdtempSync(join(tmpdir(), "kimchi-mcp-probe-home-"))
 		const workDir = mkdtempSync(join(tmpdir(), "kimchi-mcp-probe-work-"))
 		tempDirs.push(homeDir, workDir)
@@ -132,11 +177,33 @@ describe("compiled kimchi mcp probe command", () => {
 		const isolatedEnv = Object.fromEntries(
 			Object.entries(process.env).filter(([name]) => name !== "NODE_CHANNEL_FD" && name !== "NODE_UNIQUE_ID"),
 		)
+		const recoveryEnv: NodeJS.ProcessEnv = {}
+		const recoveryTrace = join(workDir, "recovery-trace")
+		if (revokedKeyring) {
+			// Exercise the adapter's error classification and subprocess protocol.
+			// The file-backed test store does not require a real kernel keyring.
+			const keyctl = join(workDir, "keyctl")
+			writeFileSync(
+				keyctl,
+				'#!/bin/sh\n[ "$1" = session ] && [ "$2" = - ] || exit 2\nshift 2\nprintf "%s\\n" "$@" >> "$KIMCHI_TEST_RECOVERY_TRACE"\nexec "$@"\n',
+				{ mode: 0o700 },
+			)
+			recoveryEnv.PI_MCP_ADAPTER_TEST_AUTH_STORE = "keyrevoked"
+			recoveryEnv.PI_MCP_ADAPTER_KEYRING_RECOVERY_KEYCTL = keyctl
+			recoveryEnv.KIMCHI_TEST_RECOVERY_TRACE = recoveryTrace
+		}
 		const result = spawnSync(BINARY_PATH, ["mcp", "probe", "--json"], {
 			cwd: workDir,
 			input: JSON.stringify({ name: "fixture", server: fixture.serverDefinition }),
 			encoding: "utf-8",
-			env: { ...isolatedEnv, ...fixture.env, HOME: homeDir, PI_PACKAGE_DIR: PACKAGE_DIR, KIMCHI_NO_UPDATE_CHECK: "1" },
+			env: {
+				...isolatedEnv,
+				...fixture.env,
+				...recoveryEnv,
+				HOME: homeDir,
+				PI_PACKAGE_DIR: PACKAGE_DIR,
+				KIMCHI_NO_UPDATE_CHECK: "1",
+			},
 			timeout: 30_000,
 		})
 
@@ -146,6 +213,9 @@ describe("compiled kimchi mcp probe command", () => {
 		expect(fixture.hasEvent("tools_listed")).toBe(true)
 		expect(fixture.hasEvent("oauth_browser_opened")).toBe(false)
 		expect(fixture.hasEvent("oauth_token_issued")).toBe(false)
+		if (revokedKeyring) {
+			expect(readFileSync(recoveryTrace, "utf8")).toContain(`${BINARY_PATH}\nmcp-keyring-helper\n`)
+		}
 	})
 
 	it("preserves orphaned same-name credentials for an undiscoverable URL and removes the probe entry", async () => {

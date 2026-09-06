@@ -12,13 +12,11 @@
 //                                   so the compiled binary resolves assets from the shared data directory
 
 import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs"
-import { createRequire } from "node:module"
 import { platform } from "node:os"
 import { dirname, join } from "node:path"
 import { fileURLToPath } from "node:url"
 
 const projectRoot = join(dirname(fileURLToPath(import.meta.url)), "..")
-const projectRequire = createRequire(import.meta.url)
 const piAgentDist = join(projectRoot, "node_modules", "@earendil-works", "pi-coding-agent", "dist")
 
 const themeFiles = ["dark.json", "light.json", "theme-schema.json"]
@@ -97,34 +95,6 @@ if (!isDev) {
 	const oauthDest = join(projectRoot, "dist", "share", "kimchi", "oauth")
 	mkdirSync(oauthDest, { recursive: true })
 	cpSync(oauthSrc, oauthDest, { recursive: true })
-
-	// The adapter's Linux KeyRevoked recovery path spawns system Node, which
-	// cannot read helper code or native modules from Bun's virtual filesystem.
-	// Materialize the helper and every installed keyring binding beside it.
-	const keyringRecoveryDest = join(projectRoot, "dist", "share", "kimchi", "mcp-keyring")
-	const keyringModulesDest = join(keyringRecoveryDest, "node_modules", "@napi-rs")
-	const keyringPackageJsonPath = projectRequire.resolve("@napi-rs/keyring/package.json")
-	const keyringPackageDir = dirname(keyringPackageJsonPath)
-	const keyringPackage = JSON.parse(readFileSync(keyringPackageJsonPath, "utf8"))
-	const keyringRequire = createRequire(keyringPackageJsonPath)
-	mkdirSync(keyringModulesDest, { recursive: true })
-	cpSync(
-		join(projectRoot, "node_modules", "pi-mcp-adapter", "mcp-keyring-helper.cjs"),
-		join(keyringRecoveryDest, "mcp-keyring-helper.cjs"),
-	)
-	cpSync(keyringPackageDir, join(keyringModulesDest, "keyring"), { recursive: true, dereference: true })
-	for (const dependencyName of Object.keys(keyringPackage.optionalDependencies ?? {})) {
-		try {
-			const dependencyPackageJson = keyringRequire.resolve(`${dependencyName}/package.json`)
-			const destinationName = dependencyName.slice("@napi-rs/".length)
-			cpSync(dirname(dependencyPackageJson), join(keyringModulesDest, destinationName), {
-				recursive: true,
-				dereference: true,
-			})
-		} catch {
-			// pnpm installs only native bindings compatible with the build target.
-		}
-	}
 
 	// Copy proxy-helper binary built by scripts/build-proxy-helper.js.
 	const buildTargetOS = process.env.KIMCHI_BUILD_TARGET_OS || platform()
