@@ -53,43 +53,15 @@ import clipboardImageExtension from "./clipboard-image.js"
 
 type Handlers = Record<string, (...args: unknown[]) => unknown>
 
-interface MockTerminalInput {
-	current?: (data: string) => void
-}
-
-function makeMockCtx(overrides: Partial<ExtensionContext> = {}): ExtensionContext & {
-	_mockTerminalInput: MockTerminalInput
-} {
-	const terminalInputHandler: MockTerminalInput = {}
+function makeMockCtx(overrides: Partial<ExtensionContext> = {}): ExtensionContext {
 	return {
 		model: { id: "glm-4", slug: "glm-4", input_modalities: ["text", "image"] as string[] },
 		ui: {
 			notify: vi.fn(),
 			setStatus: vi.fn(),
-			onTerminalInput: (handler: (data: string) => void) => {
-				terminalInputHandler.current = handler
-				return () => {
-					terminalInputHandler.current = undefined
-				}
-			},
 		},
-		_mockTerminalInput: terminalInputHandler,
 		...overrides,
-	} as unknown as ExtensionContext & { _mockTerminalInput: MockTerminalInput }
-}
-
-function simulatePaste(ctx: ExtensionContext & { _mockTerminalInput: MockTerminalInput }) {
-	const handler = ctx._mockTerminalInput.current
-	expect(handler).toBeDefined()
-	if (!handler) throw new Error("expected terminal input handler to be registered")
-	handler("\x1b[200~/dummy.png\x1b[201~")
-}
-
-function simulateTypedInput(ctx: ExtensionContext & { _mockTerminalInput: MockTerminalInput }) {
-	const handler = ctx._mockTerminalInput.current
-	expect(handler).toBeDefined()
-	if (!handler) throw new Error("expected terminal input handler to be registered")
-	handler("typed text")
+	} as unknown as ExtensionContext
 }
 
 function makeMockPi(): ExtensionAPI & { _handlers: Handlers } {
@@ -249,7 +221,7 @@ describe("clipboard-image extension", () => {
 		})
 	})
 
-	describe("typed image paths", () => {
+	describe("image file paths in the prompt", () => {
 		const PNG_BYTES = Buffer.from([0x89, 0x50, 0x4e, 0x47])
 		let tmpDir: string
 		let imgPath: string
@@ -272,9 +244,8 @@ describe("clipboard-image extension", () => {
 			return { pi, ctx }
 		}
 
-		it("attaches a pasted image path with [Image #1] and keeps the text", () => {
-			const { pi, ctx } = startVisionSession()
-			simulatePaste(ctx)
+		it("attaches a typed image path with [Image #1] and keeps the text", () => {
+			const { pi } = startVisionSession()
 			const result = callInputHandler(pi, { text: `${imgPath} what's this?`, images: [] })
 
 			expect(result).toMatchObject({ action: "transform" })
@@ -287,8 +258,7 @@ describe("clipboard-image extension", () => {
 		})
 
 		it("appends path images after existing attachments and numbers them sequentially", () => {
-			const { pi, ctx } = startVisionSession()
-			simulatePaste(ctx)
+			const { pi } = startVisionSession()
 			const attached: ImageContent = { type: "image", mimeType: "image/jpeg", data: "ZmFrZQ==" }
 			const result = callInputHandler(pi, { text: `look ${imgPath}`, images: [attached] })
 
@@ -301,8 +271,7 @@ describe("clipboard-image extension", () => {
 		})
 
 		it("keeps the marker counter advancing across path-attach and paste turns", () => {
-			const { pi, ctx } = startVisionSession()
-			simulatePaste(ctx)
+			const { pi } = startVisionSession()
 			callInputHandler(pi, { text: String(imgPath), images: [] })
 			const result = callInputHandler(pi, {
 				text: "and this",
@@ -312,15 +281,13 @@ describe("clipboard-image extension", () => {
 		})
 
 		it("attaches a path-only message with the marker as prefix", () => {
-			const { pi, ctx } = startVisionSession()
-			simulatePaste(ctx)
+			const { pi } = startVisionSession()
 			const result = callInputHandler(pi, { text: String(imgPath), images: [] })
 			expect((result as { text: string }).text).toBe(`[Image #1] ${imgPath}`)
 		})
 
 		it("attaches a duplicated path only once", () => {
-			const { pi, ctx } = startVisionSession()
-			simulatePaste(ctx)
+			const { pi } = startVisionSession()
 			const result = callInputHandler(pi, { text: `${imgPath} and ${imgPath}`, images: [] })
 			expect((result as { images: ImageContent[] }).images).toHaveLength(1)
 		})
@@ -337,7 +304,6 @@ describe("clipboard-image extension", () => {
 			})
 			;(pi._handlers.session_start as (e: unknown, ctx: ExtensionContext) => void)(void 0, ctx)
 			mockGetAvailableModels.mockReturnValue([{ slug: "text-only", input_modalities: ["text"] }])
-			simulatePaste(ctx)
 
 			const result = callInputHandler(pi, { text: `look at ${imgPath}`, images: [] })
 			expect(result).toBeUndefined()
@@ -345,27 +311,9 @@ describe("clipboard-image extension", () => {
 		})
 
 		it("leaves text untouched when the path does not resolve to an image", () => {
-			const { pi, ctx } = startVisionSession()
-			simulatePaste(ctx)
+			const { pi } = startVisionSession()
 			const missing = join(tmpDir, "missing.png")
 			const result = callInputHandler(pi, { text: `open ${missing}`, images: [] })
-			expect(result).toBeUndefined()
-			expect(mockAddImage).not.toHaveBeenCalled()
-		})
-
-		it("leaves text untouched when the input is typed, not pasted", () => {
-			const { pi } = startVisionSession()
-			const result = callInputHandler(pi, { text: String(imgPath), images: [] })
-			expect(result).toBeUndefined()
-			expect(mockAddImage).not.toHaveBeenCalled()
-		})
-
-		it("leaves text untouched when input is typed after a paste (sticky flag reset)", () => {
-			const { pi, ctx } = startVisionSession()
-			simulatePaste(ctx)
-			// Simulate typed keystrokes after the paste — these reset lastInputWasPaste.
-			simulateTypedInput(ctx)
-			const result = callInputHandler(pi, { text: String(imgPath), images: [] })
 			expect(result).toBeUndefined()
 			expect(mockAddImage).not.toHaveBeenCalled()
 		})
