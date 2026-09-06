@@ -395,6 +395,23 @@ describe("runRemoteAgent", () => {
 		)
 	})
 
+	it("forwards resources to authenticateWorkspace when provided", async () => {
+		await runRemoteAgent(WORKSPACE_ID, PROMPT, makeOptions({ resources: { cpu: "250m", memory: "1Gi" } }))
+
+		expect(authenticateWorkspace).toHaveBeenCalledWith(WORKSPACE_ID, "test-api-key", "kimchi", {
+			endpoint: undefined,
+			resources: { cpu: "250m", memory: "1Gi" },
+		})
+	})
+
+	it("omits the resources key when not provided", async () => {
+		await runRemoteAgent(WORKSPACE_ID, PROMPT, makeOptions())
+
+		expect(authenticateWorkspace).toHaveBeenCalledWith(WORKSPACE_ID, "test-api-key", "kimchi", {
+			endpoint: undefined,
+		})
+	})
+
 	it("passes signal through to createSession and AcpSessionClient", async () => {
 		const controller = new AbortController()
 		await runRemoteAgent(WORKSPACE_ID, PROMPT, makeOptions({ signal: controller.signal }))

@@ -135,33 +135,35 @@ describe("matchesHostNickname", () => {
 })
 
 describe("resolveWorkspaceRef", () => {
-	it("returns {id, name} when a UUID ref matches a known workspace", async () => {
+	it("returns {id, name, isNew:false} when a UUID ref matches a known workspace", async () => {
 		listWorkspacesMock.mockResolvedValue([ws({ id: UUID_A, name: "kimchi-dev" })])
 		const { ctx } = makeCtx()
 		const resolved = await resolveWorkspaceRef(ctx, UUID_A, { onEmpty: { kind: "mint" } })
-		expect(resolved).toEqual({ id: UUID_A, name: "kimchi-dev" })
+		expect(resolved).toEqual({ id: UUID_A, name: "kimchi-dev", isNew: false })
 		expect(listWorkspacesMock).toHaveBeenCalledOnce()
 	})
 
-	it("returns id with no name when UUID ref is not in the list (server stale/paginated)", async () => {
+	it("returns id with no name and isNew:false (attach-intent) when UUID ref is not in the list (server stale/paginated)", async () => {
 		listWorkspacesMock.mockResolvedValue([ws({ id: UUID_B, name: "other" })])
 		const { ctx } = makeCtx()
 		const resolved = await resolveWorkspaceRef(ctx, UUID_A, { onEmpty: { kind: "mint" } })
-		expect(resolved).toEqual({ id: UUID_A })
+		// Not minted client-side → create-time-only resources never ride the
+		// PUT: if the workspace exists, mismatched values would 400.
+		expect(resolved).toEqual({ id: UUID_A, isNew: false })
 	})
 
 	it("resolves a unique name match (case-insensitive) with the workspace's stored name", async () => {
 		listWorkspacesMock.mockResolvedValue([ws({ id: UUID_A, name: "kimchi-dev" })])
 		const { ctx } = makeCtx()
 		const resolved = await resolveWorkspaceRef(ctx, "KIMCHI-DEV", { onEmpty: { kind: "mint" } })
-		expect(resolved).toEqual({ id: UUID_A, name: "kimchi-dev" })
+		expect(resolved).toEqual({ id: UUID_A, name: "kimchi-dev", isNew: false })
 	})
 
 	it("resolves a unique host-nickname prefix match", async () => {
 		listWorkspacesMock.mockResolvedValue([ws({ id: UUID_A, name: "other-name" })])
 		const { ctx } = makeCtx()
 		const resolved = await resolveWorkspaceRef(ctx, "trusting-ruling", { onEmpty: { kind: "mint" } })
-		expect(resolved).toEqual({ id: UUID_A, name: "other-name" })
+		expect(resolved).toEqual({ id: UUID_A, name: "other-name", isNew: false })
 	})
 
 	it("treats name+nickname collision on the same workspace as a single match", async () => {
@@ -208,11 +210,12 @@ describe("resolveWorkspaceRef", () => {
 		expect(ui.notify).toHaveBeenCalledWith(expect.stringMatching(/No workspace matching "bogus"/), "error")
 	})
 
-	it("mints a new id (no name) when no ref, no workspaces (onEmpty=mint)", async () => {
+	it("mints a new id (no name, isNew:true) when no ref, no workspaces (onEmpty=mint)", async () => {
 		const { ctx } = makeCtx()
 		const resolved = await resolveWorkspaceRef(ctx, undefined, { onEmpty: { kind: "mint" } })
 		expect(resolved.id).toMatch(/^[0-9a-f-]{36}$/i)
 		expect(resolved.name).toBeUndefined()
+		expect(resolved.isNew).toBe(true)
 	})
 
 	it("refuses when no ref, no workspaces (onEmpty=refuse)", async () => {
@@ -223,12 +226,12 @@ describe("resolveWorkspaceRef", () => {
 		expect(ui.notify).toHaveBeenCalledWith("no ws", "error")
 	})
 
-	it("opens the picker when no ref but workspaces exist; returns the chosen id+name", async () => {
+	it("opens the picker when no ref but workspaces exist; returns the chosen id+name, isNew:false", async () => {
 		listWorkspacesMock.mockResolvedValue([ws({ id: UUID_A, name: "picked-one" })])
 		pickWorkspaceMock.mockResolvedValue({ action: "select", row: { id: UUID_A } })
 		const { ctx } = makeCtx()
 		const resolved = await resolveWorkspaceRef(ctx, undefined, { onEmpty: { kind: "mint" } })
-		expect(resolved).toEqual({ id: UUID_A, name: "picked-one" })
+		expect(resolved).toEqual({ id: UUID_A, name: "picked-one", isNew: false })
 	})
 
 	it("picker is opened with allowNew=true when onEmpty.kind === 'mint'", async () => {
@@ -248,7 +251,7 @@ describe("resolveWorkspaceRef", () => {
 		expect(pickWorkspaceMock.mock.calls[0][2]).toMatchObject({ allowNew: false, hideSessions: true })
 	})
 
-	it("picker 'new' with onEmpty=mint → fresh id, no name", async () => {
+	it("picker 'new' with onEmpty=mint → fresh id, no name, isNew:true", async () => {
 		listWorkspacesMock.mockResolvedValue([ws({ id: UUID_A })])
 		pickWorkspaceMock.mockResolvedValue({ action: "new" })
 		const { ctx } = makeCtx()
@@ -256,6 +259,7 @@ describe("resolveWorkspaceRef", () => {
 		expect(resolved.id).toMatch(/^[0-9a-f-]{36}$/i)
 		expect(resolved.id).not.toBe(UUID_A)
 		expect(resolved.name).toBeUndefined()
+		expect(resolved.isNew).toBe(true)
 	})
 
 	it("picker cancelled → TeleportRefusal('cancelled')", async () => {

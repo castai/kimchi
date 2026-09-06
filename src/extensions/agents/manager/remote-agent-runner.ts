@@ -32,7 +32,7 @@ import { randomUUID } from "node:crypto"
 import { setTimeout as timersSleep } from "node:timers/promises"
 import { authenticateWorkspace } from "../../../sandbox/cloud/auth.js"
 import { waitForWorkspaceReady } from "../../../sandbox/cloud/readiness.js"
-import type { WorkspaceCredentials } from "../../../sandbox/cloud/types.js"
+import type { WorkspaceCredentials, WorkspaceResourcesConfig } from "../../../sandbox/cloud/types.js"
 import {
 	type AcpSessionCallbacks,
 	AcpSessionClient,
@@ -73,6 +73,12 @@ export interface RemoteRunOptions {
 	gitCredential?: { host: string; token: string }
 	/** Workspace name passed to authenticateWorkspace (used for matching/reuse). */
 	workspaceName?: string
+	/**
+	 * Workspace resource requests (Kubernetes quantity strings) forwarded on
+	 * the upsert PUT. The caller passes them only when minting the workspace —
+	 * resources are create-time-only and immutable server-side.
+	 */
+	resources?: WorkspaceResourcesConfig
 	/**
 	 * Called after `acpClient.initialize()` and before `acpClient.prompt()`,
 	 * giving the caller access to the live AcpSessionClient so it can be
@@ -623,7 +629,10 @@ export async function runRemoteAgent(
 	const cwd = `/home/sandbox/${sessionName}`
 
 	// 1. Authenticate
-	const creds: WorkspaceCredentials = await authenticateWorkspace(workspaceId, apiKey, workspaceName, { endpoint })
+	const creds: WorkspaceCredentials = await authenticateWorkspace(workspaceId, apiKey, workspaceName, {
+		endpoint,
+		...(options.resources ? { resources: options.resources } : {}),
+	})
 
 	// 2. Wait for sandbox readiness
 	await waitForWorkspaceReady({

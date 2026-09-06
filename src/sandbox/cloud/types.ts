@@ -9,6 +9,20 @@ export interface Workspace {
 	host?: string
 }
 
+/**
+ * Workspace resource requests — Kubernetes quantity strings
+ * (e.g. "250m", "1Gi", "20Gi"). Carries both the raw form as authored in
+ * `kimchi_workspace.yaml` and the validated/normalized form sent on the wire.
+ */
+export interface WorkspaceResourcesConfig {
+	cpu?: string
+	memory?: string
+	pvcSize?: string
+}
+
+/** Field names accepted under `resources:` — single source of truth for file parsing and quantity validation. */
+export const WORKSPACE_RESOURCE_FIELDS = ["cpu", "memory", "pvcSize"] as const
+
 export interface WorkspaceCredentials {
 	connectToken: string
 	expiresAt: string
@@ -33,6 +47,13 @@ export interface AuthenticateOptions {
 	 * can push/pull on behalf of the user.
 	 */
 	gitToken?: string
+	/**
+	 * Workspace resource requests sent on workspace-create PUTs. Resources
+	 * are create-time-only and immutable server-side (a re-PUT with changed
+	 * values 400s) — only pass these when the workspace is being created,
+	 * never on re-auth of an existing workspace.
+	 */
+	resources?: WorkspaceResourcesConfig
 }
 
 export interface ListWorkspacesOptions extends AuthenticateOptions {
