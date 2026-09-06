@@ -2,7 +2,8 @@ import type { ExtensionAPI, ToolDefinition } from "@earendil-works/pi-coding-age
 import type { McpAdapterOptions, McpConfig } from "pi-mcp-adapter/types"
 import { Type } from "typebox"
 import { beforeEach, describe, expect, it, vi } from "vitest"
-import { createContext } from "../__mocks__/context.js"
+import type * as ToolProfileManager from "../../shared/planning/tool-profile-manager.js"
+import { createCommandContext, createContext } from "../__mocks__/context.js"
 import { createExtensionApi } from "../__mocks__/extension-api.js"
 
 const upstream = vi.hoisted(() => ({
@@ -23,11 +24,15 @@ const cliState = vi.hoisted(() => ({
 	mcpConfig: undefined as string | undefined,
 	approve: undefined as boolean | undefined,
 	noApprove: undefined as boolean | undefined,
+	plan: false,
 }))
 const planning = vi.hoisted(() => ({
 	applyCooperativeTweak: vi.fn(() => true),
 	currentProfile: undefined as "planning-adhoc" | "planning-ferment" | "idle" | undefined,
-	reapplyCurrentProfile: vi.fn(() => false),
+	reapplyCurrentProfile: vi.fn<typeof ToolProfileManager.reapplyCurrentProfile>(() => false),
+}))
+const permissionState = vi.hoisted(() => ({
+	mode: undefined as "ask" | "auto" | "plan" | "yolo" | undefined,
 }))
 const oauthMigration = vi.hoisted(() => ({ warnings: [] as string[] }))
 const oauthBranding = vi.hoisted(() => ({ install: vi.fn() }))
@@ -49,6 +54,7 @@ vi.mock("../../cli-args.js", () => ({
 			"mcp-config": cliState.mcpConfig,
 			approve: cliState.approve,
 			"no-approve": cliState.noApprove,
+			plan: cliState.plan,
 		},
 		positionals: [],
 	}),
@@ -74,6 +80,10 @@ vi.mock("../../shared/planning/tool-profile-manager.js", () => ({
 	applyCooperativeTweak: planning.applyCooperativeTweak,
 	getCurrentProfile: () => planning.currentProfile,
 	reapplyCurrentProfile: planning.reapplyCurrentProfile,
+}))
+
+vi.mock("../permissions/mode-controller.js", () => ({
+	getPermissionMode: () => (permissionState.mode === undefined ? undefined : { mode: permissionState.mode }),
 }))
 
 vi.mock("./oauth-migration.js", () => ({
@@ -132,10 +142,59 @@ describe("upstream MCP adapter facade", () => {
 		cliState.mcpConfig = undefined
 		cliState.approve = undefined
 		cliState.noApprove = undefined
+		cliState.plan = false
 		projectTrust.trusted = true
 		planning.currentProfile = undefined
+		permissionState.mode = undefined
 		planning.applyCooperativeTweak.mockClear()
-		planning.reapplyCurrentProfile.mockClear()
+		planning.reapplyCurrentProfile.mockReset().mockReturnValue(false)
+	})
+
+	it.each([
+		"",
+		"status",
+		"setup",
+		"unknown",
+	])("shows manual configuration guidance for /mcp %s with no servers", async (args) => {
+		const harness = createExtensionApi()
+		mcpAdapterExtension(harness.api)
+		await start(harness)
+		const handler = vi.fn()
+		upstream.api?.registerCommand("mcp", { handler })
+		const command = vi.mocked(harness.api.registerCommand).mock.calls[0][1]
+		const ctx = createCommandContext()
+
+		await command.handler(args, ctx)
+
+		expect(handler).not.toHaveBeenCalled()
+		expect(ctx.ui.custom).not.toHaveBeenCalled()
+		expect(ctx.ui.notify).toHaveBeenCalledWith(expect.stringContaining(".mcp.json"), "info")
+	})
+
+	it("disables preset setup while preserving the configured-server panel and command completions", async () => {
+		configState.config = { mcpServers: { github: { url: "https://example.test/mcp" } } }
+		const harness = createExtensionApi()
+		mcpAdapterExtension(harness.api)
+		await start(harness)
+		const handler = vi.fn()
+		upstream.api?.registerCommand("mcp", {
+			handler,
+			getArgumentCompletions: (prefix) =>
+				["setup", "status"].filter((value) => value.startsWith(prefix)).map((value) => ({ value, label: value })),
+		})
+		const command = vi.mocked(harness.api.registerCommand).mock.calls[0][1]
+		const ctx = createCommandContext()
+
+		await command.handler(" setup ", ctx)
+		expect(handler).not.toHaveBeenCalled()
+		expect(ctx.ui.notify).toHaveBeenCalledWith(expect.stringContaining(".mcp.json"), "info")
+		expect(await command.getArgumentCompletions?.("")).toEqual([{ value: "status", label: "status" }])
+		expect(await command.getArgumentCompletions?.("setup")).toBeNull()
+
+		await command.handler("", ctx)
+		expect(handler).toHaveBeenCalledWith("", ctx)
+		await command.handler("reconnect github", ctx)
+		expect(handler).toHaveBeenCalledWith("reconnect github", ctx)
 	})
 
 	it("installs the Kimchi OAuth callback-page decorator", () => {
@@ -229,9 +288,45 @@ describe("upstream MCP adapter facade", () => {
 		expect(planning.applyCooperativeTweak).not.toHaveBeenCalled()
 	})
 
-	it("blocks all direct and gateway MCP calls in planning profiles", async () => {
+	it.each([
+		"idle",
+		"planning-adhoc",
+	] as const)("keeps adapter removals excluded from later profiles when removed during %s", async (profile) => {
+		const profiles = await vi.importActual<typeof ToolProfileManager>("../../shared/planning/tool-profile-manager.js")
+		profiles.resetAll()
+		planning.reapplyCurrentProfile.mockImplementation(profiles.reapplyCurrentProfile)
+		configState.config = { mcpServers: { docs: { command: "docs" } } }
+		const harness = createExtensionApi()
+		harness.api.registerTool(tool("read", "Read"))
+		mcpAdapterExtension(harness.api)
+		await start(harness)
+		profiles.apply("idle", "adhoc", harness.api)
+		const api = upstream.api
+		if (!api) throw new Error("Adapter was not installed")
+		api.registerTool(tool("docs_get_issue", "MCP: get_issue"))
+		api.registerTool(tool("docs_delete_issue", "MCP: delete_issue"))
+		profiles.apply(profile, "adhoc", harness.api)
+
+		// This is upstream's fallback when the host has no unregisterTool.
+		const active = api.getActiveTools()
+		expect(active).toContain("docs_delete_issue")
+		api.setActiveTools(active.filter((name) => name !== "docs_delete_issue"))
+		profiles.apply("idle", "adhoc", harness.api)
+		harness.emitEvent("pi-mcp-adapter/status/v1", { servers: [] })
+
+		expect(harness.getActiveToolNames()).toContain("docs_get_issue")
+		expect(harness.getActiveToolNames()).not.toContain("docs_delete_issue")
+		expect(harness.getRegisteredTools().map((entry) => entry.name)).toContain("docs_delete_issue")
+
+		api.registerTool(tool("docs_delete_issue", "MCP: delete_issue"))
+		expect(harness.getActiveToolNames()).toContain("docs_delete_issue")
+		profiles.resetAll()
+	})
+
+	it("blocks all direct and gateway MCP calls while the live permission mode is plan", async () => {
 		configState.config = { mcpServers: { docs: { command: "docs" } } }
 		planning.currentProfile = "planning-adhoc"
+		permissionState.mode = "plan"
 		const directExecute = vi.fn(tool("docs_get_issue", "MCP: get_issue").execute)
 		const gatewayExecute = vi.fn(tool("mcp", "MCP").execute)
 		const harness = createExtensionApi()
@@ -261,6 +356,41 @@ describe("upstream MCP adapter facade", () => {
 			isError: true,
 			details: { error: "plan_mode_mcp_blocked", tool: "mcp" },
 		})
+	})
+
+	it("allows MCP after leaving plan mode even when startup and profile signals are stale", async () => {
+		configState.config = { mcpServers: { docs: { command: "docs" } } }
+		cliState.plan = true
+		planning.currentProfile = "planning-adhoc"
+		permissionState.mode = "auto"
+		const gatewayExecute = vi.fn(tool("mcp", "MCP").execute)
+		const harness = createExtensionApi()
+		mcpAdapterExtension(harness.api)
+		await start(harness)
+		upstream.api?.registerTool({ ...tool("mcp", "MCP"), execute: gatewayExecute })
+
+		const gateway = harness.getRegisteredTools().find(({ name }) => name === "mcp")
+		const result = await gateway?.execute("gateway", { action: "list" }, undefined, undefined, createContext())
+
+		expect(gatewayExecute).toHaveBeenCalledOnce()
+		expect(result).toMatchObject({ content: [{ type: "text", text: "ok" }] })
+	})
+
+	it("keeps MCP blocked for the ferment planning profile", async () => {
+		configState.config = { mcpServers: { docs: { command: "docs" } } }
+		planning.currentProfile = "planning-ferment"
+		permissionState.mode = "auto"
+		const gatewayExecute = vi.fn(tool("mcp", "MCP").execute)
+		const harness = createExtensionApi()
+		mcpAdapterExtension(harness.api)
+		await start(harness)
+		upstream.api?.registerTool({ ...tool("mcp", "MCP"), execute: gatewayExecute })
+
+		const gateway = harness.getRegisteredTools().find(({ name }) => name === "mcp")
+		const result = await gateway?.execute("gateway", { action: "list" }, undefined, undefined, createContext())
+
+		expect(gatewayExecute).not.toHaveBeenCalled()
+		expect(result).toMatchObject({ isError: true })
 	})
 
 	it("allows MCP calls outside planning profiles", async () => {

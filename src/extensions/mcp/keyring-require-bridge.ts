@@ -2,9 +2,11 @@ import { createHash, randomUUID } from "node:crypto"
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { createRequire, Module } from "node:module"
 import { join } from "node:path"
+import { getAgentDir } from "@earendil-works/pi-coding-agent"
 import * as keyring from "@napi-rs/keyring"
 
 const KEYRING_PACKAGE = "@napi-rs/keyring"
+const KEYRING_RECOVERY_HELPER_ENV = "PI_MCP_ADAPTER_KEYRING_RECOVERY_HELPER"
 const VIRTUAL_KEYRING_PATH = "/$bunfs/kimchi/@napi-rs/keyring/index.js"
 const INSTALLED_MARKER = Symbol.for("kimchi.mcp.keyring-require-bridge")
 const TEST_KEYRING_DIR_ENV = "KIMCHI_MCP_E2E_KEYRING_DIR"
@@ -48,6 +50,77 @@ function keyringExports(): unknown {
 	return { ...keyring, Entry: FileBackedTestEntry }
 }
 
+export function configureMcpKeyringRecoveryHelper(): void {
+	if (process.env[KEYRING_RECOVERY_HELPER_ENV]?.trim()) return
+	const packageDir = process.env.PI_PACKAGE_DIR?.trim()
+	if (!packageDir) return
+	const helperPath = join(packageDir, "mcp-keyring", "mcp-keyring-helper.cjs")
+	if (existsSync(helperPath)) process.env[KEYRING_RECOVERY_HELPER_ENV] = helperPath
+}
+
+export type McpCredentialAccountStatus =
+	| { status: "present"; serverUrl?: string }
+	| { status: "absent" }
+	| { status: "unavailable" }
+
+function readSecureCredential(account: string): string | null {
+	return process.env[TEST_KEYRING_DIR_ENV]
+		? new FileBackedTestEntry("pi-mcp-adapter.oauth", account).getPassword()
+		: new keyring.Entry("pi-mcp-adapter.oauth", account).getPassword()
+}
+
+function isCredentialRecord(value: unknown): value is Record<string, unknown> {
+	return typeof value === "object" && value !== null && !Array.isArray(value)
+}
+
+function credentialRecord(value: unknown): Record<string, unknown> {
+	if (!isCredentialRecord(value)) {
+		throw new Error("Invalid MCP OAuth credential payload")
+	}
+	return value
+}
+
+function parseCredentialServerUrl(account: string, payload: string): string | undefined {
+	let parsed = credentialRecord(JSON.parse(payload))
+	if (
+		parsed.__piMcpAdapterOAuthChunked === 1 &&
+		typeof parsed.chunkCount === "number" &&
+		Number.isInteger(parsed.chunkCount) &&
+		parsed.chunkCount > 0 &&
+		typeof parsed.chunkDigest === "string" &&
+		/^[a-f0-9]{16}$/.test(parsed.chunkDigest)
+	) {
+		const chunks: string[] = []
+		for (let index = 0; index < parsed.chunkCount; index++) {
+			const chunk = readSecureCredential(`${account}.chunk.${parsed.chunkDigest}.${index}`)
+			if (chunk === null) throw new Error("Missing MCP OAuth credential chunk")
+			chunks.push(chunk)
+		}
+		parsed = credentialRecord(JSON.parse(chunks.join("")))
+	}
+	if (parsed.serverUrl === undefined) return undefined
+	if (typeof parsed.serverUrl !== "string") throw new Error("Invalid MCP OAuth credential URL")
+	return parsed.serverUrl
+}
+
+export function inspectMcpCredentialAccount(serverName: string): McpCredentialAccountStatus {
+	const account = `sha256-${createHash("sha256").update(serverName, "utf8").digest("hex")}`
+	try {
+		const securePayload = readSecureCredential(account)
+		if (securePayload !== null) {
+			const serverUrl = parseCredentialServerUrl(account, securePayload)
+			return { status: "present", ...(serverUrl === undefined ? {} : { serverUrl }) }
+		}
+		const legacyBaseDir = process.env.MCP_OAUTH_DIR?.trim() || join(getAgentDir(), "mcp-oauth")
+		const legacyPath = join(legacyBaseDir, account, "tokens.json")
+		if (!existsSync(legacyPath)) return { status: "absent" }
+		const serverUrl = parseCredentialServerUrl(account, readFileSync(legacyPath, "utf8"))
+		return { status: "present", ...(serverUrl === undefined ? {} : { serverUrl }) }
+	} catch {
+		return { status: "unavailable" }
+	}
+}
+
 /**
  * pi-mcp-adapter deliberately loads the native keyring with createRequire().
  * Bun's compiled filesystem cannot resolve that dynamic package request even
@@ -55,6 +128,7 @@ function keyringExports(): unknown {
  * exact request to the statically bundled module namespace.
  */
 export function installKeyringRequireBridge(): void {
+	configureMcpKeyringRecoveryHelper()
 	const moduleInternals = Module as unknown as CommonJsModuleInternals
 	if (moduleInternals[INSTALLED_MARKER]) return
 

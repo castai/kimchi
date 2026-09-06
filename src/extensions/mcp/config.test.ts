@@ -49,7 +49,7 @@ describe("loadKimchiMcpConfig", () => {
 		expect(upstream.load).toHaveBeenCalledWith(undefined, join(getAgentDir(), ".kimchi-mcp-user-config"))
 	})
 
-	it("uses the legacy project config as a file-backed upstream override", () => {
+	it("leaves the legacy project layer in upstream file-backed discovery", () => {
 		const legacyPath = join(cwd, LEGACY_PROJECT_MCP_CONFIG)
 		mkdirSync(dirname(legacyPath), { recursive: true })
 		writeFileSync(legacyPath, JSON.stringify({ mcpServers: { local: { command: "local-server" } } }))
@@ -58,11 +58,11 @@ describe("loadKimchiMcpConfig", () => {
 
 		const result = loadKimchiMcpConfig({ cwd })
 
-		expect(result).toEqual({ config, configPath: legacyPath, warnings: [] })
-		expect(upstream.load).toHaveBeenCalledWith(legacyPath, cwd)
+		expect(result).toEqual({ config, warnings: [] })
+		expect(upstream.load).toHaveBeenCalledWith(undefined, cwd)
 	})
 
-	it("restores legacy precedence when a standard project source overrides the same server", () => {
+	it("restores explicit selected-file precedence when a standard project source overrides the same server", () => {
 		const legacyPath = join(cwd, LEGACY_PROJECT_MCP_CONFIG)
 		mkdirSync(dirname(legacyPath), { recursive: true })
 		writeFileSync(legacyPath, JSON.stringify({ mcpServers: { shared: { command: "legacy-server" } } }))
@@ -74,7 +74,7 @@ describe("loadKimchiMcpConfig", () => {
 		}
 		upstream.load.mockReturnValue(discovered)
 
-		const result = loadKimchiMcpConfig({ cwd })
+		const result = loadKimchiMcpConfig({ cwd, overridePath: legacyPath })
 
 		expect(result).toEqual({
 			config: {
@@ -83,6 +83,32 @@ describe("loadKimchiMcpConfig", () => {
 					standardOnly: { command: "standard-only-server" },
 				},
 			},
+			configPath: legacyPath,
+			useProgrammaticConfig: true,
+			warnings: [],
+		})
+	})
+
+	it("restores selected-config precedence with upstream JSONC and trailing-comma rules", () => {
+		const legacyPath = join(cwd, LEGACY_PROJECT_MCP_CONFIG)
+		mkdirSync(dirname(legacyPath), { recursive: true })
+		writeFileSync(
+			legacyPath,
+			`{
+				// The selected project layer remains authoritative.
+				"mcpServers": {
+					"shared": { "command": "legacy-server" },
+				},
+			}`,
+		)
+		upstream.load.mockReturnValue({
+			mcpServers: { shared: { command: "standard-project-server" } },
+		})
+
+		const result = loadKimchiMcpConfig({ cwd, overridePath: legacyPath })
+
+		expect(result).toEqual({
+			config: { mcpServers: { shared: { command: "legacy-server" } } },
 			configPath: legacyPath,
 			useProgrammaticConfig: true,
 			warnings: [],

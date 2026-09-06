@@ -77,11 +77,11 @@ test("uses Kimchi product language in MCP setup", async ({ terminal }) => {
 		},
 		async (_fixture, trace) => {
 			terminal.submit("/mcp setup")
-			await waitForText(terminal, "Kimchi-owned", { timeoutMs: STREAM_TIMEOUT_MS })
+			await waitForText(terminal, "Kimchi does not include MCP server presets.", { timeoutMs: STREAM_TIMEOUT_MS })
 
 			expect(fullText(terminal)).not.toContain("Pi-owned")
-			trace.step("MCP setup rendered Kimchi-owned configuration language")
-			terminal.keyEscape()
+			expect(fullText(terminal)).toContain("~/.config/mcp/mcp.json")
+			trace.step("MCP setup rendered Kimchi manual configuration guidance")
 		},
 	)
 })

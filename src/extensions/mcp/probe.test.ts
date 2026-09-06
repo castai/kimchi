@@ -1,7 +1,7 @@
 import type { ExtensionAPI, ToolDefinition } from "@earendil-works/pi-coding-agent"
 import type { McpAdapterOptions } from "pi-mcp-adapter/types"
 import { Type } from "typebox"
-import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest"
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest"
 
 const upstream = vi.hoisted(() => ({
 	options: undefined as McpAdapterOptions | undefined,
@@ -11,10 +11,25 @@ const upstream = vi.hoisted(() => ({
 	sessionShutdown: vi.fn(),
 }))
 
+const mcpClient = vi.hoisted(() => {
+	const state = {
+		tools: [] as Array<Record<string, unknown>>,
+	}
+	class Client {
+		async listTools() {
+			return { tools: state.tools }
+		}
+	}
+	return { Client, state }
+})
+
+vi.mock("@modelcontextprotocol/client", () => ({ Client: mcpClient.Client }))
+
 vi.mock("pi-mcp-adapter", () => ({
 	createMcpAdapter: vi.fn((options: McpAdapterOptions) => (api: ExtensionAPI) => {
 		upstream.options = options
 		api.on("session_start", async () => {
+			await new mcpClient.Client().listTools()
 			await upstream.sessionStart()
 		})
 		api.on("session_shutdown", async () => {
@@ -35,11 +50,19 @@ vi.mock("pi-mcp-adapter", () => ({
 }))
 
 const installKeyringRequireBridge = vi.hoisted(() => vi.fn())
-vi.mock("./keyring-require-bridge.js", () => ({ installKeyringRequireBridge }))
+const credentialAccount = vi.hoisted(() => ({
+	value: { status: "absent" } as
+		| { status: "present"; serverUrl?: string }
+		| { status: "absent" }
+		| { status: "unavailable" },
+}))
+vi.mock("./keyring-require-bridge.js", () => ({
+	installKeyringRequireBridge,
+	inspectMcpCredentialAccount: () => credentialAccount.value,
+}))
 
-const configuredServers = vi.hoisted(() => ({ value: {} as Record<string, { url?: string }> }))
-vi.mock("./config.js", () => ({
-	loadKimchiMcpConfig: vi.fn(() => ({ config: { mcpServers: configuredServers.value }, warnings: [] })),
+vi.mock("./oauth-migration.js", () => ({
+	migrateLegacyOAuthCredentials: vi.fn(() => ({ migratedServerNames: [], warnings: [] })),
 }))
 
 import { inspectMcpOAuthTokensForUrl, updateMcpOAuthTokensForUrl } from "pi-mcp-adapter/oauth"
@@ -71,7 +94,9 @@ afterAll(() => {
 
 beforeEach(() => {
 	vi.clearAllMocks()
-	configuredServers.value = {}
+	upstream.sessionStart.mockReset()
+	mcpClient.state.tools = []
+	credentialAccount.value = { status: "absent" }
 	upstream.options = undefined
 	upstream.gatewayExecute.mockImplementation(async (_toolCallId, params) => {
 		if (typeof params === "object" && params !== null && "connect" in params) {
@@ -81,26 +106,53 @@ beforeEach(() => {
 	})
 })
 
+afterEach(() => {
+	vi.useRealTimers()
+})
+
 describe("UpstreamMcpProbe", () => {
-	it("discovers and describes tools before shutting the adapter down", async () => {
+	it("returns the original tool catalog and metadata before shutting the adapter down", async () => {
+		mcpClient.state.tools = [
+			{
+				name: "lookup",
+				title: "Record lookup",
+				description: "Look up a record",
+				inputSchema: {
+					type: "object",
+					properties: { id: { type: "string" } },
+					required: ["id"],
+				},
+				annotations: { readOnlyHint: true, destructiveHint: false },
+			},
+			{ name: "files.list" },
+		]
 		upstream.gatewayExecute.mockImplementation(async (_toolCallId, params) => {
 			if (typeof params !== "object" || params === null) throw new Error("Expected gateway parameters")
-			if ("connect" in params) return gatewayResult({ tools: ["lookup", "status", 42] })
-			if ("describe" in params && params.describe === "lookup") {
-				return gatewayResult({ tool: { description: "Look up a record" } })
-			}
-			if ("describe" in params && params.describe === "status") return gatewayResult({ tool: {} })
+			if ("connect" in params) return gatewayResult({ tools: ["lookup", "read_fixture_note"] })
 			throw new Error(`Unexpected gateway request: ${JSON.stringify(params)}`)
 		})
 
 		const result = await new UpstreamMcpProbe().probeTools(
 			"fixture",
-			{ command: "node", args: ["server.js"] },
+			{ command: "node", args: ["server.js"], includeTools: ["lookup"] },
 			{ authenticate: true, cwd: "/work" },
 		)
 
 		expect(result).toEqual({
-			tools: [{ name: "lookup", description: "Look up a record" }, { name: "status" }],
+			tools: [
+				{
+					name: "lookup",
+					title: "Record lookup",
+					description: "Look up a record",
+					inputSchema: {
+						type: "object",
+						properties: { id: { type: "string" } },
+						required: ["id"],
+					},
+					annotations: { readOnlyHint: true, destructiveHint: false },
+				},
+				{ name: "files.list" },
+			],
 			needsAuth: false,
 			error: null,
 		})
@@ -113,6 +165,52 @@ describe("UpstreamMcpProbe", () => {
 		expect(installKeyringRequireBridge).toHaveBeenCalledOnce()
 		expect(upstream.sessionStart).toHaveBeenCalledOnce()
 		expect(upstream.sessionShutdown).toHaveBeenCalledOnce()
+	})
+
+	it.each([
+		{ definition: { command: "node" }, timeoutMs: 15_000 },
+		{ definition: { url: "https://example.test/mcp" }, timeoutMs: 60_000 },
+	])("aborts a stalled connection after $timeoutMs ms and cleans up", async ({ definition, timeoutMs }) => {
+		vi.useFakeTimers()
+		upstream.gatewayExecute.mockImplementation(() => new Promise(() => {}))
+		const result = new UpstreamMcpProbe().probeTools("deadline", definition, { authenticate: true })
+		await vi.advanceTimersByTimeAsync(timeoutMs - 1)
+		const signal = upstream.gatewayExecute.mock.calls[0][2]
+		expect(signal?.aborted).toBe(false)
+		expect(upstream.sessionShutdown).not.toHaveBeenCalled()
+
+		await vi.advanceTimersByTimeAsync(1)
+
+		expect(await result).toMatchObject({
+			tools: [],
+			needsAuth: false,
+			error: expect.stringContaining(`Probe timed out after ${timeoutMs / 1000} seconds`),
+		})
+		expect(signal?.aborted).toBe(true)
+		expect(upstream.sessionShutdown).toHaveBeenCalledOnce()
+		expect(vi.getTimerCount()).toBe(0)
+	})
+
+	it("includes adapter startup in the total deadline", async () => {
+		vi.useFakeTimers()
+		upstream.sessionStart.mockImplementation(() => new Promise(() => {}))
+		const result = new UpstreamMcpProbe().probeTools("slow-startup", { command: "node" })
+
+		await vi.advanceTimersByTimeAsync(15_000)
+
+		expect(await result).toEqual({ tools: [], needsAuth: false, error: "Probe timed out after 15 seconds" })
+		expect(upstream.gatewayExecute).not.toHaveBeenCalled()
+		expect(upstream.sessionShutdown).toHaveBeenCalledOnce()
+	})
+
+	it("does not initialize an already cancelled probe", async () => {
+		const controller = new AbortController()
+		controller.abort(new Error("cancelled before startup"))
+
+		await expect(
+			new UpstreamMcpProbe().probeTools("cancelled", { command: "node" }, { signal: controller.signal }),
+		).rejects.toThrow("cancelled before startup")
+		expect(upstream.sessionStart).not.toHaveBeenCalled()
 	})
 
 	it.each([
@@ -141,7 +239,7 @@ describe("UpstreamMcpProbe", () => {
 		expect(upstream.logout).not.toHaveBeenCalled()
 	})
 
-	it("uses the real server name when no credentials exist", async () => {
+	it("uses the real server name when no credential account exists", async () => {
 		const name = "no-credentials"
 
 		await new UpstreamMcpProbe().probeTools(name, { url: "https://example.test/mcp" })
@@ -150,21 +248,33 @@ describe("UpstreamMcpProbe", () => {
 		expect(upstream.logout).not.toHaveBeenCalled()
 	})
 
-	it("uses the real server name when the saved URL has no credentials", async () => {
-		const name = "edited-without-credentials"
-		configuredServers.value[name] = { url: "https://old.example.test/mcp" }
+	it("uses the real server name for a matching partial OAuth account", async () => {
+		const name = "oauth-in-progress"
+		const url = "https://example.test/mcp"
+		credentialAccount.value = { status: "present", serverUrl: url }
 
-		await new UpstreamMcpProbe().probeTools(name, { url: "https://new.example.test/mcp" }, { authenticate: true })
+		await new UpstreamMcpProbe().probeTools(name, { url }, { authenticate: true })
 
 		expect(configuredServerNames()).toEqual([name])
 		expect(upstream.logout).not.toHaveBeenCalled()
 	})
 
-	it("isolates configured credentials when the saved URL differs from the probed URL", async () => {
+	it("isolates a URL probe when the credential account cannot be inspected", async () => {
+		const name = "unavailable-account"
+		credentialAccount.value = { status: "unavailable" }
+
+		await new UpstreamMcpProbe().probeTools(name, { url: "https://example.test/mcp" })
+
+		const [probeName] = configuredServerNames()
+		expect(probeName).toMatch(/^__probe_[0-9a-f-]{36}$/)
+		expect(upstream.logout).toHaveBeenCalledWith(`logout ${probeName}`, expect.anything())
+	})
+
+	it("isolates orphaned credentials when their stored URL is not discoverable from config", async () => {
 		const name = "different-url"
 		const storedUrl = "https://old.example.test/mcp"
 		const probedUrl = "https://new.example.test/mcp"
-		configuredServers.value[name] = { url: storedUrl }
+		credentialAccount.value = { status: "present", serverUrl: storedUrl }
 		updateMcpOAuthTokensForUrl(name, storedUrl, { accessToken: "preserve-me" })
 
 		await new UpstreamMcpProbe().probeTools(name, { url: probedUrl }, { authenticate: true })
@@ -178,7 +288,7 @@ describe("UpstreamMcpProbe", () => {
 	it("cleans up an isolated credential entry when probing throws", async () => {
 		const name = "different-url-failure"
 		const storedUrl = "https://old.example.test/mcp"
-		configuredServers.value[name] = { url: storedUrl }
+		credentialAccount.value = { status: "present", serverUrl: storedUrl }
 		updateMcpOAuthTokensForUrl(name, storedUrl, { accessToken: "preserve-me" })
 		upstream.gatewayExecute.mockRejectedValue(new Error("connect failed"))
 

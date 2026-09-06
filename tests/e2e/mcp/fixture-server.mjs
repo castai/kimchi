@@ -71,6 +71,7 @@ function createFixtureServer() {
 			tools: [
 				{
 					name: "echo",
+					title: "Fixture echo",
 					description: "Echo deterministic text for Kimchi MCP end-to-end tests",
 					inputSchema: {
 						type: "object",
@@ -490,5 +491,9 @@ process.on("exit", (code) => record("process_exited", { code }))
 record("process_started", { transport: transportKind })
 
 if (fixtureBehavior.startup?.type === "exit") process.exit(fixtureBehavior.startup.code)
-else if (transportKind === "http" || transportKind === "sse") await runHttpFixture()
+else if (fixtureBehavior.startup?.type === "hang") {
+	process.stdin.resume()
+	process.stdin.once("end", () => process.exit(0))
+	process.once("SIGTERM", () => process.exit(0))
+} else if (transportKind === "http" || transportKind === "sse") await runHttpFixture()
 else await createFixtureServer().connect(new StdioServerTransport())

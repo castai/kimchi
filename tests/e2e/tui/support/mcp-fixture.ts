@@ -114,13 +114,14 @@ export interface McpFixtureResourceBehavior {
 }
 
 export interface McpFixtureBehavior {
-	/** Exit before connecting a transport, simulating a server that cannot start. */
-	startup?: { type: "exit"; code: number }
+	/** Exit or never answer initialization, simulating a server that cannot start. */
+	startup?: { type: "exit"; code: number } | { type: "hang" }
 	/** MCP call outcomes declared by the test that exercises them. */
 	tools?: McpFixtureToolBehavior[]
 	/** Additional advertised tools used by tool-surface policy scenarios. */
 	catalogTools?: Array<{
 		name: string
+		title?: string
 		description?: string
 		inputSchema: { type: "object"; properties?: Record<string, unknown>; additionalProperties?: boolean }
 		annotations?: ToolAnnotations

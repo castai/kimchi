@@ -1,3 +1,4 @@
+import { AsyncLocalStorage } from "node:async_hooks"
 import { spawn } from "node:child_process"
 import { randomUUID } from "node:crypto"
 import type {
@@ -7,17 +8,17 @@ import type {
 	RegisteredCommand,
 	ToolDefinition,
 } from "@earendil-works/pi-coding-agent"
+import { Client, type ListToolsResult } from "@modelcontextprotocol/client"
 import { createMcpAdapter } from "pi-mcp-adapter"
 import { inspectMcpOAuthTokensForUrl } from "pi-mcp-adapter/oauth"
 import type { ServerEntry } from "pi-mcp-adapter/types"
-import { loadKimchiMcpConfig } from "./config.js"
-import { installKeyringRequireBridge } from "./keyring-require-bridge.js"
+import { inspectMcpCredentialAccount, installKeyringRequireBridge } from "./keyring-require-bridge.js"
+import { migrateLegacyOAuthCredentials } from "./oauth-migration.js"
 
-export interface ProbeTool {
-	name: string
-	title?: string
-	description?: string
-}
+type SdkTool = ListToolsResult["tools"][number]
+
+export type ProbeTool = Pick<SdkTool, "name"> &
+	Partial<Pick<SdkTool, "title" | "description" | "inputSchema" | "annotations">>
 
 export interface ProbeResult {
 	tools: ProbeTool[]
@@ -45,6 +46,26 @@ interface ProbeHost {
 	commands: Map<string, Command>
 	handlers: Map<string, Handler[]>
 	tools: Map<string, ToolDefinition>
+}
+
+const probeToolCapture = new AsyncLocalStorage<Map<string, ProbeTool>>()
+let probeToolCaptureInstalled = false
+
+function installProbeToolMetadataCapture(): void {
+	if (probeToolCaptureInstalled) return
+	probeToolCaptureInstalled = true
+	const listTools = Client.prototype.listTools
+	Client.prototype.listTools = async function (
+		this: Client,
+		...args: Parameters<Client["listTools"]>
+	): ReturnType<Client["listTools"]> {
+		const result = await listTools.apply(this, args)
+		const capture = probeToolCapture.getStore()
+		if (capture) {
+			for (const tool of result.tools) capture.set(tool.name, tool)
+		}
+		return result
+	}
 }
 
 function executeProcess(
@@ -162,8 +183,12 @@ function createProbeHost(cwd: string, signal: AbortSignal | undefined): ProbeHos
 	return { api, context, commands, handlers, tools }
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+	return typeof value === "object" && value !== null && !Array.isArray(value)
+}
+
 function resultDetails(result: GatewayResult): Record<string, unknown> {
-	return result.details && typeof result.details === "object" ? (result.details as Record<string, unknown>) : {}
+	return isRecord(result.details) ? result.details : {}
 }
 
 function resultMessage(result: GatewayResult): string {
@@ -173,29 +198,21 @@ function resultMessage(result: GatewayResult): string {
 		.join("\n")
 }
 
-function resolveProbeName(name: string, definition: ServerEntry, cwd: string): string {
+function resolveProbeName(name: string, definition: ServerEntry): string {
 	if (!definition.url) return name
 	try {
-		if (inspectMcpOAuthTokensForUrl(name, definition.url).status === "present") return name
-
-		// The adapter's public OAuth inspector reports both missing credentials and
-		// credentials bound to another URL as "absent". Use Kimchi's effective
-		// configuration to disambiguate the common edit flow without depending on
-		// the adapter's private keyring format.
-		const configuredUrl = loadKimchiMcpConfig({ cwd }).config.mcpServers[name]?.url
-		if (
-			configuredUrl &&
-			configuredUrl !== definition.url &&
-			inspectMcpOAuthTokensForUrl(name, configuredUrl).status === "present"
-		) {
-			return `__probe_${randomUUID()}`
+		const urlStatus = inspectMcpOAuthTokensForUrl(name, definition.url)
+		if (urlStatus.status === "present") return name
+		if (urlStatus.status === "absent") {
+			const account = inspectMcpCredentialAccount(name)
+			if (account.status === "absent" || (account.status === "present" && !account.serverUrl)) return name
+			if (account.status === "present" && account.serverUrl === definition.url) return name
 		}
-		return name
 	} catch {
-		// Config or credential inspection is best-effort. Probing must remain
-		// available when either store cannot be read.
-		return name
+		// Credential inspection is best-effort, but credential preservation is
+		// fail-closed: an unverified URL must never reuse the durable account name.
 	}
+	return `__probe_${randomUUID()}`
 }
 
 async function emitHandlers(host: ProbeHost, event: "session_start" | "session_shutdown"): Promise<void> {
@@ -213,9 +230,43 @@ async function executeGateway(host: ProbeHost, params: Record<string, unknown>):
 
 export class UpstreamMcpProbe implements McpProbe {
 	async probeTools(name: string, definition: ServerEntry, options: McpProbeOptions = {}): Promise<ProbeResult> {
+		options.signal?.throwIfAborted()
 		installKeyringRequireBridge()
+		installProbeToolMetadataCapture()
+		const capturedTools = new Map<string, ProbeTool>()
+		const timeoutMs = definition.url ? 60_000 : 15_000
+		const timeoutMessage = definition.url
+			? "Probe timed out after 60 seconds (including OAuth flow)"
+			: "Probe timed out after 15 seconds"
+		const deadline = new AbortController()
+		const timer = setTimeout(() => deadline.abort(new Error(timeoutMessage)), timeoutMs)
+		const signal = options.signal ? AbortSignal.any([options.signal, deadline.signal]) : deadline.signal
+		try {
+			return await probeToolCapture.run(capturedTools, () =>
+				this.probeToolsWithMetadata(name, definition, { ...options, signal }, capturedTools),
+			)
+		} catch (error) {
+			if (deadline.signal.aborted && !options.signal?.aborted) {
+				return { tools: [], needsAuth: false, error: timeoutMessage }
+			}
+			throw error
+		} finally {
+			clearTimeout(timer)
+		}
+	}
+
+	private async probeToolsWithMetadata(
+		name: string,
+		definition: ServerEntry,
+		options: McpProbeOptions & { signal: AbortSignal },
+		capturedTools: Map<string, ProbeTool>,
+	): Promise<ProbeResult> {
 		const cwd = options.cwd ?? process.cwd()
-		const probeName = resolveProbeName(name, definition, cwd)
+		if (definition.url) {
+			const { warnings } = migrateLegacyOAuthCredentials({ mcpServers: { [name]: definition } }, { cwd })
+			for (const warning of warnings) console.warn(warning)
+		}
+		const probeName = resolveProbeName(name, definition)
 		const throwaway = probeName !== name
 		const host = createProbeHost(cwd, options.signal)
 		const config = {
@@ -231,10 +282,19 @@ export class UpstreamMcpProbe implements McpProbe {
 				elicitation: false,
 			},
 		}
+		const { signal } = options
+		let onAbort: () => void = () => {}
+		const aborted = new Promise<never>((_resolve, reject) => {
+			onAbort = () => reject(signal.reason)
+			signal.addEventListener("abort", onAbort, { once: true })
+		})
 		try {
+			signal.throwIfAborted()
 			createMcpAdapter({ config })(host.api)
-			await emitHandlers(host, "session_start")
-			const connected = await executeGateway(host, { connect: probeName })
+			await Promise.race([emitHandlers(host, "session_start"), aborted])
+			signal.throwIfAborted()
+			const connected = await Promise.race([executeGateway(host, { connect: probeName }), aborted])
+			signal.throwIfAborted()
 			const details = resultDetails(connected)
 			if (details.error === "auth_required") {
 				return {
@@ -247,22 +307,12 @@ export class UpstreamMcpProbe implements McpProbe {
 				return { tools: [], needsAuth: false, error: String(details.message ?? resultMessage(connected)) }
 			}
 
-			const names = Array.isArray(details.tools)
-				? details.tools.filter((toolName): toolName is string => typeof toolName === "string")
-				: []
-			const tools = await Promise.all(
-				names.map(async (toolName): Promise<ProbeTool> => {
-					const described = await executeGateway(host, { describe: toolName })
-					const tool = resultDetails(described).tool
-					const description =
-						tool && typeof tool === "object" && typeof (tool as { description?: unknown }).description === "string"
-							? (tool as { description: string }).description
-							: undefined
-					return { name: toolName, ...(description ? { description } : {}) }
-				}),
-			)
-			return { tools, needsAuth: false, error: null }
+			// The gateway catalog is filtered, renames tools, and adds resource tools.
+			// Discovery must expose the server's original tools/list catalog so users
+			// can select tools that their current model-facing configuration excludes.
+			return { tools: [...capturedTools.values()], needsAuth: false, error: null }
 		} finally {
+			signal.removeEventListener("abort", onAbort)
 			if (throwaway) {
 				const commandContext = host.context as Parameters<Command["handler"]>[1]
 				await host.commands

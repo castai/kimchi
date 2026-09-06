@@ -5,13 +5,11 @@
  * through an isolated upstream adapter instance, calls `tools/list`, prints
  * the result as JSON to stdout, and exits.
  *
- * The `name` field selects the OAuth token-store key. Before any OAuth
- * write, the probe compares the requested URL with Kimchi's effective
- * configuration. If the same name is configured with a different URL and
- * that saved URL has credentials, it probes under a throwaway
- * `__probe_<uuid>` name and cleans it up afterwards so the real server's
- * stored tokens are never overwritten. Matching URLs and new servers use
- * the real name, allowing existing OAuth tokens to be reused.
+ * The `name` field selects the OAuth token-store key. Remote probes use that
+ * durable name for a new account or credentials proven to match the URL. If
+ * an account exists but its URL cannot be matched, they probe under a
+ * throwaway `__probe_<uuid>` name and clean it up afterwards, so credentials
+ * for an undiscoverable previous URL cannot be overwritten.
  *
  * Used by Kimchi Desktop's MCP server configuration UI to populate a
  * multiselect dropdown of available tools when the user picks
@@ -122,26 +120,16 @@ async function runProbe(args: string[]): Promise<number> {
 		return await emitError("Server config must have either 'command' or 'url'", null)
 	}
 
-	const timeoutMs = definition.url ? 60_000 : 15_000
-	const timeoutMsg = definition.url
-		? "Probe timed out after 60 seconds (including OAuth flow)"
-		: "Probe timed out after 15 seconds"
-	const controller = new AbortController()
-	const timer = setTimeout(() => controller.abort(new Error(timeoutMsg)), timeoutMs)
 	const probe = new UpstreamMcpProbe()
 	try {
 		const result = await probe.probeTools(name, definition, {
 			authenticate: true,
 			cwd: process.cwd(),
-			signal: controller.signal,
 		})
-		if (controller.signal.aborted) throw controller.signal.reason
 		if (result.error && !result.needsAuth) return await emitError(result.error, null)
 		return await emitResult(result, 0)
 	} catch (err) {
 		return await emitError(err instanceof Error ? err.message : String(err), null)
-	} finally {
-		clearTimeout(timer)
 	}
 }
 

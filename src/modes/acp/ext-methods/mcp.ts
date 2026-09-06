@@ -15,7 +15,7 @@ import type { McpProbe, ProbeResult } from "../../../extensions/mcp/probe.js"
  * The `_kimchi.dev/probe_mcp_server` extMethod can be invoked by any ACP
  * client. Since ServerEntry can describe an arbitrary stdio command (command,
  * args, env, cwd) or HTTP endpoint, we must validate the shape before passing
- * it to McpServerManager.probeTools — otherwise a malicious client could
+ * it to McpProbe.probeTools — otherwise a malicious client could
  * spawn processes with attacker-controlled arguments.
  *
  * This is a structural type guard, not a security policy: the ACP
@@ -76,9 +76,8 @@ export function validateServerEntry(raw: unknown): ServerEntry {
 /**
  * Handler for the `_kimchi.dev/probe_mcp_server` ACP extension method.
  *
- * Validates the incoming ServerEntry, delegates to McpServerManager.probeTools()
- * (which creates a transient connection, calls tools/list, handles OAuth, and
- * cleans up), and returns the probe result.
+ * Validates the incoming ServerEntry and delegates to the shared probe, which
+ * owns the total discovery deadline, OAuth migration, and connection cleanup.
  *
  * This extMethod executes external binaries (stdio servers) or makes network
  * requests (HTTP servers) based on the ServerEntry provided by the client.

@@ -3,7 +3,7 @@
 - **Decision date:** 2026-09-04
 - **Vendored baseline:** `pi-mcp-adapter` 2.4.0 plus Kimchi changes
 - **Replacement:** exact dependency `pi-mcp-adapter@2.32.1`
-- **Ownership decision:** no changes will be upstreamed; required integration behavior is owned locally by Kimchi
+- **Ownership decision:** product integration stays in Kimchi; the small host project-directory patch has an upstream removal plan
 
 ## Outcome
 
@@ -17,18 +17,20 @@ that are present in 2.32.1 are deliberately returned to package ownership.
 The migration removes 57 vendored files and roughly 25,000 lines of copied
 implementation and tests.
 
-No upstream issue, pull request, or upstream removal condition is planned.
-The remaining local code is the permanent Kimchi integration boundary unless
-Kimchi's product requirements change.
+The remaining facade is Kimchi's integration boundary. The one temporary
+dependency patch separates the host's user and project config directories;
+its tracking issue, upstream PR plan, and removal criteria are documented in
+[`mcp-project-config-patch.md`](mcp-project-config-patch.md).
 
 ## Local behavior retained
 
 ### Configuration compatibility
 
 Kimchi continues to support the project configuration path
-`.kimchi/mcp.json`. An explicit `--mcp-config` path takes precedence. The
-facade constructs the effective configuration before creating the published
-adapter, so this compatibility does not require a copied config loader.
+`.kimchi/mcp.json`. The host manifest declares `piConfig.mcpProjectConfigDir`
+so the adapter loads this as its normal project layer, preserving global
+servers and file-backed panel management. An explicit `--mcp-config` path
+takes precedence; conflicting explicit selections still use a resolved overlay.
 
 Standard project MCP sources, including `.mcp.json`, are gated by the same
 persisted project-trust decisions and `--approve` / `--no-approve` overrides as
@@ -150,7 +152,9 @@ Relevant code:
 The facade disables the model-facing `mcpScript` tool and omits the MCP
 gateway entirely when no server is configured. Direct-tool updates are folded
 back through Kimchi's active tool profile so the adapter cannot silently widen
-a restricted profile. Explicit uses of the retired `mcpSearch`,
+a restricted profile. Adapter-specific visibility votes keep removed or
+deselected direct tools out of later snapshots, including after plan mode exits.
+Explicit uses of the retired `mcpSearch`,
 `mcpSearchLimit`, and `maxToolResultChars` Kimchi settings receive a migration
 warning. Telemetry reports the adapter's actual weighted search provider rather
 than the ignored legacy setting.

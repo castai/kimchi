@@ -1,4 +1,4 @@
-import { expect, test } from "@microsoft/tui-test"
+import { expect, Key, test } from "@microsoft/tui-test"
 import { STREAM_TIMEOUT_MS, waitForText } from "./support/assertions.js"
 import { runMcpKimchiSession, TUI_TEST_CONFIG } from "./support/kimchi-fixture.js"
 import { mcpResourceResult, mcpToolResult } from "./support/mcp-fixture.js"
@@ -127,6 +127,64 @@ test("does not expose MCP tools in plan mode", async ({ terminal }) => {
 			expect(tools.some((tool) => tool.function?.name === "fixture_get_safe")).toBe(false)
 			expect(fixture.mcp.hasEvent("tool_called", { name: "get_safe" })).toBe(false)
 			trace.step("plan profile omitted both gateway and direct MCP tools")
+		},
+	)
+})
+
+test("can call MCP after executing a plan started with --plan", async ({ terminal }) => {
+	const echo = gatewayMcpCall("echo", { message: "after-plan" })
+	await runMcpKimchiSession(
+		terminal,
+		{
+			artifactName: "mcp-stdio-after-plan",
+			extraArgs: ["--plan=true"],
+			extraEnv: { KIMCHI_PERMISSIONS: "plan" },
+			mcp: {
+				behavior: {
+					tools: [
+						mcpToolResult(
+							"echo",
+							{ content: [{ type: "text", text: "fixture echo: after-plan" }] },
+							{ message: "after-plan" },
+						),
+					],
+				},
+			},
+			responses: [
+				{
+					stream: ["Plan: execute the MCP echo after approval.\n"],
+					toolCalls: [
+						{
+							id: "call_submit_plan",
+							type: "function",
+							function: {
+								name: "submit_plan",
+								arguments: JSON.stringify({ plan: "Execute the MCP echo after approval." }),
+							},
+						},
+					],
+				},
+				echo.response,
+				modelReply("MCP remained available after plan approval."),
+			],
+		},
+		async (fixture, trace) => {
+			terminal.submit("Plan and then use the MCP echo fixture")
+			await waitForText(terminal, "Execute the plan", { timeoutMs: STREAM_TIMEOUT_MS })
+			terminal.keyPress(Key.Enter)
+			trace.step("approved the plan and transitioned to execution")
+			await waitForText(terminal, "Allow the assistant to run this?", { timeoutMs: STREAM_TIMEOUT_MS })
+			terminal.keyPress(Key.Enter)
+			trace.step("approved the MCP call in auto mode")
+
+			await waitForText(terminal, "MCP remained available after plan approval.", {
+				timeoutMs: STREAM_TIMEOUT_MS,
+			})
+			const called = await fixture.mcp.waitForEvent("tool_called", {
+				where: { name: "echo", arguments: { message: "after-plan" } },
+			})
+			expect(called.arguments).toEqual({ message: "after-plan" })
+			trace.step("MCP gateway call succeeded after plan mode exited")
 		},
 	)
 })

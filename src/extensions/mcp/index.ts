@@ -15,6 +15,7 @@ import {
 	reapplyCurrentProfile,
 } from "../../shared/planning/tool-profile-manager.js"
 import { getPermissionMode } from "../permissions/mode-controller.js"
+import { createToolVisibility } from "../prompt-construction/tool-visibility.js"
 import { loadKimchiMcpConfig } from "./config.js"
 import { installKeyringRequireBridge } from "./keyring-require-bridge.js"
 import {
@@ -29,6 +30,7 @@ import { MCP_PROJECT_TRUST_WARNING, resolveMcpProjectTrust } from "./project-tru
 const MCP_PROXY_TOOL = "mcp"
 const MCP_SCRIPT_TOOL = "mcpScript"
 const MCP_SCRIPT_RECOMMENDATION = "When one request needs several MCP calls with logic between them, use mcpScript. "
+const MCP_MANUAL_SETUP = "Add your servers to .mcp.json (project) or ~/.config/mcp/mcp.json (global), then run /reload."
 
 function legacyMcpConfigWarning(cwd: string): string | undefined {
 	const keys = getConfiguredLegacyMcpKeys({ cwd })
@@ -53,7 +55,14 @@ function isPlanningMode(pi: ExtensionAPI, ctx: ExtensionContext): boolean {
 	const profile = getCurrentProfile(pi)
 	const permissionMode = getPermissionMode(ctx.sessionManager.getSessionId())?.mode
 	const explicitPlan = getParsedCliArgs().options.plan === true
-	return explicitPlan || permissionMode === "plan" || profile === "planning-adhoc" || profile === "planning-ferment"
+
+	if (profile === "planning-ferment") return true
+	if (permissionMode !== undefined) return permissionMode === "plan"
+
+	// Before permission state is initialized, fall back to startup/profile
+	// signals. Once initialized, the live mode is authoritative so stale plan
+	// state cannot block MCP throughout the subsequent execution phase.
+	return explicitPlan || profile === "planning-adhoc"
 }
 
 function blockedPlanningResult(toolName: string) {
@@ -73,6 +82,9 @@ function createUpstreamApi(
 	policy: McpToolSurfacePolicy,
 	captureHandler: (event: CapturedUpstreamEvent, handler: UpstreamLifecycleHandler) => void,
 ): ExtensionAPI {
+	const visibility = createToolVisibility(pi)
+	const registeredToolNames = new Set<string>()
+	const adapterActiveNames = new Set<string>()
 	return new Proxy(pi, {
 		get(target, property) {
 			if (property === "on") {
@@ -88,6 +100,8 @@ function createUpstreamApi(
 			if (property === "registerTool") {
 				return (tool: ToolDefinition): void => {
 					if (policy.suppressedToolNames.has(tool.name)) return
+					registeredToolNames.add(tool.name)
+					adapterActiveNames.add(tool.name)
 					const brandedTool = {
 						...tool,
 						description:
@@ -103,6 +117,7 @@ function createUpstreamApi(
 							return brandMcpAdapterOwnedToolResult(await execute(...args))
 						},
 					})
+					visibility.enable([tool.name])
 					reapplyCurrentProfile(target)
 				}
 			}
@@ -110,12 +125,33 @@ function createUpstreamApi(
 				return (name: string, command: Parameters<ExtensionAPI["registerCommand"]>[1]): void => {
 					if (name === "pi-mcp") return
 					const handler = command.handler
+					const getArgumentCompletions = command.getArgumentCompletions
 					target.registerCommand(name, {
 						...command,
+						...(name === "mcp" && getArgumentCompletions
+							? {
+									getArgumentCompletions: async (prefix: string) => {
+										const items = (await getArgumentCompletions(prefix))?.filter((item) => item.value !== "setup")
+										return items?.length ? items : null
+									},
+								}
+							: {}),
 						...(command.description === undefined || (name !== "mcp" && name !== "mcp-auth")
 							? {}
 							: { description: brandMcpAdapterText(command.description) }),
-						handler: (args, ctx) => handler(args, createBrandedMcpContext(ctx)),
+						handler: async (args, ctx) => {
+							// Upstream's setup and empty-status panels offer built-in server
+							// presets. Kimchi requires users to configure their own servers.
+							if (name === "mcp") {
+								const setup = args.trim().split(/\s+/)[0] === "setup"
+								if (setup || policy.suppressedToolNames.has(MCP_PROXY_TOOL)) {
+									const message = setup ? "Kimchi does not include MCP server presets." : "No MCP servers configured."
+									ctx.ui.notify(`${message} ${MCP_MANUAL_SETUP}`, "info")
+									return
+								}
+							}
+							await handler(args, createBrandedMcpContext(ctx))
+						},
 					})
 				}
 			}
@@ -124,9 +160,30 @@ function createUpstreamApi(
 					if (name !== "mcp-config") target.registerFlag(name, flag)
 				}
 			}
+			if (property === "getActiveTools") {
+				// The adapter reconciles removals against its own active surface.
+				// A temporary planning profile must not hide that bookkeeping state.
+				return (): string[] => [
+					...new Set([
+						...target.getActiveTools().filter((name) => !registeredToolNames.has(name)),
+						...adapterActiveNames,
+					]),
+				]
+			}
 			if (property === "setActiveTools") {
 				return (toolNames: string[]): void => {
 					const allowedNames = toolNames.filter((name) => !policy.suppressedToolNames.has(name))
+					const allowed = new Set(allowedNames)
+					const removed: string[] = []
+					adapterActiveNames.clear()
+					for (const name of registeredToolNames) {
+						if (allowed.has(name)) adapterActiveNames.add(name)
+						else removed.push(name)
+					}
+					// Persist only this adapter's votes so all later profile snapshots
+					// respect removals, without changing other extensions' visibility.
+					visibility.disable(removed)
+					visibility.enable([...adapterActiveNames])
 					if (!reapplyCurrentProfile(target)) applyCooperativeTweak(target, allowedNames)
 				}
 			}

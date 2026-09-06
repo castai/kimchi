@@ -126,7 +126,7 @@ describe("kimchi mcp probe", () => {
 		expect(probeTools).toHaveBeenCalledWith(
 			"remote",
 			server,
-			expect.objectContaining({ authenticate: true, cwd: process.cwd(), signal: expect.any(AbortSignal) }),
+			expect.objectContaining({ authenticate: true, cwd: process.cwd() }),
 		)
 		expect(output.json).toEqual({
 			tools: [{ name: "lookup", description: "Look up data" }],
@@ -153,38 +153,16 @@ describe("kimchi mcp probe", () => {
 		expect(output.json.error).toBe("connection refused")
 	})
 
-	it("aborts a hanging stdio probe after fifteen seconds", async () => {
-		vi.useFakeTimers()
-		probeTools.mockImplementation(
-			(_name, _server, options: { signal: AbortSignal }) =>
-				new Promise((_resolve, reject) => {
-					options.signal.addEventListener("abort", () => reject(options.signal.reason), { once: true })
-				}),
-		)
-		mockStdin(input())
+	it.each([
+		{ server: { command: "node" }, error: "Probe timed out after 15 seconds" },
+		{ server: { url: "https://example.test/mcp" }, error: "Probe timed out after 60 seconds (including OAuth flow)" },
+	])("reports the shared probe deadline as a CLI error: $error", async ({ server, error }) => {
+		probeTools.mockResolvedValue({ tools: [], needsAuth: false, error })
+		mockStdin(input("deadline", server))
 		const output = captureStdout()
-		const result = runMcp(["probe", "--json"])
-		await vi.advanceTimersByTimeAsync(15_000)
 
-		expect(await result).toBe(1)
-		expect(output.json.error).toContain("timed out after 15 seconds")
-	})
-
-	it("aborts a hanging URL probe after sixty seconds", async () => {
-		vi.useFakeTimers()
-		probeTools.mockImplementation(
-			(_name, _server, options: { signal: AbortSignal }) =>
-				new Promise((_resolve, reject) => {
-					options.signal.addEventListener("abort", () => reject(options.signal.reason), { once: true })
-				}),
-		)
-		mockStdin(input("remote", { url: "https://example.test/mcp" }))
-		const output = captureStdout()
-		const result = runMcp(["probe", "--json"])
-		await vi.advanceTimersByTimeAsync(60_000)
-
-		expect(await result).toBe(1)
-		expect(output.json.error).toContain("timed out after 60 seconds")
+		expect(await runMcp(["probe", "--json"])).toBe(1)
+		expect(output.json).toEqual({ tools: [], needsAuth: false, error })
 	})
 
 	it("returns an error when the upstream probe rejects", async () => {

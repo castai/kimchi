@@ -1,10 +1,10 @@
-import { existsSync } from "node:fs"
-import { join, resolve } from "node:path"
+import { existsSync, readFileSync } from "node:fs"
+import { join } from "node:path"
 import { isDeepStrictEqual } from "node:util"
 import { getAgentDir } from "@earendil-works/pi-coding-agent"
 import { loadMcpConfig as loadUpstreamMcpConfig } from "pi-mcp-adapter/config"
 import type { ImportKind, McpConfig, McpSettings, ServerEntry } from "pi-mcp-adapter/types"
-import { readJson } from "../../config/json.js"
+import stripJsonComments from "strip-json-comments"
 
 export const LEGACY_PROJECT_MCP_CONFIG = ".kimchi/mcp.json"
 
@@ -44,7 +44,9 @@ function isImportKind(value: unknown): value is ImportKind {
 function loadSelectedConfig(configPath: string): { config: McpConfig; warnings: string[] } {
 	if (!existsSync(configPath)) return { config: { mcpServers: {} }, warnings: [] }
 	try {
-		const raw = readJson(configPath)
+		const parsed: unknown = JSON.parse(stripJsonComments(readFileSync(configPath, "utf8"), { trailingCommas: true }))
+		if (!isRecord(parsed)) throw new Error("MCP config must be a JSON object")
+		const raw = parsed
 		const rawServers = raw.mcpServers ?? raw["mcp-servers"]
 		const mcpServers: Record<string, ServerEntry> = {}
 		if (isRecord(rawServers)) {
@@ -99,9 +101,9 @@ export function loadKimchiMcpConfig(
 			warnings: [],
 		}
 	}
-	const exclusiveMode = process.env.PI_MCP_CONFIG_MODE?.trim().toLowerCase() === "exclusive"
-	const legacyPath = resolve(cwd, LEGACY_PROJECT_MCP_CONFIG)
-	const configPath = options.overridePath ?? (!exclusiveMode && existsSync(legacyPath) ? legacyPath : undefined)
+	// piConfig.mcpProjectConfigDir makes the legacy .kimchi layer upstream's
+	// normal project source, including its management UI and persistence paths.
+	const configPath = options.overridePath
 	const discovered = loadUpstreamMcpConfig(configPath, cwd)
 	if (!configPath) return { config: discovered, warnings: [] }
 
