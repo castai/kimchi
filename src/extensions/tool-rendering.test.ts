@@ -16,6 +16,7 @@ import toolRenderingExtension, {
 	summarizeOpenAiToolCall,
 	type ToolRenderContext,
 	toolHeader,
+	wrapMarkedLine,
 } from "./tool-rendering.js"
 
 const OSC133_A = "\x1b]133;A\x07"
@@ -260,6 +261,36 @@ describe("toolHeader", () => {
 		const headerWithout = toolHeader("Read", "src/foo.ts", plainTheme, "○ ")
 		expect(headerWithout).not.toContain("1.5s")
 		expect(headerWith).toContain("1.5s")
+	})
+})
+
+describe("wrapMarkedLine", () => {
+	// Regression (pi-crash.log, terminal width 2): the collapsed header of an
+	// Edit tool call (` ● Edit <mark>/Users/...`) has a marked prefix wider
+	// than the terminal. wrapMarkedLine emitted `${prefix}${body-chunk}` lines
+	// of width prefixWidth + 1 = 9 regardless of the requested width, and
+	// pi-tui's doRender hard-crashed: "Rendered line N exceeds terminal
+	// width (9 > 2)".
+	const crashHeader = toolHeader("Edit", "/Users/vytautas/reps/some-project/file.ts", plainTheme, " ● ")
+
+	it("never emits a line wider than the requested width at narrow sizes", () => {
+		for (let width = 1; width <= 12; width++) {
+			for (const line of wrapMarkedLine(crashHeader, width)) {
+				expect(visibleWidth(line)).toBeLessThanOrEqual(width)
+			}
+		}
+	})
+
+	it("falls back to plain wrapping when the prefix fills the width", () => {
+		const lines = wrapMarkedLine(crashHeader, 2)
+		expect(lines.length).toBeGreaterThan(1)
+		// The full header text still shows, one fragment at a time.
+		expect(stripSgr(lines.join("")).replace(/\s/g, "")).toContain("/Users/vytautas")
+	})
+
+	it("keeps marked-prefix wrapping when the width fits", () => {
+		const lines = wrapMarkedLine(crashHeader, 40)
+		expect(stripSgr(lines[0]).startsWith(" ● Edit /")).toBe(true)
 	})
 })
 

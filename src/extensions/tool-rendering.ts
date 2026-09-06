@@ -1065,12 +1065,17 @@ function markedContinuationPrefix(prefix: string): string {
 	return " ".repeat(visibleWidth(prefix))
 }
 
-function wrapMarkedLine(line: string, width: number): string[] {
+export function wrapMarkedLine(line: string, width: number): string[] {
 	const markerIndex = line.indexOf(WRAP_MARK)
 	if (markerIndex === -1) return wrapTextWithAnsi(line, width)
 	const prefix = line.slice(0, markerIndex)
 	const body = line.slice(markerIndex + WRAP_MARK.length)
 	const prefixWidth = visibleWidth(prefix)
+	// When the prefix alone fills (or exceeds) the width, marked wrapping
+	// cannot hold the invariant — every line would start with the
+	// already-over-wide prefix. Fall back to plain wrapping, which still
+	// shows the full header text one fragment at a time.
+	if (prefixWidth >= width) return wrapTextWithAnsi(line, width)
 	const bodyWidth = Math.max(1, width - prefixWidth)
 	const wrapped = wrapTextWithAnsi(body, bodyWidth)
 	const continuation = markedContinuationPrefix(prefix)
@@ -1112,7 +1117,11 @@ class ToolText extends Text {
 		}
 		const contentWidth = Math.max(1, width)
 		const lines = this.value.replace(/\t/g, "   ").split("\n")
-		const rendered = lines.flatMap((line) => wrapMarkedLine(line, contentWidth)).map((line) => padToWidth(line, width))
+		// ToolText renders on the main screen, where pi-tui hard-crashes on any
+		// line wider than the terminal; hard-truncate before padding.
+		const rendered = lines
+			.flatMap((line) => wrapMarkedLine(line, contentWidth))
+			.map((line) => padToWidth(truncateToWidth(line, width), width))
 		this.toolCachedValue = this.value
 		this.toolCachedWidth = width
 		this.toolCachedLines = rendered
