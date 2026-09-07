@@ -16,7 +16,10 @@ import {
 	buildModelAbbrev,
 	buildPhaseCompact,
 	buildScriptPayload,
+	buildStatusLineSegments,
 	renderFittedLine,
+	renderFittedLines,
+	type Segment,
 	SHORTCUT_TAIL,
 	StatusLine,
 	StatusLineScript,
@@ -25,8 +28,9 @@ import {
 // ── Mock status-line-config.ts ───────────────────────────────────────────────
 // Controls which elements appear as pinned in each test.
 let pinnedElements: StatusLineElementId[] = []
+let statusLineRows = 1
 vi.mock("../config/status-line-config.js", () => ({
-	readStatusLineConfig: () => ({ pinned: pinnedElements }),
+	readStatusLineConfig: () => ({ pinned: pinnedElements, lines: statusLineRows }),
 }))
 
 // biome-ignore lint/suspicious/noControlCharactersInRegex: ANSI escape stripping in test assertions
@@ -123,6 +127,26 @@ function createMockStatusLineData(opts?: {
 }
 
 describe("buildScriptPayload", () => {
+	it("shows a V2 run in both the default footer and custom-script controls", () => {
+		const data = createMockStatusLineData()
+		vi.mocked(data.getExtensionStatuses).mockReturnValue(
+			new Map([["ferment-v2", "◈ paused · Cache layer · /ferment-v2 resume"]]),
+		)
+		const context = { ctx: createMockContext(), theme: createMockTheme(), statusLineData: data }
+		const standard = buildStatusLineSegments(context, new Set())
+		expect(stripAnsi(standard.find((segment) => segment.id === "ferment-v2")?.text ?? "")).toBe(
+			"◈ paused · Cache layer · /ferment-v2 resume",
+		)
+		expect(buildControlsLineSegments(context).some((segment) => segment.id === "ferment-v2")).toBe(true)
+		vi.mocked(data.getExtensionStatuses).mockReturnValue(
+			new Map([["ferment-v2", `◈ paused · ${"long objective ".repeat(4)} · /ferment-v2 resume`]]),
+		)
+		for (const segments of [buildStatusLineSegments(context, new Set()), buildControlsLineSegments(context)]) {
+			const line = renderFittedLine(segments, 80, context.theme)
+			expect(stripAnsi(line)).toContain("◈ paused")
+			expect(visibleWidth(line)).toBeLessThanOrEqual(80)
+		}
+	})
 	afterEach(() => setBillingStatusForTest(undefined))
 
 	it("passes credits and budget to custom status-line scripts", () => {
@@ -1260,24 +1284,35 @@ describe("script controls line (statusLine.command path)", () => {
 })
 
 describe("StatusLineScript", () => {
+	it("preserves multi-line script output and multi-line native controls", () => {
+		const sls = new StatusLineScript(() => ["permissions · model", "Ferment V2: running · Cache layer"])
+		sls.setLines(["custom row 1", "custom row 2"])
+		expect(sls.render(80)).toEqual([
+			"custom row 1",
+			"custom row 2",
+			"",
+			"permissions · model",
+			"Ferment V2: running · Cache layer",
+		])
+	})
 	it("passes the render width to the controls callback", () => {
 		let received = -1
 		const sls = new StatusLineScript((width) => {
 			received = width
-			return "controls"
+			return ["controls"]
 		})
 		sls.render(73)
 		expect(received).toBe(73)
 	})
 
 	it("renders script lines first, then a blank line, then the controls line", () => {
-		const sls = new StatusLineScript(() => "controls")
+		const sls = new StatusLineScript(() => ["controls"])
 		sls.setLines(["one", "two"])
 		expect(sls.render(80)).toEqual(["one", "two", "", "controls"])
 	})
 
 	it("truncates each script line to the render width", () => {
-		const sls = new StatusLineScript(() => "controls")
+		const sls = new StatusLineScript(() => ["controls"])
 		sls.setLines(["short", "x".repeat(50)])
 		const lines = sls.render(20)
 		expect(lines[0]).toBe("short")
@@ -1287,9 +1322,75 @@ describe("StatusLineScript", () => {
 		expect(stripAnsi(lines[1])).toMatch(/^x+/)
 	})
 
-	it("omits the blank line and controls block when the callback returns null", () => {
-		const sls = new StatusLineScript(() => null)
+	it("omits the blank line and controls block when the callback returns no rows", () => {
+		const sls = new StatusLineScript(() => [])
 		sls.setLines(["one"])
 		expect(sls.render(80)).toEqual(["one"])
+	})
+})
+
+describe("multiple status rows", () => {
+	afterEach(() => {
+		statusLineRows = 1
+		pinnedElements = []
+	})
+
+	it("packs every existing segment type and V2 before compacting or shedding", () => {
+		const ids: Segment["id"][] = [
+			"permissions",
+			"model",
+			"thinking",
+			"ferment",
+			"ferment-v2",
+			"agents",
+			"context",
+			"usage",
+			"phase",
+			"tags",
+			"team",
+			"credits",
+			"budget",
+			"lsp",
+			"dap",
+		]
+		const segments = ids.map((id) => ({ id, text: id, width: visibleWidth(id) }))
+		const rows = renderFittedLines(segments, 55, createMockTheme(), 3)
+		expect(rows).toHaveLength(3)
+		expect(rows.flatMap((row) => stripAnsi(row).split(" · "))).toEqual(ids)
+		for (const row of rows) expect(visibleWidth(row)).toBeLessThanOrEqual(55)
+	})
+
+	it("keeps an objective visible when a second row has space", () => {
+		statusLineRows = 2
+		const data = createMockStatusLineData({ permissionsMode: "auto → shift+tab" })
+		vi.mocked(data.getExtensionStatuses).mockReturnValue(
+			new Map([
+				["permissions-mode", "auto → shift+tab"],
+				["ferment-v2", "◈ Ferment V2: running · Cache layer"],
+			]),
+		)
+		const rows = new StatusLine(createMockContext({ modelId: "test-model" }), createMockTheme(), data).render(80)
+		expect(rows).toHaveLength(2)
+		expect(stripAnsi(rows.join("\n"))).toContain("Ferment V2: running · Cache layer")
+		expect(stripAnsi(rows[0])).toContain("test-model")
+	})
+
+	it("keeps rows width-bounded with Unicode at tiny and normal widths", () => {
+		const segments: Segment[] = [
+			{ id: "permissions", text: "auto", width: 4 },
+			{ id: "model", text: "test-model", width: 10 },
+			{
+				id: "ferment-v2",
+				text: "◈ Ferment V2: running · Cache ✓",
+				width: visibleWidth("◈ Ferment V2: running · Cache ✓"),
+			},
+		]
+		for (const width of [1, 5, 20, 45, 80, 120]) {
+			for (const count of [1, 2, 3]) {
+				const rows = renderFittedLines(segments, width, createMockTheme(), count)
+				expect(rows.length).toBeLessThanOrEqual(count)
+				for (const row of rows) expect(visibleWidth(row)).toBeLessThanOrEqual(width)
+			}
+		}
 	})
 })

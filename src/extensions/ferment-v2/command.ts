@@ -12,6 +12,15 @@ export type FermentV2Command =
 
 export const FERMENT_V2_COMMAND_COMPLETIONS = ["edit", "pause", "resume", "clear"] as const
 
+export function formatFermentV2Status(fermentV2: SessionFermentV2 | undefined, evaluating = false): string | undefined {
+	if (!fermentV2) return undefined
+	const state =
+		fermentV2.status === "active" ? (evaluating ? "checking" : "running") : fermentV2.status.replace("_", " ")
+	const objective = fermentV2.objective.replace(/\s+/g, " ").trim()
+	const hint = fermentV2.status === "paused" || fermentV2.status === "blocked" ? " · /ferment-v2 resume" : ""
+	return `◈ Ferment V2: ${state} · ${objective}${hint}`
+}
+
 export function parseFermentV2Command(args: string): FermentV2Command {
 	const trimmed = args.trim()
 	if (!trimmed) return { action: "show" }

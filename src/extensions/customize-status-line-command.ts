@@ -1,7 +1,13 @@
 import type { ExtensionAPI, Theme } from "@earendil-works/pi-coding-agent"
 import type { Component } from "@earendil-works/pi-tui"
 import { isKeyRelease, Key, matchesKey, visibleWidth } from "@earendil-works/pi-tui"
-import { readStatusLineConfig, STATUS_LINE_ELEMENTS, setStatusLineElementPinned } from "../config/status-line-config.js"
+import {
+	MAX_STATUS_LINE_LINES,
+	readStatusLineConfig,
+	STATUS_LINE_ELEMENTS,
+	setStatusLineElementPinned,
+	setStatusLineLines,
+} from "../config/status-line-config.js"
 import { truncateLinesToWidth } from "../truncate-lines.js"
 import { requestSharedStatusLineRender } from "./shared-status-line.js"
 
@@ -39,12 +45,18 @@ export class CustomizeStatusLineComponent implements Component {
 		}
 
 		if (matchesKey(data, Key.down) || data === "j") {
-			this.selectedIndex = Math.min(STATUS_LINE_ELEMENTS.length - 1, this.selectedIndex + 1)
+			this.selectedIndex = Math.min(STATUS_LINE_ELEMENTS.length, this.selectedIndex + 1)
 			this.tui.requestRender()
 			return
 		}
 
 		if (matchesKey(data, "space") || matchesKey(data, "return") || matchesKey(data, Key.enter)) {
+			if (this.selectedIndex === STATUS_LINE_ELEMENTS.length) {
+				setStatusLineLines(((readStatusLineConfig().lines ?? 1) % MAX_STATUS_LINE_LINES) + 1)
+				this.tui.requestRender()
+				requestSharedStatusLineRender()
+				return
+			}
 			const el = STATUS_LINE_ELEMENTS[this.selectedIndex]
 			if (!el) return
 			// Cannot toggle permissions or model — they are always visible.
@@ -115,6 +127,12 @@ export class CustomizeStatusLineComponent implements Component {
 
 		// ── hint row ─────────────────────────────────────────────────────────
 		out.push(b(`├${"─".repeat(innerW)}┤`))
+		const rowControl = `Status rows: ${readStatusLineConfig().lines ?? 1} (1–${MAX_STATUS_LINE_LINES})`
+		out.push(
+			wrapRow(
+				this.selectedIndex === STATUS_LINE_ELEMENTS.length ? accent(`❯ ${rowControl}`) : textColor(`  ${rowControl}`),
+			),
+		)
 		out.push(wrapRow(dimText("  Space / Enter to toggle  ·  ↑↓ to navigate  ·  Esc to close")))
 
 		// ── bottom border ───────────────────────────────────────────────────
@@ -126,11 +144,12 @@ export class CustomizeStatusLineComponent implements Component {
 
 export default function customizeStatusLineExtension(pi: ExtensionAPI): void {
 	pi.registerCommand("customize-status-line", {
-		description: "Customize which status line elements are pinned",
+		description: "Customize status line elements and number of rows",
 		handler: async (_args, ctx) => {
 			if (!ctx.hasUI) {
 				const pinned = new Set(readStatusLineConfig().pinned)
 				const lines: string[] = ["Customize Status Line"]
+				lines.push(`Status rows: ${readStatusLineConfig().lines ?? 1}`)
 				for (const el of STATUS_LINE_ELEMENTS) {
 					const mark = el.canPin === false ? "[×]" : pinned.has(el.id) ? "[●]" : "[○]"
 					lines.push(`  ${mark} ${el.label}  —  ${el.description}`)

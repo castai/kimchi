@@ -120,6 +120,45 @@ describe("Ferment V2 extension", () => {
 		expect(result.details.fermentV2).toBeNull()
 	})
 
+	it("publishes a separate status through updates, replay, clear, and shutdown", async () => {
+		expect(harness.ui.setStatus).toHaveBeenLastCalledWith("ferment-v2", undefined)
+		await harness.command("ship feature A")
+		expect(harness.ui.setStatus).toHaveBeenLastCalledWith("ferment-v2", "◈ Ferment V2: running · ship feature A")
+		await harness.command("pause")
+		expect(harness.ui.setStatus).toHaveBeenLastCalledWith(
+			"ferment-v2",
+			"◈ Ferment V2: paused · ship feature A · /ferment-v2 resume",
+		)
+		const pausedBranch = [...harness.branch]
+		harness.setSession("session-b", [])
+		await harness.fire("session_start", { type: "session_start", reason: "new" })
+		expect(harness.ui.setStatus).toHaveBeenLastCalledWith("ferment-v2", undefined)
+		harness.setSession("session-a", pausedBranch)
+		await harness.fire("session_start", { type: "session_start", reason: "resume" })
+		expect(harness.ui.setStatus).toHaveBeenLastCalledWith(
+			"ferment-v2",
+			"◈ Ferment V2: paused · ship feature A · /ferment-v2 resume",
+		)
+		await harness.command("resume")
+		expect(harness.ui.setStatus).toHaveBeenLastCalledWith("ferment-v2", "◈ Ferment V2: running · ship feature A")
+		await harness.command("clear")
+		expect(harness.ui.setStatus).toHaveBeenLastCalledWith("ferment-v2", undefined)
+		await harness.command("ship feature B")
+		await harness.fire("session_shutdown", { type: "session_shutdown" })
+		expect(harness.ui.setStatus).toHaveBeenLastCalledWith("ferment-v2", undefined)
+	})
+
+	it("does not publish an objective whose journal write failed", async () => {
+		await harness.command("ship feature A")
+		harness.appendEntry.mockImplementationOnce(() => {
+			throw new Error("disk full")
+		})
+		await harness.command("ship feature B")
+		expect(harness.ui.notify).toHaveBeenLastCalledWith("disk full", "warning")
+		expect(harness.currentFermentV2()?.objective).toBe("ship feature A")
+		expect(harness.ui.setStatus).toHaveBeenLastCalledWith("ferment-v2", "◈ Ferment V2: running · ship feature A")
+	})
+
 	it("creates a Ferment V2, persists it, and confirms unfinished replacement", async () => {
 		await harness.command("ship feature A")
 		const first = harness.currentFermentV2()
@@ -269,9 +308,11 @@ describe("Ferment V2 extension", () => {
 		const { release, settled } = await holdEvaluation(harness)
 		await new Promise((resolve) => setTimeout(resolve, 10))
 		expect(harness.ui.setWidget).not.toHaveBeenCalled()
+		expect(harness.ui.setStatus).toHaveBeenLastCalledWith("ferment-v2", "◈ Ferment V2: checking · ship feature A")
 
 		release({ verdict: "continue", reason: "More work is required.", model: "test/evaluator", usage: EVALUATOR_USAGE })
 		await settled
+		expect(harness.ui.setStatus).toHaveBeenLastCalledWith("ferment-v2", "◈ Ferment V2: running · ship feature A")
 	})
 
 	it("hides completion prose without removing the thinking block", async () => {

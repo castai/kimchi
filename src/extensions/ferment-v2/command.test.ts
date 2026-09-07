@@ -3,12 +3,27 @@ import {
 	FERMENT_V2_COMMAND_COMPLETIONS,
 	formatFermentV2Accounting,
 	formatFermentV2Duration,
+	formatFermentV2Status,
 	formatFermentV2Summary,
 	parseFermentV2Command,
 } from "./command.js"
 import type { FermentV2Status, SessionFermentV2 } from "./types.js"
 
 describe("Ferment V2 command", () => {
+	it("formats a labeled footer state and keeps evaluation details out of it", () => {
+		expect(formatFermentV2Status(undefined)).toBeUndefined()
+		expect(formatFermentV2Status(fermentV2("active"))).toBe("◈ Ferment V2: running · ship it")
+		expect(formatFermentV2Status(fermentV2("active"), true)).toBe("◈ Ferment V2: checking · ship it")
+		for (const status of ["paused", "blocked"] satisfies FermentV2Status[]) {
+			expect(formatFermentV2Status(fermentV2(status))).toBe(`◈ Ferment V2: ${status} · ship it · /ferment-v2 resume`)
+		}
+		expect(formatFermentV2Status(fermentV2("complete"))).toBe("◈ Ferment V2: complete · ship it")
+		expect(formatFermentV2Status(fermentV2("budget_limited"))).toBe("◈ Ferment V2: budget limited · ship it")
+		expect(formatFermentV2Status({ ...fermentV2("active"), objective: "Read\n  the plan" })).toBe(
+			"◈ Ferment V2: running · Read the plan",
+		)
+	})
+
 	it("parses management commands and inline objectives", () => {
 		expect(parseFermentV2Command("")).toEqual({ action: "show" })
 		expect(parseFermentV2Command(" edit ")).toEqual({ action: "edit" })

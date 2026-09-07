@@ -7,6 +7,8 @@ import { StatusLine } from "../components/status-line.js"
 import {
 	_invalidateStatusLineConfigCache,
 	DEFAULT_STATUS_LINE_PINNED,
+	readStatusLineConfig,
+	STATUS_LINE_ELEMENTS,
 	setStatusLineElementPinned,
 } from "../config/status-line-config.js"
 import * as AGENTS from "./agents/index.js"
@@ -212,6 +214,15 @@ describe("status line bar: toggling", () => {
 // ── 3. Customize-status-line popover ──────────────────────────────────────────
 
 describe("customize-status-line popover", () => {
+	it("offers Ferment V2 separately and cycles through one, two, and three rows", () => {
+		const component = makeComponent(STATUS_LINE_ELEMENTS.length)
+		expect(strip(component.render(100).join("\n"))).toContain("Ferment V2")
+		for (const lines of [2, 3, 1]) {
+			component.handleInput(" ")
+			expect(readStatusLineConfig().lines).toBe(lines)
+			expect(strip(component.render(100).join("\n"))).toContain(`Status rows: ${lines}`)
+		}
+	})
 	it("default state: default-pinned elements show '● ElementLabel'", () => {
 		const text = strip(makeComponent().render(80).join("\n"))
 		expect(text).toContain("● Context")
