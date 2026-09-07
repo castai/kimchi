@@ -24,7 +24,7 @@ export interface ClassifierOptions {
 
 export async function classifyToolCall(
 	candidates: readonly Model<Api>[],
-	modelRegistry: Pick<ModelRegistry, "getApiKeyAndHeaders">,
+	modelRegistry: Pick<ModelRegistry, "getApiKeyAndHeaders" | "hasConfiguredAuth">,
 	call: ClassifyInput,
 	options: ClassifierOptions,
 	signal?: AbortSignal,
@@ -46,9 +46,14 @@ export async function classifyToolCall(
 		if (signal?.aborted || authResult.status === "aborted") return unavailable("classifier aborted", "aborted")
 		if (authResult.status !== "ok" || !authResult.value.ok || !authResult.value.apiKey) {
 			const timedOut = authResult.status === "timeout"
-			const reason = timedOut ? "auth timeout" : "no API key"
+			// hasConfiguredAuth is a cached provider-level lookup; only consulted on the failure path.
+			const noKey = !timedOut && !modelRegistry.hasConfiguredAuth(model)
+			const reason = timedOut ? "auth timeout" : noKey ? "no API key" : "auth lookup failed"
 			skips.push(`${model.id} skipped: ${reason}`)
-			lastResult = unavailable(`classifier ${reason}`, timedOut ? "auth_timeout" : "auth_unavailable")
+			lastResult = unavailable(
+				`classifier ${reason}`,
+				timedOut ? "auth_timeout" : noKey ? "no_api_key" : "auth_unavailable",
+			)
 			continue
 		}
 

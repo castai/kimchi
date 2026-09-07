@@ -27,14 +27,15 @@ export function classifierHealth(
 ): ClassifierHealth | undefined {
 	if (signal?.aborted || result.failureCode === "aborted") return undefined
 	if (!result.ok) {
+		const failureCode = result.failureCode ?? (candidates.length ? "provider_error" : "no_candidates")
 		return {
 			channel: PERMISSION_EVENTS.CLASSIFIER_UNAVAILABLE,
-			payload: {
-				failureCode: result.failureCode ?? (candidates.length ? "provider_error" : "no_candidates"),
-				missingRefs,
-			},
+			payload: { failureCode, missingRefs },
+			// Fixed copy per failure code; never interpolate free-form diagnostics.
 			message:
-				"Permissions classifier unavailable. Calls requiring classification need confirmation or are blocked without a UI.",
+				failureCode === "no_api_key"
+					? "Permissions classifier has no Kimchi API key configured. Set KIMCHI_API_KEY to enable auto-approval; calls requiring classification will keep asking for confirmation (or are blocked without a UI)."
+					: "Permissions classifier unavailable. Calls requiring classification need confirmation or are blocked without a UI.",
 		}
 	}
 	if (result.usedModelId && (missingRefs.length > 0 || result.usedModelId !== candidates[0]?.id)) {

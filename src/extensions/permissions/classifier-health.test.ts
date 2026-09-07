@@ -50,6 +50,7 @@ describe("classifierHealth", () => {
 	})
 
 	it.each<ClassifierFailureCode>([
+		"no_api_key",
 		"provider_error",
 		"invalid_output",
 		"auth_unavailable",
@@ -64,5 +65,15 @@ describe("classifierHealth", () => {
 		)
 		expect(health?.payload).toEqual({ failureCode, missingRefs: [DEFAULT_CLASSIFIER_CANDIDATE_REFS[1]] })
 		expect(JSON.stringify(health)).not.toContain("SENTINEL_SECRET")
+	})
+
+	it("selects actionable copy for no_api_key and generic copy otherwise", () => {
+		const noKey = classifierHealth({ ...healthy, ok: false, failureCode: "no_api_key" }, [primary], [])
+		expect(noKey?.message).toContain("KIMCHI_API_KEY")
+		const other = classifierHealth({ ...healthy, ok: false, failureCode: "provider_error" }, [primary], [])
+		expect(other?.message).not.toContain("KIMCHI_API_KEY")
+		expect(other?.message).toBe(
+			"Permissions classifier unavailable. Calls requiring classification need confirmation or are blocked without a UI.",
+		)
 	})
 })

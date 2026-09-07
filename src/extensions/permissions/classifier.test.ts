@@ -201,14 +201,51 @@ describe("classifyToolCall", () => {
 		expect(completeMock.mock.calls[0]?.[0]).toBe(fallback)
 	})
 
-	it("reports auth skips when no candidate can answer", async () => {
+	it("reports auth lookup failures when auth is configured", async () => {
 		const registry = createModelRegistry()
 		registry.getApiKeyAndHeaders.mockResolvedValue({ ok: false, error: "secret" })
 		const result = await classifyToolCall([primary, fallback], registry, call, options)
 		expect(result.failureCode).toBe("auth_unavailable")
+		expect(result.reason).toContain(`${primary.id} skipped: auth lookup failed`)
+		expect(result.reason).toContain(`${fallback.id} skipped: auth lookup failed`)
+		expect(result).not.toHaveProperty("retryable")
+		expect(result.reason).not.toContain("secret")
+	})
+
+	it("reports no_api_key when no auth is configured", async () => {
+		const registry = createModelRegistry()
+		registry.hasConfiguredAuth.mockReturnValue(false)
+		registry.getApiKeyAndHeaders.mockResolvedValue({ ok: false, error: "secret" })
+		const result = await classifyToolCall([primary, fallback], registry, call, options)
+		expect(result.failureCode).toBe("no_api_key")
 		expect(result.reason).toContain(`${primary.id} skipped: no API key`)
 		expect(result.reason).toContain(`${fallback.id} skipped: no API key`)
 		expect(result).not.toHaveProperty("retryable")
+		expect(result.reason).not.toContain("secret")
+	})
+
+	it("uses the fallback when the primary provider is unconfigured", async () => {
+		const registry = createModelRegistry()
+		registry.hasConfiguredAuth.mockImplementation((model) => model.id !== primary.id)
+		registry.getApiKeyAndHeaders.mockResolvedValueOnce({ ok: false, error: "secret" })
+		completeMock.mockResolvedValue(response())
+		expect(await classifyToolCall([primary, fallback], registry, call, options)).toMatchObject({
+			ok: true,
+			usedModelId: fallback.id,
+		})
+		expect(completeMock.mock.calls[0]?.[0]).toBe(fallback)
+	})
+
+	it("aggregates no_api_key and auth lookup failures across the ladder", async () => {
+		const registry = createModelRegistry()
+		registry.hasConfiguredAuth.mockImplementation((model) => model.id !== primary.id)
+		registry.getApiKeyAndHeaders
+			.mockResolvedValueOnce({ ok: false, error: "secret" })
+			.mockRejectedValueOnce(new Error("secret"))
+		const result = await classifyToolCall([primary, fallback], registry, call, options)
+		expect(result.failureCode).toBe("auth_unavailable")
+		expect(result.reason).toContain(`${primary.id} skipped: no API key`)
+		expect(result.reason).toContain(`${fallback.id} skipped: auth lookup failed`)
 		expect(result.reason).not.toContain("secret")
 	})
 

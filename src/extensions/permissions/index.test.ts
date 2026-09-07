@@ -334,6 +334,30 @@ describe("classifier health reporting", () => {
 		expect(ctx.ui.notify).not.toHaveBeenCalled()
 	})
 
+	it("notifies with actionable KIMCHI_API_KEY copy once per session for no_api_key", async () => {
+		const harness = createPermissionsHarness(["bash"], { auto: true })
+		const ctx = { ...createClassifierContext(), hasUI: true }
+		const emissions = vi.fn()
+		harness.pi.events.on(PERMISSION_EVENTS.CLASSIFIER_UNAVAILABLE, emissions)
+		await harness.fire("session_start", {}, ctx)
+		vi.mocked(ctx.ui.notify).mockClear()
+		const noApiKey = {
+			verdict: "requires-confirmation",
+			ok: false,
+			reason: "SENTINEL_SECRET",
+			failureCode: "no_api_key",
+		} as const
+		for (let i = 0; i < 2; i++) {
+			vi.mocked(classifyToolCall).mockResolvedValueOnce(noApiKey)
+			await harness.fire("tool_call", event, ctx)
+		}
+		expect(emissions).toHaveBeenCalledTimes(2)
+		expect(emissions).toHaveBeenLastCalledWith({ failureCode: "no_api_key", missingRefs: [] })
+		expect(ctx.ui.notify).toHaveBeenCalledTimes(1)
+		expect(vi.mocked(ctx.ui.notify).mock.calls[0]?.[0]).toContain("KIMCHI_API_KEY")
+		expect(JSON.stringify([emissions.mock.calls, vi.mocked(ctx.ui.notify).mock.calls])).not.toContain("SENTINEL_SECRET")
+	})
+
 	it.each([
 		undefined,
 		9000,

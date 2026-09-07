@@ -33,6 +33,8 @@ export type RiskScore = "low" | "medium" | "high"
 
 export type ClassifierFailureCode =
 	| "no_candidates"
+	/** No credentials configured for the candidate's provider; user-fixable (set the provider API key). */
+	| "no_api_key"
 	| "auth_unavailable"
 	| "auth_timeout"
 	| "timeout"

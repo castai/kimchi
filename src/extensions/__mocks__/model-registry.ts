@@ -26,5 +26,6 @@ export function createModelRegistry(models: Model<Api>[] = []) {
 			apiKey: "test-key",
 			headers: {},
 		}),
+		hasConfiguredAuth: vi.fn<ModelRegistry["hasConfiguredAuth"]>(() => true),
 	}
 }
