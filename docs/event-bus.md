@@ -145,6 +145,8 @@ Typed payloads defined in the source file. External telemetry events carry bound
 
 Replacement emits `ferment-v2:replaced` for the outgoing ID before `ferment-v2:started` for the incoming ID, giving every V2 ID exactly one cohort start. `ferment-v2:context_changed` is consumed only by built-in telemetry to attach V2 ID/version/revision/status to ambient session, error, and tool events while active.
 
+Evaluated events are emitted once at invocation settlement, before applying the verdict. Their `sessionId` (external `pi_session_id`), V2 ID, revision, and status describe the invocation snapshot; `count` is the captured applied-evaluation count plus one, even when the result is discarded. Lifecycle events describe the committed outcome.
+
 **Consumers:** `telemetry/index.ts`
 
 ---

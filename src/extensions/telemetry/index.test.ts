@@ -579,6 +579,7 @@ describe("ferment lifecycle telemetry via pi.events", () => {
 		const { handlers, events } = await setup()
 		const { FERMENT_V2_EVENTS } = await import("../ferment-v2/domain-events.js")
 		events.emit(FERMENT_V2_EVENTS.EVALUATED, {
+			sessionId: "original-session",
 			fermentV2Id: "fv2-001",
 			revision: 3,
 			status: "active",
@@ -604,6 +605,7 @@ describe("ferment lifecycle telemetry via pi.events", () => {
 
 		const rec = extractRecords().find((candidate) => candidate.eventName === "ferment_v2.evaluated")
 		expect(attrsOf(rec as NonNullable<typeof rec>)).toMatchObject({
+			pi_session_id: "original-session",
 			ferment_id: "fv2-001",
 			ferment_v2_id: "fv2-001",
 			ferment_version: "v2",

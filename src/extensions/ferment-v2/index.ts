@@ -278,7 +278,7 @@ export default function fermentV2Extension(pi: ExtensionAPI): void {
 	}
 
 	function emitFermentV2Evaluation(
-		target: { fermentV2Id: string; revision: number; status: SessionFermentV2["status"] },
+		target: Pick<FermentV2EvaluatedPayload, "sessionId" | "fermentV2Id" | "revision" | "status">,
 		result: FermentV2EvaluationResult,
 		override?: {
 			verdict?: FermentV2EvaluatedPayload["verdict"]
@@ -294,6 +294,7 @@ export default function fermentV2Extension(pi: ExtensionAPI): void {
 			correctionCount: 0,
 		}
 		pi.events.emit(FERMENT_V2_EVENTS.EVALUATED, {
+			sessionId: target.sessionId,
 			fermentV2Id: target.fermentV2Id,
 			revision: target.revision,
 			status: target.status,
@@ -815,6 +816,13 @@ export default function fermentV2Extension(pi: ExtensionAPI): void {
 		const startFingerprint = turnStartFingerprint
 		const abort = new AbortController()
 		evaluationAbort = abort
+		const target = {
+			sessionId: conversation.sessionId,
+			fermentV2Id: conversation.fermentV2Id,
+			revision: conversation.revision,
+			status: fermentV2.status,
+		}
+		const count = (fermentV2.evaluationCount ?? 0) + 1
 		const evaluation = evaluateFermentV2(
 			{
 				objective: fermentV2.objective,
@@ -824,7 +832,16 @@ export default function fermentV2Extension(pi: ExtensionAPI): void {
 				signal: abort.signal,
 			},
 			ctx,
-		)
+		).then((result) => {
+			// Record the invocation snapshot before validity gates or a waiting user mutation can discard it.
+			emitFermentV2Evaluation(
+				target,
+				result,
+				abort.signal.aborted ? { verdict: "unavailable", failureType: "cancelled" } : undefined,
+				count,
+			)
+			return result
+		})
 		const settled = evaluation.then(
 			() => undefined,
 			() => undefined,
@@ -1375,6 +1392,7 @@ export default function fermentV2Extension(pi: ExtensionAPI): void {
 				)
 				return
 			}
+			emitFermentV2Lifecycle(FERMENT_V2_EVENTS.RESUMED, resumed, { reason: "user" })
 			queueFermentV2TurnAfterSettled(ctx, resumed, buildFermentV2StartSteer("resumed"), "manual_compaction")
 		})
 	})
@@ -1782,11 +1800,6 @@ export default function fermentV2Extension(pi: ExtensionAPI): void {
 	): Promise<void> {
 		const { abort, hadSubstantiveToolUse, result, startFingerprint } = evaluation
 		if (abort.signal.aborted) {
-			emitFermentV2Evaluation(
-				{ fermentV2Id: conversation.fermentV2Id, revision: conversation.revision, status: "active" },
-				result,
-				{ verdict: "unavailable", failureType: "cancelled" },
-			)
 			abandonFermentV2Evaluation(sessionId, conversation)
 			releaseFermentV2PromptSummary()
 			return
@@ -1799,11 +1812,6 @@ export default function fermentV2Extension(pi: ExtensionAPI): void {
 			assertCurrentSession(ctx, sessionId)
 			// Input/tool availability or cancellation can invalidate the verdict.
 			if (abort.signal.aborted) {
-				emitFermentV2Evaluation(
-					{ fermentV2Id: conversation.fermentV2Id, revision: conversation.revision, status: "active" },
-					result,
-					{ verdict: "unavailable", failureType: "cancelled" },
-				)
 				abandonFermentV2Evaluation(sessionId, conversation)
 				releaseFermentV2PromptSummary()
 				return
@@ -1826,16 +1834,7 @@ export default function fermentV2Extension(pi: ExtensionAPI): void {
 			capturedConversation = undefined
 			substantiveToolUseSinceEvaluation = false
 
-			const emitEvaluation = (recorded: SessionFermentV2): void => {
-				emitFermentV2Evaluation(
-					{ fermentV2Id: recorded.id, revision: recorded.revision, status: recorded.status },
-					result,
-					undefined,
-					recorded.evaluationCount ?? 1,
-				)
-			}
-
-			// Commit before evaluation/lifecycle events; both consume the committed Ferment V2.
+			// Lifecycle events describe the committed outcome; the evaluation event described its invocation.
 			const recordTerminalOutcome = (
 				fermentV2: SessionFermentV2,
 				event: FermentV2EventName,
@@ -1849,7 +1848,6 @@ export default function fermentV2Extension(pi: ExtensionAPI): void {
 				} = {},
 			): void => {
 				commitFermentV2(fermentV2)
-				emitEvaluation(fermentV2)
 				emitFermentV2Lifecycle(event, fermentV2, options.details)
 				if (!options.keepCompletionClaim) completionClaim = undefined
 				activeSinceMs = undefined
@@ -1905,7 +1903,6 @@ export default function fermentV2Extension(pi: ExtensionAPI): void {
 					...(claim?.completionConfidence ? { completionConfidence: claim.completionConfidence } : {}),
 				}
 				commitFermentV2(readyForFinalAnswer)
-				emitEvaluation(readyForFinalAnswer)
 				completionClaim = undefined
 				activeSinceMs = undefined
 				invalidateContinuation()
@@ -1965,7 +1962,6 @@ export default function fermentV2Extension(pi: ExtensionAPI): void {
 			}
 
 			commitFermentV2(withContinuationCount)
-			emitEvaluation(withContinuationCount)
 			const content = buildFermentV2Continuation(continuation.unchanged > 0, continuation.reason)
 			if (queueDuringAgentRun) {
 				if (!queueFermentV2Turn(ctx, withContinuationCount, content, "evaluation", "followUp")) {

@@ -365,6 +365,7 @@ export async function evaluateFermentV2(
 		let response = await request()
 		evaluatorSession.appendMessage(response)
 		usage = toFermentV2EvaluatorUsage(response.usage)
+		if (response.stopReason === "error") throw new Error(response.errorMessage ?? "Evaluator provider error")
 		const responseText = contentParts(response.content)
 		if (
 			!input.signal?.aborted &&
@@ -378,28 +379,7 @@ export async function evaluateFermentV2(
 				timestamp: Date.now(),
 			}
 			evaluatorSession.appendMessage(correction)
-			try {
-				response = await request({ ...context, messages: [...context.messages, response, correction] }, true)
-			} catch (error) {
-				if (input.signal?.aborted) {
-					return unavailable(`Evaluator ${modelRef ?? "session model"} was cancelled.`, "cancelled", modelRef)
-				}
-				if (deadline?.aborted) {
-					timeoutCount++
-					return unavailable(
-						`Evaluator ${modelRef ?? "session model"} timed out after ${(evaluationTimeoutMs ?? 0) / 1_000} seconds.`,
-						"timeout",
-						modelRef,
-					)
-				}
-				const classified = classifyLLMGatewayError(errorMessage(error))
-				return unavailable(
-					`Evaluator ${modelRef} correction call failed: ${errorMessage(error)}`,
-					classified?.reason ?? "call_failed",
-					modelRef,
-					classified?.httpStatusCode,
-				)
-			}
+			response = await request({ ...context, messages: [...context.messages, response, correction] }, true)
 			evaluatorSession.appendMessage(response)
 			const retriedUsage = toFermentV2EvaluatorUsage(response.usage)
 			usage = {
@@ -410,6 +390,7 @@ export async function evaluateFermentV2(
 				totalTokens: usage.totalTokens + retriedUsage.totalTokens,
 				costUsd: usage.costUsd + retriedUsage.costUsd,
 			}
+			if (response.stopReason === "error") throw new Error(response.errorMessage ?? "Evaluator provider error")
 		}
 		if (input.signal?.aborted) throw input.signal.reason
 		const parsed = parseFermentV2EvaluatorOutput(contentParts(response.content))

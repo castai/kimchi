@@ -412,6 +412,7 @@ function fermentV2EvaluatedTelemetryHandler(raw: unknown): void {
 	if (!payload?.fermentV2Id || !payload.verdict) return
 	const usage = payload.usage
 	ctx.emitWithIds("ferment_v2.evaluated", {
+		...(payload.sessionId ? { pi_session_id: payload.sessionId } : {}),
 		ferment_id: payload.fermentV2Id,
 		ferment_v2_id: payload.fermentV2Id,
 		ferment_version: "v2",

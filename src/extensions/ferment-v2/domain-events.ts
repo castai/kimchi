@@ -63,6 +63,7 @@ export type FermentV2EvaluatorFailureType =
 	| "call_failed"
 
 export interface FermentV2EvaluatedPayload {
+	sessionId: string
 	fermentV2Id: string
 	revision: number
 	status: SessionFermentV2["status"]

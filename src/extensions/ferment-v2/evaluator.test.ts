@@ -830,6 +830,29 @@ describe("Ferment V2 evaluator", () => {
 		expect(completeMock.mock.calls[1]?.[2]).not.toHaveProperty("maxTokens")
 	})
 
+	it.each([
+		false,
+		true,
+	])("classifies resolved provider errors and retains usage (correction: %s)", async (correction) => {
+		if (correction) completeMock.mockResolvedValueOnce(assistant("{", { stopReason: "length" }))
+		completeMock.mockResolvedValueOnce({
+			...assistant("", { stopReason: "error" }),
+			errorMessage: "503 Service Unavailable",
+		})
+		const result = await evaluateFermentV2({ objective: "ship it", messages: [], todos: [] }, evaluatorContext())
+		expect(result).toMatchObject({
+			verdict: "unavailable",
+			diagnostics: {
+				failureType: "provider_5xx",
+				httpStatusCode: 503,
+				providerRequestCount: correction ? 2 : 1,
+				correctionCount: correction ? 1 : 0,
+			},
+			usage: { totalTokens: usage.totalTokens * (correction ? 2 : 1), costUsd: usage.costUsd * (correction ? 2 : 1) },
+		})
+		expect(JSON.stringify(result.diagnostics)).not.toContain("Service Unavailable")
+	})
+
 	it("classifies a correction retry double-timeout as timeout while retaining initial usage", async () => {
 		fermentV2SettingsMock.mockReturnValue({ ...DEFAULT_FERMENT_V2_SETTINGS, evaluationTimeoutMs: 5_000 })
 		const timeout = vi.spyOn(AbortSignal, "timeout").mockReturnValueOnce(new AbortController().signal)
