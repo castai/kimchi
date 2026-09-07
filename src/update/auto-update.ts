@@ -87,6 +87,11 @@ function skippedByUserMessage(): string {
 	return `update skipped by user — launching current version (${getVersion()})`
 }
 
+/** Stderr line when the caller's deadline aborts the update flow — logged
+ *  from both checkpoints where an aborted opts.signal is observed (mid-check
+ *  catch and post-check), so keep the text in one place. */
+const DEADLINE_EXCEEDED_MESSAGE = "deadline exceeded after update check; skipping auto-update on this launch"
+
 /** Time the Ctrl+C skip notice stays on screen before launch continues — a
  *  beat for the user to read it before the TUI redraws the terminal. */
 const SKIP_NOTICE_MS = 1_000
@@ -326,7 +331,7 @@ export async function maybeAutoUpdateOnLaunch(opts: MaybeAutoUpdateOnLaunchOptio
 				// The caller's deadline fired mid-check: not a check failure —
 				// report it the same way as the post-check deadline path.
 				if (opts.signal?.aborted) {
-					warn("deadline exceeded after update check; skipping auto-update on this launch")
+					warn(DEADLINE_EXCEEDED_MESSAGE)
 					return
 				}
 				warn(`update check failed: ${(err as Error).message}`)
@@ -337,7 +342,7 @@ export async function maybeAutoUpdateOnLaunch(opts: MaybeAutoUpdateOnLaunchOptio
 				return
 			}
 			if (opts.signal?.aborted) {
-				warn("deadline exceeded after update check; skipping auto-update on this launch")
+				warn(DEADLINE_EXCEEDED_MESSAGE)
 				return
 			}
 			if (!check.hasUpdate) return
@@ -371,7 +376,11 @@ export async function maybeAutoUpdateOnLaunch(opts: MaybeAutoUpdateOnLaunchOptio
 
 			// Update is on disk and we're handing off: drop the skip handler so
 			// the freshly launched binary (and this process while it waits on
-			// Bun.spawnSync) sees default Ctrl+C semantics again.
+			// Bun.spawnSync) sees default Ctrl+C semantics again. This removal is
+			// load-bearing — the finally below is NOT sufficient on this path:
+			// process.execve replaces the process image before any finally runs,
+			// and Bun.spawnSync blocks until the child exits, so the skip handler
+			// would outlive the hand-off without this line.
 			process.removeListener("SIGINT", onSigint)
 
 			// Hand off to the freshly-installed binary. We forward only the user
