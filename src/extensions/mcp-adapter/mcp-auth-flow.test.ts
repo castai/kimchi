@@ -34,12 +34,10 @@ async function loadAuthFlowForPort(port: number, options: { connectGate?: Promis
 	vi.stubEnv("MCP_OAUTH_DIR", authDir)
 	const openBrowser = vi.fn(async () => {})
 	const connectStarted = vi.fn()
+	class UnauthorizedError extends Error {}
 	vi.doMock("open", () => ({ default: openBrowser }))
 
-	vi.doMock("@modelcontextprotocol/sdk/client/auth.js", () => {
-		class UnauthorizedError extends Error {}
-		return { UnauthorizedError }
-	})
+	vi.doMock("@modelcontextprotocol/sdk/client/auth.js", () => ({ UnauthorizedError }))
 
 	vi.doMock("@modelcontextprotocol/sdk/client/streamableHttp.js", () => {
 		class StreamableHTTPClientTransport {
@@ -60,9 +58,7 @@ async function loadAuthFlowForPort(port: number, options: { connectGate?: Promis
 		return { StreamableHTTPClientTransport }
 	})
 
-	vi.doMock("@modelcontextprotocol/sdk/client/index.js", async () => {
-		const { UnauthorizedError } = await import("@modelcontextprotocol/sdk/client/auth.js")
-
+	vi.doMock("@modelcontextprotocol/sdk/client/index.js", () => {
 		class Client {
 			async connect(transport: { authProvider?: { redirectToAuthorization?: (url: URL) => void | Promise<void> } }) {
 				connectStarted()
@@ -77,8 +73,9 @@ async function loadAuthFlowForPort(port: number, options: { connectGate?: Promis
 		return { Client }
 	})
 
-	const [flow, callbackServer, authStore, oauthProvider] = await Promise.all([
-		import("./mcp-auth-flow.js"),
+	// Resolve SDK mocks before parallel imports: Vitest shares the mock call stack.
+	const flow = await import("./mcp-auth-flow.js")
+	const [callbackServer, authStore, oauthProvider] = await Promise.all([
 		import("./mcp-callback-server.js"),
 		import("./mcp-auth.js"),
 		import("./mcp-oauth-provider.js"),
@@ -114,10 +111,11 @@ describe("MCP OAuth callback lifecycle", () => {
 	it("shares one callback listener across concurrent authentications and releases it after the last one", async () => {
 		const port = await getFreePort()
 		const { authDir, authStore, callbackServer, flow, oauthProvider, openBrowser } = await loadAuthFlowForPort(port)
+		const first = flow.authenticate("first", "https://first.example.test/mcp")
+		const second = flow.authenticate("second", "https://second.example.test/mcp")
+		const settled = Promise.allSettled([first, second])
 
 		try {
-			const first = flow.authenticate("first", "https://first.example.test/mcp")
-			const second = flow.authenticate("second", "https://second.example.test/mcp")
 			await vi.waitFor(() => expect(openBrowser).toHaveBeenCalledTimes(2))
 
 			const firstState = await authStore.getOAuthState("first")
@@ -134,6 +132,7 @@ describe("MCP OAuth callback lifecycle", () => {
 			await expectPortCanBind(port)
 		} finally {
 			await flow.shutdownOAuth()
+			await settled
 			rmSync(authDir, { recursive: true, force: true })
 		}
 	})

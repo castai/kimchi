@@ -399,6 +399,7 @@ test("experimental Ferment V2 edit fences stale output and Todos without cancell
 				{
 					stream: ["Working on revised objective."],
 				},
+				{ stream: ["Revised objective instructions received after settlement."] },
 			],
 		},
 		async (fixture, trace) => {
@@ -425,18 +426,26 @@ test("experimental Ferment V2 edit fences stale output and Todos without cancell
 				objective: "revised objective",
 				status: "active",
 			})
-			expect(JSON.stringify(revisedRequest.body)).toContain("The new objective supersedes the previous objective")
+			// The native tool loop sees the new context before the retractable edit control is dispatched at settlement.
+			expect(JSON.stringify(revisedRequest.body)).not.toContain("The new objective supersedes the previous objective")
 			const currentTodos = collectStrings(revisedRequest.body).find((value) => value.includes("## Current Todos"))
 			expect(currentTodos).toContain(retainedTodo)
 			expect(currentTodos).not.toContain(staleTodo)
 			await waitForText(terminal, "Working on revised objective.", { timeoutMs: 5_000 })
+			const editRequest = await waitForChatRequest(fixture.fake.requests, 3)
+			expect(fermentV2Snapshot(editRequest)).toMatchObject({ objective: "revised objective", status: "active" })
+			expect(JSON.stringify(editRequest.body)).toContain("The new objective supersedes the previous objective")
+			expect(chatRequests(fixture.fake.requests).slice(0, 3).some(isFermentV2EvaluatorRequest)).toBe(false)
+			await waitForText(terminal, "Revised objective instructions received after settlement.", { timeoutMs: 5_000 })
 			expect(fullText(terminal)).not.toContain(finishedRevisionOne)
 			expect(
 				fixture.fake.requests.find((request) => request.url.startsWith("/openai/v1/chat/completions"))?.aborted,
 			).toBe(false)
 			expect(fullText(terminal)).not.toContain("Operation aborted")
 			expect(fullText(terminal)).not.toContain("Ferment V2 paused because the agent turn was cancelled.")
-			trace.step("edit kept revision 1 running but fenced its stale output and Todo mutation from revision 2")
+			trace.step(
+				"edit fenced stale output and Todos, refreshed native context, then delivered its control after settlement",
+			)
 		},
 	)
 })
@@ -465,6 +474,7 @@ test("experimental Ferment V2 edit updates the revision while a tool is still ru
 					],
 				},
 				{ stream: ["Working from revision two."] },
+				{ stream: ["Revision two instructions received after settlement."] },
 			],
 		},
 		async (fixture, trace) => {
@@ -484,13 +494,18 @@ test("experimental Ferment V2 edit updates the revision while a tool is still ru
 				objective: "revised objective",
 				status: "active",
 			})
-			expect(JSON.stringify(revisedRequest.body)).toContain("The new objective supersedes the previous objective")
+			expect(JSON.stringify(revisedRequest.body)).not.toContain("The new objective supersedes the previous objective")
 			expect(chatRequests(fixture.fake.requests).slice(0, 2).some(isFermentV2EvaluatorRequest)).toBe(false)
 			await waitForText(terminal, "Working from revision two.", { timeoutMs: 5_000 })
+			const editRequest = await waitForChatRequest(fixture.fake.requests, 3)
+			expect(fermentV2Snapshot(editRequest)).toMatchObject({ objective: "revised objective", status: "active" })
+			expect(JSON.stringify(editRequest.body)).toContain("The new objective supersedes the previous objective")
+			expect(chatRequests(fixture.fake.requests).slice(0, 3).some(isFermentV2EvaluatorRequest)).toBe(false)
+			await waitForText(terminal, "Revision two instructions received after settlement.", { timeoutMs: 5_000 })
 			expect(fullText(terminal)).not.toContain("Operation aborted")
 			expect(fullText(terminal)).not.toContain("Ferment V2 paused because the agent turn was cancelled.")
 			trace.step(
-				"revision edit landed during a running tool; the tool finished and the next model turn used revision 2",
+				"tool finished without cancellation, its next request used revision 2, and the edit control arrived after settlement",
 			)
 		},
 	)
