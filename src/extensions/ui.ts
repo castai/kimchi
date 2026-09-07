@@ -631,7 +631,6 @@ export default function uiExtension(pi: ExtensionAPI) {
 	})
 
 	pi.on("session_shutdown", () => {
-		currentEditor = undefined
 		workingIndicatorHolds.clear()
 		workedForMessageHolds.clear()
 		workingAnimator?.stop()
