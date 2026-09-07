@@ -376,11 +376,11 @@ export async function maybeAutoUpdateOnLaunch(opts: MaybeAutoUpdateOnLaunchOptio
 
 			// Update is on disk and we're handing off: drop the skip handler so
 			// the freshly launched binary (and this process while it waits on
-			// Bun.spawnSync) sees default Ctrl+C semantics again. This removal is
-			// load-bearing — the finally below is NOT sufficient on this path:
-			// process.execve replaces the process image before any finally runs,
-			// and Bun.spawnSync blocks until the child exits, so the skip handler
-			// would outlive the hand-off without this line.
+			// Bun.spawnSync) sees default Ctrl+C semantics again. Do not rely on
+			// the finally below to cover this path: process.execve replaces the
+			// process image before any finally runs, and Bun.spawnSync blocks
+			// until the child exits, so without this explicit removal the skip
+			// handler would outlive the hand-off.
 			process.removeListener("SIGINT", onSigint)
 
 			// Hand off to the freshly-installed binary. We forward only the user
