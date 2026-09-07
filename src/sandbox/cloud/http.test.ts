@@ -78,6 +78,31 @@ describe("checkResponse", () => {
 		})
 	})
 
+	it("maps the humanized aggregation message (usage/requested/limit values)", async () => {
+		const resp = new Response(
+			'{"message":"quota exceeded: user cpu limit exceeded (current usage 9.5 cores, requested 1 core, limit 10 cores)","fieldViolations":[]}',
+			{ status: 429 },
+		)
+		await expect(checkResponse(resp, "https://x")).rejects.toMatchObject({
+			name: "RemoteQuotaError",
+			message:
+				"Unable to provision workspace: user cpu limit exceeded (current usage 9.5 cores, requested 1 core, limit 10 cores)",
+			statusCode: 429,
+		})
+	})
+
+	it("maps the humanized multi-dimension resolution message verbatim", async () => {
+		const resp = new Response(
+			'{"message":"failed to resolve workspace resources: workspace resource request exceeds the per-user quota limit: memory requested 150Gi exceeds the per-user limit 120Gi; pvcSize requested 500Gi exceeds the per-user limit 120Gi","fieldViolations":[]}',
+			{ status: 429 },
+		)
+		await expect(checkResponse(resp, "https://x")).rejects.toMatchObject({
+			name: "RemoteQuotaError",
+			message:
+				"Unable to provision workspace: failed to resolve workspace resources: workspace resource request exceeds the per-user quota limit: memory requested 150Gi exceeds the per-user limit 120Gi; pvcSize requested 500Gi exceeds the per-user limit 120Gi",
+		})
+	})
+
 	it("maps non-auth statuses without a body to RemoteNetworkError", async () => {
 		await expect(checkResponse(new Response(null, { status: 502 }), "https://x")).rejects.toBeInstanceOf(
 			RemoteNetworkError,
