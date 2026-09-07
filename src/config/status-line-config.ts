@@ -7,6 +7,7 @@ export type StatusLineElementId =
 	| "model"
 	| "thinking"
 	| "ferment"
+	| "ferment-v2"
 	| "agents"
 	| "context"
 	| "usage"
@@ -16,7 +17,9 @@ export type StatusLineElementId =
 	| "credits"
 	| "budget"
 
-export type StatusLineConfig = { pinned: StatusLineElementId[] }
+export type StatusLineConfig = { pinned: StatusLineElementId[]; lines?: number }
+
+export const MAX_STATUS_LINE_LINES = 3
 
 const STATUS_LINE_KEY = "statusLine"
 
@@ -92,6 +95,11 @@ export const STATUS_LINE_ELEMENTS: Array<{
 		label: "Budget",
 		description: "Budget usage and limit",
 	},
+	{
+		id: "ferment-v2",
+		label: "Ferment V2",
+		description: "Objective status (shown automatically while set)",
+	},
 ]
 
 function getSettingsPath(): string {
@@ -126,16 +134,16 @@ export function readStatusLineConfig(): StatusLineConfig {
 			pinned.push(value as StatusLineElementId)
 		}
 	}
-	_config = { pinned: [...new Set(pinned)] }
+	_config = { pinned: [...new Set(pinned)], ...(isValidLineCount(raw.lines) ? { lines: raw.lines } : {}) }
 	return _config
 }
 
 export function writeStatusLineConfig(config: StatusLineConfig): void {
 	const path = getSettingsPath()
 	const settings = readJson(path)
-	settings[STATUS_LINE_KEY] = config
+	settings[STATUS_LINE_KEY] = { ...asRecord(settings[STATUS_LINE_KEY]), ...config }
 	writeJson(path, settings)
-	_config = { pinned: [...config.pinned] }
+	_config = { ...config, pinned: [...config.pinned] }
 }
 
 export function setStatusLineElementPinned(id: StatusLineElementId, pinned: boolean): void {
@@ -146,7 +154,16 @@ export function setStatusLineElementPinned(id: StatusLineElementId, pinned: bool
 	} else {
 		set.delete(id)
 	}
-	writeStatusLineConfig({ pinned: [...set] })
+	writeStatusLineConfig({ ...current, pinned: [...set] })
+}
+
+function isValidLineCount(value: unknown): value is number {
+	return typeof value === "number" && Number.isInteger(value) && value >= 1 && value <= MAX_STATUS_LINE_LINES
+}
+
+export function setStatusLineLines(lines: number): void {
+	if (!isValidLineCount(lines)) throw new Error(`Status line rows must be between 1 and ${MAX_STATUS_LINE_LINES}.`)
+	writeStatusLineConfig({ ...readStatusLineConfig(), lines })
 }
 
 export function isStatusLineElementPinned(id: StatusLineElementId): boolean {

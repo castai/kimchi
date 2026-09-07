@@ -6,7 +6,7 @@ import type { ExtensionContext, ReadonlyFooterDataProvider, Theme } from "@earen
 import type { Component } from "@earendil-works/pi-tui"
 import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui"
 import { RST_FG, resolvedAccentFg, resolvedSemanticFg } from "../ansi.js"
-import { readStatusLineConfig } from "../config/status-line-config.js"
+import { readStatusLineConfig, type StatusLineElementId } from "../config/status-line-config.js"
 import { getActiveAgentCount } from "../extensions/agents/index.js"
 import { getBillingStatusLine } from "../extensions/billing/status.js"
 import { formatBudgetStatusLine, formatCreditsStatusLine } from "../extensions/billing/status-line-format.js"
@@ -20,21 +20,7 @@ import { getEffectiveModel } from "../extensions/router/state.js"
 import { getActiveTags, getCurrentPhase, parseTag } from "../extensions/tags.js"
 
 /** Stable identifier used by compaction steps to find segments. */
-export type SegmentId =
-	| "permissions"
-	| "model"
-	| "thinking"
-	| "ferment"
-	| "agents"
-	| "context"
-	| "usage"
-	| "phase"
-	| "tags"
-	| "team"
-	| "credits"
-	| "budget"
-	| "lsp"
-	| "dap"
+export type SegmentId = StatusLineElementId | "lsp" | "dap"
 
 /** Raw inputs preserved on segments that have compact forms, so compaction
  *  steps can rebuild the colorized text without round-tripping through ANSI.
@@ -49,6 +35,7 @@ type SegmentRaw =
 	| { kind: "phase"; phase: string }
 	| { kind: "budget"; percentage: string }
 	| { kind: "ferment"; prefix: string; prefixWidth: number }
+	| { kind: "ferment-v2"; state: string }
 
 /** A single piece of the status line. */
 export interface Segment {
@@ -169,7 +156,7 @@ export function buildScriptPayload(
 export class StatusLineScript implements Component {
 	private cachedLines: string[] = []
 
-	constructor(private getControlsLine: (width: number) => string | null) {}
+	constructor(private getControlsLines: (width: number) => string[]) {}
 
 	setLines(lines: string[]): void {
 		this.cachedLines = lines
@@ -179,11 +166,11 @@ export class StatusLineScript implements Component {
 
 	render(width: number): string[] {
 		const scriptLines = this.cachedLines.map((line) => truncateToWidth(line, width))
-		// The callback returns an already-fitted line (compaction ladder →
+		// The callback returns already-fitted rows (compaction ladder →
 		// priority shed → truncation applied inside), so no extra work here.
-		const controls = this.getControlsLine(width)
-		if (!controls) return scriptLines
-		return [...scriptLines, "", controls]
+		const controls = this.getControlsLines(width)
+		if (!controls.length) return scriptLines
+		return [...scriptLines, "", ...controls]
 	}
 }
 
@@ -313,6 +300,14 @@ const STEPS: CompactionStep[] = [
 		name: "drop-ferment-prefix",
 		apply: (segs) => dropFermentPrefix(segs),
 	},
+	{
+		name: "compact-ferment-v2",
+		apply: (segs, ctx) =>
+			recompactSegment(segs, "ferment-v2", "ferment-v2", (raw) => {
+				const text = ctx.accent(raw.state)
+				return { id: "ferment-v2", text, width: visibleWidth(text) }
+			}),
+	},
 ]
 
 /** Visible width of the line a segment array would render to. */
@@ -347,7 +342,25 @@ const SHED_ORDER: SegmentId[] = [
 	"credits",
 	"budget",
 	"ferment",
+	"ferment-v2",
 ]
+
+function splitSegmentRows(segments: Segment[], width: number, sepWidth: number): Segment[][] {
+	const rows: Segment[][] = []
+	let row: Segment[] = []
+	let used = 0
+	for (const segment of segments) {
+		if (row.length && used + sepWidth + segment.width > width) {
+			rows.push(row)
+			row = []
+			used = 0
+		}
+		used += (row.length ? sepWidth : 0) + segment.width
+		row.push(segment)
+	}
+	if (row.length) rows.push(row)
+	return rows
+}
 
 /** Fit segments into `width` columns: run the compaction ladder, then shed
  *  whole segments in SHED_ORDER until the line fits. The input `segments`
@@ -361,9 +374,13 @@ export function fitSegments(
 	ctx: CompactionContext,
 	sepWidth: number,
 	extraSteps: CompactionStep[] = [],
+	maxLines = 1,
 ): Segment[] {
 	const working = segments.map((s) => ({ ...s }))
-	const fits = () => segmentsLineWidth(working, sepWidth) <= width
+	const fits = () => {
+		const rows = splitSegmentRows(working, width, sepWidth)
+		return rows.length <= maxLines && rows.every((row) => segmentsLineWidth(row, sepWidth) <= width)
+	}
 
 	if (fits()) return working
 
@@ -421,16 +438,37 @@ function buildAbbrevBudgetStep(theme: Theme): CompactionStep {
  *  into one line, and tail-truncate if even the core survivors overflow.
  *  Shared fitting logic for any line built from status-line segments. */
 export function renderFittedLine(segments: Segment[], width: number, theme: Theme): string {
+	return renderFittedLines(segments, width, theme, 1)[0] ?? ""
+}
+
+export function renderFittedLines(
+	segments: Segment[],
+	width: number,
+	theme: Theme,
+	maxLines: number,
+	reservedWidth = 0,
+): string[] {
 	const sep = ` ${dimText(theme, "·")} `
-	const survivors = fitWithBudgetStep(segments, width, theme)
-	return truncateToWidth(joinSegments(survivors, sep), width)
+	const budget = Math.max(0, width - reservedWidth)
+	const survivors = fitWithBudgetStep(segments, budget, theme, maxLines)
+	const rows = splitSegmentRows(survivors, budget, visibleWidth(sep))
+	// If the protected core alone overflows, keep its order and truncate the last row.
+	if (rows.length > maxLines) rows.splice(maxLines - 1, rows.length, rows.slice(maxLines - 1).flat())
+	return rows.map((row) => truncateToWidth(joinSegments(row, sep), width))
 }
 
 /** Fit segments using the full pipeline. Encapsulates the budget abbreviation
  *  step so callers don't repeat the same `fitSegments` invocation shape. */
-function fitWithBudgetStep(segments: Segment[], width: number, theme: Theme): Segment[] {
+function fitWithBudgetStep(segments: Segment[], width: number, theme: Theme, maxLines = 1): Segment[] {
 	const sep = ` ${dimText(theme, "·")} `
-	return fitSegments(segments, width, buildCompactionContext(theme), visibleWidth(sep), [buildAbbrevBudgetStep(theme)])
+	return fitSegments(
+		segments,
+		width,
+		buildCompactionContext(theme),
+		visibleWidth(sep),
+		[buildAbbrevBudgetStep(theme)],
+		maxLines,
+	)
 }
 
 function buildModelSegment(ctx: ExtensionContext, theme: Theme): Segment {
@@ -646,6 +684,22 @@ function buildFermentSegment(theme: Theme, pinned: boolean): Segment | null {
 	}
 }
 
+function buildFermentV2Segment(
+	theme: Theme,
+	pinned: boolean,
+	statusLineData: ReadonlyFooterDataProvider,
+): Segment | null {
+	const status = statusLineData.getExtensionStatuses().get("ferment-v2")
+	if (!status && !pinned) return null
+	const text = status ? accentText(theme, status) : dimText(theme, "Ferment V2: —")
+	return {
+		id: "ferment-v2",
+		text,
+		width: visibleWidth(text),
+		raw: status ? { kind: "ferment-v2", state: status.split(" · ")[0] } : undefined,
+	}
+}
+
 export interface StatusLineBuildContext {
 	ctx: ExtensionContext
 	theme: Theme
@@ -669,6 +723,7 @@ export function buildStatusLineSegments(
 		buildModelSegment(ctx, theme),
 		buildThinkingSegment(ctx, theme, pinned.has("thinking")),
 		buildFermentSegment(theme, pinned.has("ferment")),
+		buildFermentV2Segment(theme, pinned.has("ferment-v2"), statusLineData),
 		buildCreditsSegment(theme, pinned.has("credits")),
 		buildBudgetSegment(theme, pinned.has("budget")),
 		buildAgentsSegment(theme, pinned.has("agents")),
@@ -687,11 +742,17 @@ export function buildStatusLineSegments(
  *  usually covers context/usage itself, so the controls line carries
  *  permissions, model, ferment, and billing — in pool order so permissions
  *  and model lead — fitted through the same compaction/shed pipeline. */
-const CONTROLS_LINE_IDS: ReadonlySet<SegmentId> = new Set(["permissions", "model", "ferment", "credits", "budget"])
-const CONTROLS_LINE_PINNED: ReadonlySet<SegmentId> = new Set(["credits", "budget"])
-
+const CONTROLS_LINE_IDS: ReadonlySet<SegmentId> = new Set([
+	"permissions",
+	"model",
+	"ferment",
+	"ferment-v2",
+	"credits",
+	"budget",
+])
 export function buildControlsLineSegments(buildCtx: StatusLineBuildContext): Segment[] {
-	return buildStatusLineSegments(buildCtx, CONTROLS_LINE_PINNED).filter((s) => CONTROLS_LINE_IDS.has(s.id))
+	const pinned = new Set<SegmentId>(["credits", "budget", ...readStatusLineConfig().pinned])
+	return buildStatusLineSegments(buildCtx, pinned).filter((s) => CONTROLS_LINE_IDS.has(s.id))
 }
 
 export class StatusLine implements Component {
@@ -731,8 +792,6 @@ export class StatusLine implements Component {
 			pinnedSet,
 		)
 
-		const sep = ` ${this.dim("·")} `
-
 		const hintText = this.dim("/ for commands")
 		const hintWidth = visibleWidth(hintText)
 
@@ -740,32 +799,21 @@ export class StatusLine implements Component {
 		// Reserve its space upfront so compaction uses the right budget.
 		const minHintGap = 2
 		const hintReserve = hintWidth + minHintGap
-		const contentBudget = Math.max(0, width - hintReserve)
 
 		// Fit ALL segments as one pool against the full content budget. Pinned
 		// segments get no upfront reservation: the hardcoded compaction/shedding
 		// priority beats pinning, so a pinned low-priority segment sheds before
 		// the core permissions/model/context trio is touched.
-		const survivors = fitWithBudgetStep(allSegments, contentBudget, this.theme)
-
 		// Core segments (permissions/model) must always lead the line, even if a
 		// persisted config marks them as pinned. Pinning only affects display order
 		// for non-core segments.
 		const CORE_LEAD_IDS: Set<SegmentId> = new Set(["permissions", "model"])
 
 		// Display order is unchanged: unpinned group left, pinned group right.
-		const unpinned = survivors.filter((s) => !pinnedSet.has(s.id) || CORE_LEAD_IDS.has(s.id))
-		const pinned = survivors.filter((s) => pinnedSet.has(s.id) && !CORE_LEAD_IDS.has(s.id))
-
-		// Build content: unpinned (left) then pinned (right).
-		let contentLine: string
-		if (unpinned.length > 0 && pinned.length > 0) {
-			contentLine = `${joinSegments(unpinned, sep)}${sep}${joinSegments(pinned, sep)}`
-		} else if (pinned.length > 0) {
-			contentLine = joinSegments(pinned, sep)
-		} else {
-			contentLine = joinSegments(unpinned, sep)
-		}
+		const unpinned = allSegments.filter((s) => !pinnedSet.has(s.id) || CORE_LEAD_IDS.has(s.id))
+		const pinned = allSegments.filter((s) => pinnedSet.has(s.id) && !CORE_LEAD_IDS.has(s.id))
+		const lines = renderFittedLines([...unpinned, ...pinned], width, this.theme, config.lines ?? 1, hintReserve)
+		const contentLine = lines.pop() ?? ""
 
 		// Append hint at the far right when there is room; truncate if not.
 		let line: string
@@ -778,7 +826,7 @@ export class StatusLine implements Component {
 		}
 
 		const infoLine = this.buildInfoLine(width)
-		return infoLine ? [infoLine, line] : [line]
+		return infoLine ? [infoLine, ...lines, line] : [...lines, line]
 	}
 
 	private buildInfoLine(width: number): string {

@@ -14,10 +14,11 @@ import {
 	buildControlsLineSegments,
 	buildScriptPayload,
 	readStatusLineCommand,
-	renderFittedLine,
+	renderFittedLines,
 	StatusLine,
 	StatusLineScript,
 } from "../components/status-line.js"
+import { readStatusLineConfig } from "../config/status-line-config.js"
 import { collapseAll, expandNext, resetState } from "../expand-state.js"
 import { refreshGitBranch } from "../utils.js"
 import { getCommunityTierHeaderNotice, subscribeBillingStatus } from "./billing/status.js"
@@ -437,12 +438,11 @@ export default function uiExtension(pi: ExtensionAPI) {
 			// The controls line runs through the same segment pipeline as the
 			// built-in status line: permissions and model lead, the compaction
 			// ladder and priority shedding apply at narrow widths.
-			const getControlsLine = (width: number): string | null => {
+			const getControlsLines = (width: number): string[] => {
 				const segments = buildControlsLineSegments({ ctx, theme, statusLineData })
-				if (segments.length === 0) return null
-				return renderFittedLine(segments, width, theme)
+				return renderFittedLines(segments, width, theme, readStatusLineConfig().lines ?? 1)
 			}
-			scriptStatusLine = new StatusLineScript(getControlsLine)
+			scriptStatusLine = new StatusLineScript(getControlsLines)
 			scriptTui = tui
 			scriptPending = true
 			const gen = scriptGeneration

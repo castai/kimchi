@@ -8,6 +8,7 @@ import {
 	readStatusLineConfig,
 	STATUS_LINE_ELEMENTS,
 	setStatusLineElementPinned,
+	setStatusLineLines,
 	writeStatusLineConfig,
 } from "./status-line-config.js"
 
@@ -46,8 +47,8 @@ afterEach(() => {
 // ── STATUS_LINE_ELEMENTS metadata ────────────────────────────────────────────
 
 describe("STATUS_LINE_ELEMENTS", () => {
-	it("has 12 entries", () => {
-		expect(STATUS_LINE_ELEMENTS).toHaveLength(12)
+	it("has 13 entries", () => {
+		expect(STATUS_LINE_ELEMENTS).toHaveLength(13)
 	})
 
 	it("every entry has id, label, description", () => {
@@ -65,6 +66,7 @@ describe("STATUS_LINE_ELEMENTS", () => {
 			"model",
 			"thinking",
 			"ferment",
+			"ferment-v2",
 			"agents",
 			"context",
 			"usage",
@@ -128,6 +130,30 @@ describe("readStatusLineConfig", () => {
 // ─── writeStatusLineConfig ───────────────────────────────────────────────────
 
 describe("writeStatusLineConfig", () => {
+	it("keeps script configuration when changing pins or row count", () => {
+		memfs.set(SETTINGS_PATH, JSON.stringify({ statusLine: { command: "my-status", padding: 1, pinned: [] } }))
+		setStatusLineElementPinned("ferment-v2", true)
+		expect(JSON.parse(memfs.get(SETTINGS_PATH) ?? "{}").statusLine.command).toBe("my-status")
+		setStatusLineLines(3)
+		_invalidateStatusLineConfigCache()
+		expect(readStatusLineConfig()).toEqual({ pinned: ["ferment-v2"], lines: 3 })
+		expect(JSON.parse(memfs.get(SETTINGS_PATH) ?? "{}").statusLine).toMatchObject({
+			command: "my-status",
+			padding: 1,
+			lines: 3,
+		})
+	})
+
+	it.each([0, -1, 4, 1.5, "2", null])("ignores invalid persisted row count %s", (lines) => {
+		memfs.set(SETTINGS_PATH, JSON.stringify({ statusLine: { pinned: [], lines } }))
+		expect(readStatusLineConfig().lines ?? 1).toBe(1)
+	})
+
+	it("validates row count before writing", () => {
+		expect(() => setStatusLineLines(0)).toThrow()
+		expect(memfs.get(SETTINGS_PATH)).toBe("{}")
+	})
+
 	it("writes statusLine.pinned to disk", () => {
 		writeStatusLineConfig({ pinned: ["model"] })
 		const stored = JSON.parse(memfs.get(SETTINGS_PATH) ?? "{}")

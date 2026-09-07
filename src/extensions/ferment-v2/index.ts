@@ -22,7 +22,12 @@ import { GLOBAL_TODO_SCOPE, getTodosForScope, resolveTodoScope } from "../todos/
 import { MARK_TODO_TOOL_NAME, TODO_TOOL_NAMES, UPDATE_TODOS_TOOL_NAME } from "../todos/tool.js"
 import { holdWorkedDuration } from "../tool-rendering.js"
 import { holdWorkedForMessage, holdWorkingIndicator } from "../ui.js"
-import { FERMENT_V2_COMMAND_COMPLETIONS, formatFermentV2Summary, parseFermentV2Command } from "./command.js"
+import {
+	FERMENT_V2_COMMAND_COMPLETIONS,
+	formatFermentV2Status,
+	formatFermentV2Summary,
+	parseFermentV2Command,
+} from "./command.js"
 import {
 	FERMENT_V2_COMMAND_NAME,
 	FERMENT_V2_CONTROL_MESSAGE_TYPE,
@@ -183,6 +188,7 @@ export default function fermentV2Extension(pi: ExtensionAPI): void {
 	let currentFermentV2: FermentV2State
 	const mutationTails = new Map<string, Promise<void>>()
 	let currentSessionId: string | undefined
+	let currentContext: ExtensionContext | undefined
 	let pendingContinuation: PendingFermentV2Continuation | undefined
 	let pendingTerminalFeedback: PendingFermentV2Continuation | undefined
 	let pendingBudgetLimitedOutput: PendingFermentV2Continuation | undefined
@@ -359,11 +365,13 @@ export default function fermentV2Extension(pi: ExtensionAPI): void {
 
 	function bindSession(ctx: ExtensionContext): string {
 		const sessionId = ctx.sessionManager.getSessionId()
+		currentContext = ctx
 		if (currentSessionId !== sessionId) replaySession(ctx)
 		return sessionId
 	}
 
 	function replaySession(ctx: ExtensionContext): void {
+		currentContext = ctx
 		// Abort before replay rebuilds state: a rewind can reuse the same Ferment V2 id/revision.
 		void abortEvaluation()
 		const previousSessionId = currentSessionId
@@ -385,6 +393,7 @@ export default function fermentV2Extension(pi: ExtensionAPI): void {
 		const branch = ctx.sessionManager.getBranch()
 		const restored = restoreFermentV2Runtime(branch, currentSessionId, getTodoScopeKey(resolveTodoScope()))
 		currentFermentV2 = restored.fermentV2
+		syncRunStatus()
 		resetFermentV2Runtime()
 		todoStateFor = restored.todoState
 		fermentV2Lessons = restored.lessons
@@ -428,6 +437,7 @@ export default function fermentV2Extension(pi: ExtensionAPI): void {
 			throw error
 		}
 		if (previous && previous.id !== fermentV2.id) resolveFermentV2Waiter(currentSessionId, previous.id)
+		syncRunStatus()
 		if (fermentV2.status !== "active") {
 			releaseFermentV2WorkedForMessage()
 			releaseFermentV2WorkedDuration()
@@ -438,9 +448,17 @@ export default function fermentV2Extension(pi: ExtensionAPI): void {
 	function commitClear(fermentV2: SessionFermentV2): void {
 		pi.appendEntry(FERMENT_V2_CUSTOM_ENTRY_TYPE, clearFermentV2Entry(fermentV2, timestamp()))
 		currentFermentV2 = clearFermentV2(fermentV2, fermentV2.id, fermentV2.revision)
+		syncRunStatus()
 		releaseFermentV2WorkedForMessage()
 		releaseFermentV2WorkedDuration()
 		resolveFermentV2Waiter(currentSessionId, fermentV2.id)
+	}
+
+	function syncRunStatus(): void {
+		currentContext?.ui.setStatus(
+			"ferment-v2",
+			formatFermentV2Status(currentFermentV2, evaluationAbort !== undefined && !evaluationAbort.signal.aborted),
+		)
 	}
 
 	function fermentV2ToolsAvailable(fermentV2ToolNames: readonly string[] = [UPDATE_FERMENT_V2_TOOL_NAME]): boolean {
@@ -762,6 +780,7 @@ export default function fermentV2Extension(pi: ExtensionAPI): void {
 		const startFingerprint = turnStartFingerprint
 		const abort = new AbortController()
 		evaluationAbort = abort
+		syncRunStatus()
 		const evaluation = evaluateFermentV2(
 			{
 				objective: fermentV2.objective,
@@ -788,6 +807,7 @@ export default function fermentV2Extension(pi: ExtensionAPI): void {
 		} finally {
 			if (evaluationAbort === abort) evaluationAbort = undefined
 			if (evaluationSettled === settled) evaluationSettled = undefined
+			syncRunStatus()
 		}
 	}
 
@@ -2073,6 +2093,8 @@ export default function fermentV2Extension(pi: ExtensionAPI): void {
 		currentSessionId = undefined
 		resetFermentV2Runtime()
 		currentFermentV2 = undefined
+		syncRunStatus()
+		currentContext = undefined
 	})
 }
 
