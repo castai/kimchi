@@ -1,8 +1,10 @@
 import type { Component } from "@earendil-works/pi-tui"
 import { matchesKey } from "@earendil-works/pi-tui"
 import { fg } from "../../../ansi.js"
+import type { QuotaUsage, ResourceUsage } from "../../../sandbox/cloud/types.js"
 import { truncateLinesToWidth } from "../../../truncate-lines.js"
 import type { TeleportContext } from "../types.js"
+import { formatK8sBytes, formatK8sBytesPair, formatMillicores } from "./format-bytes.js"
 import type { CombinedStatus, SessionRow } from "./sessions-table.js"
 import { formatRelativeTime } from "./sessions-table.js"
 import type { WorkspaceRow } from "./workspaces-table.js"
@@ -16,7 +18,7 @@ const MAX_HEIGHT_PCT = 0.8
 // Lines outside the scrollable body:
 //   top border (1) + header (1) + divider (1)
 //   + top scroll indicator (1) + bottom scroll indicator (1)
-//   + empty row (1) + hint (1) + bottom border (1)
+//   + quota summary or empty row (1) + hint (1) + bottom border (1)
 const CHROME_LINES = 8
 
 /** A session nested under a workspace. Structurally identical to SessionRow. */
@@ -101,6 +103,9 @@ const HEADERS = {
 	name: "NAME / SESSION",
 	status: "STATUS",
 	lastActivity: "LAST ACTIVITY",
+	cpu: "CPU",
+	ram: "RAM",
+	pvc: "PVC",
 }
 
 const MIN_COL_WIDTH = 8
@@ -136,6 +141,8 @@ export class RemoteSessionsPanel implements Component {
 		readonly nodes: RemoteWorkspaceNode[],
 		private readonly tui: PickerTui,
 		private readonly done: (result: RemoteSessionsResult | undefined) => void,
+		/** Org/user quota usage for the footer summary; undefined omits it. */
+		private readonly quota?: QuotaUsage,
 	) {
 		const entries: Entry[] = []
 		for (const node of nodes) {
@@ -215,6 +222,9 @@ export class RemoteSessionsPanel implements Component {
 				["Name", row.name || "-"],
 				["ID", row.id],
 				["Host", row.host || "-"],
+				["CPU", row.cpuMillicores !== undefined ? formatMillicores(row.cpuMillicores) : "-"],
+				["RAM", row.ramBytes !== undefined ? formatK8sBytes(row.ramBytes) : "-"],
+				["PVC", row.pvcSizeBytes !== undefined ? formatK8sBytes(row.pvcSizeBytes) : "-"],
 				["Status", entry.node.unreachable ? "unreachable" : row.status],
 				["Sessions", String(row.sessionCount)],
 				["Created", abs(row.createdAt)],
@@ -234,6 +244,33 @@ export class RemoteSessionsPanel implements Component {
 		]
 	}
 
+	/**
+	 * One-line usage-vs-quota summary for the reserved footer row: user scope
+	 * first, org in parentheses; segments with missing fields are dropped.
+	 * Undefined when there is nothing to show (no quota data at all).
+	 */
+	private quotaSummary(): string | undefined {
+		const scope = (u: ResourceUsage): string | undefined => {
+			const parts: string[] = []
+			if (u.currentCpuMillicores !== undefined && u.maxCpuMillicores !== undefined) {
+				parts.push(`${formatMillicores(u.currentCpuMillicores)}/${formatMillicores(u.maxCpuMillicores)} CPU`)
+			}
+			if (u.currentRamBytes !== undefined && u.maxRamBytes !== undefined) {
+				parts.push(`${formatK8sBytesPair(u.currentRamBytes, u.maxRamBytes)} RAM`)
+			}
+			if (u.currentSandboxes !== undefined && u.maxSandboxes !== undefined) {
+				parts.push(`${u.currentSandboxes}/${u.maxSandboxes} workspaces`)
+			}
+			return parts.length > 0 ? parts.join(" · ") : undefined
+		}
+		const user = this.quota?.userUsage ? scope(this.quota.userUsage) : undefined
+		const org = this.quota?.orgUsage ? scope(this.quota.orgUsage) : undefined
+		const parts: string[] = []
+		if (user) parts.push(`You: ${user}`)
+		if (org) parts.push(`(org: ${org})`)
+		return parts.length > 0 ? parts.join("  ") : undefined
+	}
+
 	render(width: number): string[] {
 		const { entries } = this
 		const b = (s: string) => fg("2", s)
@@ -244,15 +281,42 @@ export class RemoteSessionsPanel implements Component {
 			const d = entryLastActivity(entry)
 			return d ? formatRelativeTime(d, this.now) : "-"
 		}
+		// Resource columns: values on workspace rows, blanks on session rows,
+		// "-" on workspace rows whose server omitted the field.
+		const cpuLabel = (entry: Entry): string => {
+			if (entry.kind !== "workspace") return ""
+			const v = entry.node.row.cpuMillicores
+			return v !== undefined ? formatMillicores(v) : "-"
+		}
+		const ramLabel = (entry: Entry): string => {
+			if (entry.kind !== "workspace") return ""
+			const v = entry.node.row.ramBytes
+			return v !== undefined ? formatK8sBytes(v) : "-"
+		}
+		const pvcLabel = (entry: Entry): string => {
+			if (entry.kind !== "workspace") return ""
+			const v = entry.node.row.pvcSizeBytes
+			return v !== undefined ? formatK8sBytes(v) : "-"
+		}
 
 		const statusWidth = Math.max(HEADERS.status.length, ...entries.map((e) => STATUS_LABEL[entryStatus(e)].length))
 		const lastWidth = Math.max(HEADERS.lastActivity.length, ...entries.map((e) => lastLabel(e).length))
+		const cpuWidth = Math.max(HEADERS.cpu.length, ...entries.map((e) => cpuLabel(e).length))
+		const ramWidth = Math.max(HEADERS.ram.length, ...entries.map((e) => ramLabel(e).length))
+		const pvcWidth = Math.max(HEADERS.pvc.length, ...entries.map((e) => pvcLabel(e).length))
 
 		// Name is the only flex column; it absorbs the tree-connector indent.
-		const fixedNoFlex = 2 /* prefix */ + 1 + statusWidth + 1 + lastWidth
+		const fixedNoFlex = 2 /* prefix */ + 1 + statusWidth + 1 + lastWidth + 1 + cpuWidth + 1 + ramWidth + 1 + pvcWidth
 		const nameW = Math.max(MIN_COL_WIDTH, contentW - fixedNoFlex)
 
-		const headerCells = [pad(HEADERS.name, nameW), pad(HEADERS.status, statusWidth), HEADERS.lastActivity]
+		const headerCells = [
+			pad(HEADERS.name, nameW),
+			pad(HEADERS.status, statusWidth),
+			pad(HEADERS.lastActivity, lastWidth),
+			pad(HEADERS.cpu, cpuWidth),
+			pad(HEADERS.ram, ramWidth),
+			HEADERS.pvc,
+		]
 		const headerLine = headerCells.join(" ")
 
 		const ansiRow = (content: string, rawLen: number) =>
@@ -262,8 +326,10 @@ export class RemoteSessionsPanel implements Component {
 		const formatPlain = (entry: Entry): string => {
 			const name = pad(truncate(entryNameText(entry), nameW), nameW)
 			const status = pad(STATUS_LABEL[entryStatus(entry)], statusWidth)
-			const last = lastLabel(entry)
-			return [name, status, last].join(" ")
+			const last = pad(lastLabel(entry), lastWidth)
+			const cpu = pad(cpuLabel(entry), cpuWidth)
+			const ram = pad(ramLabel(entry), ramWidth)
+			return [name, status, last, cpu, ram, pvcLabel(entry)].join(" ")
 		}
 
 		const formatStyled = (entry: Entry): { styled: string; plainLen: number } => {
@@ -271,9 +337,12 @@ export class RemoteSessionsPanel implements Component {
 			const statusPlain = STATUS_LABEL[entryStatus(entry)]
 			const statusPadding = " ".repeat(Math.max(0, statusWidth - statusPlain.length))
 			const statusCell = `${statusLabel(entryStatus(entry))}${statusPadding}`
-			const last = lastLabel(entry)
-			const styled = [name, statusCell, last].join(" ")
-			const plainCombined = [name, pad(statusPlain, statusWidth), last].join(" ")
+			const last = pad(lastLabel(entry), lastWidth)
+			const cpu = pad(cpuLabel(entry), cpuWidth)
+			const ram = pad(ramLabel(entry), ramWidth)
+			const pvc = pvcLabel(entry)
+			const styled = [name, statusCell, last, cpu, ram, pvc].join(" ")
+			const plainCombined = [name, pad(statusPlain, statusWidth), last, cpu, ram, pvc].join(" ")
 			return { styled, plainLen: plainCombined.length }
 		}
 
@@ -354,7 +423,15 @@ export class RemoteSessionsPanel implements Component {
 			}
 		}
 
-		lines.push(emptyRow())
+		// Reserved footer line: the quota summary when available, otherwise an
+		// empty row — the panel always emits the same line count either way.
+		const summary = this.quotaSummary()
+		if (summary) {
+			const text = truncate(`  ${summary}`, contentW)
+			lines.push(ansiRow(dim(text), text.length))
+		} else {
+			lines.push(emptyRow())
+		}
 		const hint = this.showDetails
 			? "i: back  esc/q/x: close details"
 			: "↑/↓ j/k: navigate  enter: open  d: delete  r: rename  i: details  esc: close"
@@ -372,16 +449,18 @@ export function createRemoteSessionsPanel(
 	nodes: RemoteWorkspaceNode[],
 	tui: PickerTui,
 	done: (result: RemoteSessionsResult | undefined) => void,
+	quota?: QuotaUsage,
 ): RemoteSessionsPanel & { dispose(): void } {
-	return new RemoteSessionsPanel(nodes, tui, done)
+	return new RemoteSessionsPanel(nodes, tui, done, quota)
 }
 
 export function pickRemoteSessions(
 	ctx: TeleportContext,
 	nodes: RemoteWorkspaceNode[],
+	quota?: QuotaUsage,
 ): Promise<RemoteSessionsResult | undefined> {
 	return ctx.ui.custom<RemoteSessionsResult | undefined>(
-		(tui, _theme, _kb, done) => new RemoteSessionsPanel(nodes, tui, done),
+		(tui, _theme, _kb, done) => new RemoteSessionsPanel(nodes, tui, done, quota),
 		{ overlay: true, overlayOptions: { anchor: "center", width: "80%", maxHeight: "80%" } },
 	)
 }

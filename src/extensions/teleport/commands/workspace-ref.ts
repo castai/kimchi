@@ -103,6 +103,9 @@ export async function resolveWorkspaceRef(
 		lastActivityAt: w.lastActivityAt,
 		host: w.host,
 		sessionCount: "?",
+		cpuMillicores: w.cpuMillicores,
+		ramBytes: w.ramBytes,
+		pvcSizeBytes: w.pvcSizeBytes,
 	}))
 	const choice = await pickWorkspace(ctx, rows, { allowNew, hideSessions: true })
 	if (!choice) {

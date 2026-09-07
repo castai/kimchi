@@ -7,6 +7,33 @@ export interface Workspace {
 	lastActivityAt: Date
 	status: WorkspaceStatus
 	host?: string
+	/** Pod CPU request in millicores (1500 = 1.5 vCPU). Provisioned size, not live utilization. */
+	cpuMillicores?: number
+	/** Pod memory request in bytes. Provisioned size, not live utilization. */
+	ramBytes?: number
+	/** Persistent-volume claim size in bytes. */
+	pvcSizeBytes?: number
+}
+
+/**
+ * Current consumption vs. limits for one quota scope (organization or user).
+ * Mirrors the server's `ResourceUsage` proto message. Fields are optional so
+ * partial responses from older control planes degrade gracefully.
+ */
+export interface ResourceUsage {
+	/** Sandboxes (workspaces) currently counted against the quota. */
+	currentSandboxes?: number
+	maxSandboxes?: number
+	currentCpuMillicores?: number
+	maxCpuMillicores?: number
+	currentRamBytes?: number
+	maxRamBytes?: number
+}
+
+/** Org/user quota usage returned by the control plane's `quotas:usage` endpoint. */
+export interface QuotaUsage {
+	orgUsage?: ResourceUsage
+	userUsage?: ResourceUsage
 }
 
 /**
@@ -57,6 +84,10 @@ export interface AuthenticateOptions {
 }
 
 export interface ListWorkspacesOptions extends AuthenticateOptions {
+	signal?: AbortSignal
+}
+
+export interface GetQuotaUsageOptions extends AuthenticateOptions {
 	signal?: AbortSignal
 }
 

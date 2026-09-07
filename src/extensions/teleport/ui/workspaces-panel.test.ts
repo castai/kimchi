@@ -306,6 +306,54 @@ describe("WorkspacesPanel", () => {
 		})
 	})
 
+	describe("resource columns", () => {
+		it("renders CPU, RAM and PVC headers", () => {
+			const { panel } = makePanel()
+			const text = panel.render(120).map(stripAnsi).join("\n")
+			expect(text).toContain("CPU")
+			expect(text).toContain("RAM")
+			expect(text).toContain("PVC")
+		})
+
+		it("formats known resource requests in the columns", () => {
+			const { panel } = makePanel([
+				makeRow({ name: "alpha", cpuMillicores: 1500, ramBytes: 6442450944, pvcSizeBytes: 21474836480 }),
+			])
+			const text = panel.render(120).map(stripAnsi).join("\n")
+			expect(text).toContain("1500m")
+			expect(text).toContain("6Gi")
+			expect(text).toContain("20Gi")
+		})
+
+		it("renders sub-core CPU requests with the m suffix", () => {
+			const { panel } = makePanel([makeRow({ name: "alpha", cpuMillicores: 250 })])
+			const text = panel.render(120).map(stripAnsi).join("\n")
+			expect(text).toContain("250m")
+		})
+
+		it("renders '-' for absent resource fields", () => {
+			const dashCount = (s: string) => (s.match(/-/g) ?? []).length
+			const withRes = makePanel([makeRow({ cpuMillicores: 1000, ramBytes: 1073741824, pvcSizeBytes: 10737418240 })])
+			const withoutRes = makePanel([makeRow()])
+			const a = withRes.panel.render(120).map(stripAnsi).join("\n")
+			const b = withoutRes.panel.render(120).map(stripAnsi).join("\n")
+			// Exactly the three resource cells turn into dashes; every other
+			// dash source (shortened ids) is identical between the two renders.
+			expect(dashCount(b)).toBe(dashCount(a) + 3)
+		})
+
+		it("keeps the NAME flex column at MIN_COL_WIDTH when the new fixed columns crowd the row", () => {
+			const { panel } = makePanel([makeRow({ name: "abcdefghijklmnop" })])
+			const line = panel
+				.render(60)
+				.map(stripAnsi)
+				.find((l) => l.includes("> "))
+			// The name truncates but never below MIN_COL_WIDTH: a width-8 cell
+			// still shows 7 name characters plus the ellipsis.
+			expect(line).toContain("abcdefg")
+		})
+	})
+
 	describe("narrow terminals", () => {
 		// Regression: border title math produced a negative "─".repeat count
 		// below the title width, crashing with RangeError.

@@ -1,6 +1,7 @@
 import { basename } from "node:path"
 import { authenticateWorkspace, createOrUpdateWorkspace } from "../../../sandbox/cloud/auth.js"
 import { verifyApiKey } from "../../../sandbox/cloud/keys.js"
+import { getQuotaUsage } from "../../../sandbox/cloud/quota.js"
 import type { Workspace } from "../../../sandbox/cloud/types.js"
 import { deleteWorkspace, listWorkspaces } from "../../../sandbox/cloud/workspaces.js"
 import { WorkerClient } from "../../../sandbox/worker/client.js"
@@ -34,6 +35,11 @@ export async function runRemoteSessions(_args: string, ctx: TeleportContext): Pr
 
 	while (true) {
 		status(ctx, "Loading…")
+		// Quota summary is best-effort: fire it alongside the workspace list
+		// and let a failed fetch degrade to "no summary" instead of blocking.
+		const quotaPromise = getQuotaUsage(ctx.apiKey, { endpoint: ctx.endpoint, signal: ctx.signal }).catch(
+			() => undefined,
+		)
 		let workspaces: Workspace[]
 		try {
 			workspaces = await listWorkspaces(ctx.apiKey, { endpoint: ctx.endpoint, signal: ctx.signal })
@@ -46,9 +52,10 @@ export async function runRemoteSessions(_args: string, ctx: TeleportContext): Pr
 		await syncSshConfig(workspaces, ctx)
 
 		const nodes = await buildTree(workspaces, ctx, fallbackName)
+		const quota = await quotaPromise
 		status(ctx, undefined)
 
-		const result = await pickRemoteSessions(ctx, nodes)
+		const result = await pickRemoteSessions(ctx, nodes, quota)
 		if (!result) return
 
 		if (result.action === "open-terminal") {
@@ -165,6 +172,9 @@ export async function buildTree(
 				lastActivityAt: ws.lastActivityAt,
 				host: ws.host,
 				sessionCount: reachable ? sessions.length : "?",
+				cpuMillicores: ws.cpuMillicores,
+				ramBytes: ws.ramBytes,
+				pvcSizeBytes: ws.pvcSizeBytes,
 			},
 			sessions,
 			unreachable: !reachable,

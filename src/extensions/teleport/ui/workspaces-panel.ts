@@ -4,6 +4,7 @@ import { fg } from "../../../ansi.js"
 import type { WorkspaceStatus } from "../../../sandbox/cloud/types.js"
 import { truncateLinesToWidth } from "../../../truncate-lines.js"
 import type { TeleportContext } from "../types.js"
+import { formatK8sBytes, formatMillicores } from "./format-bytes.js"
 import { formatRelativeTime } from "./sessions-table.js"
 import type { WorkspaceRow } from "./workspaces-table.js"
 
@@ -89,6 +90,9 @@ const HEADERS = {
 	created: "CREATED",
 	lastActivity: "LAST ACTIVITY",
 	sessions: "SESSIONS",
+	cpu: "CPU",
+	ram: "RAM",
+	pvc: "PVC",
 	host: "HOST",
 }
 
@@ -178,6 +182,9 @@ export class WorkspacesPanel implements Component {
 		const lastLabel = (r: WorkspaceRow) => (r.lastActivityAt ? formatRelativeTime(r.lastActivityAt, this.now) : "-")
 		const sessionsLabel = (r: WorkspaceRow) => (r.sessionCount === "?" ? "?" : String(r.sessionCount))
 		const hostLabel = (r: WorkspaceRow) => r.host || "-"
+		const cpuLabel = (r: WorkspaceRow) => (r.cpuMillicores !== undefined ? formatMillicores(r.cpuMillicores) : "-")
+		const ramLabel = (r: WorkspaceRow) => (r.ramBytes !== undefined ? formatK8sBytes(r.ramBytes) : "-")
+		const pvcLabel = (r: WorkspaceRow) => (r.pvcSizeBytes !== undefined ? formatK8sBytes(r.pvcSizeBytes) : "-")
 
 		const idWidth = Math.max(HEADERS.id.length, ID_SHORT_LEN)
 		const statusWidth = Math.max(HEADERS.status.length, ...rows.map((r) => STATUS_LABEL[r.status].length))
@@ -186,6 +193,9 @@ export class WorkspacesPanel implements Component {
 		const sessionsWidth = hideSessions
 			? 0
 			: Math.max(HEADERS.sessions.length, ...rows.map((r) => sessionsLabel(r).length))
+		const cpuWidth = Math.max(HEADERS.cpu.length, ...rows.map((r) => cpuLabel(r).length))
+		const ramWidth = Math.max(HEADERS.ram.length, ...rows.map((r) => ramLabel(r).length))
+		const pvcWidth = Math.max(HEADERS.pvc.length, ...rows.map((r) => pvcLabel(r).length))
 
 		const nameWidth = Math.max(HEADERS.name.length, ...rows.map((r) => nameLabel(r).length))
 		const hostWidth = Math.max(HEADERS.host.length, ...rows.map((r) => hostLabel(r).length))
@@ -200,7 +210,13 @@ export class WorkspacesPanel implements Component {
 			createdWidth +
 			1 +
 			lastWidth +
-			(hideSessions ? 0 : 1 + sessionsWidth)
+			(hideSessions ? 0 : 1 + sessionsWidth) +
+			1 +
+			cpuWidth +
+			1 +
+			ramWidth +
+			1 +
+			pvcWidth
 		const availableForFlex = Math.max(2 * MIN_COL_WIDTH + 1, contentW - fixedNoFlex)
 		const desiredFlex = nameWidth + 1 + hostWidth
 		let nameW = nameWidth
@@ -218,6 +234,9 @@ export class WorkspacesPanel implements Component {
 			pad(HEADERS.created, createdWidth),
 			pad(HEADERS.lastActivity, lastWidth),
 			...(hideSessions ? [] : [pad(HEADERS.sessions, sessionsWidth)]),
+			pad(HEADERS.cpu, cpuWidth),
+			pad(HEADERS.ram, ramWidth),
+			pad(HEADERS.pvc, pvcWidth),
 			HEADERS.host,
 		]
 		const headerLine = headerCells.join(" ")
@@ -235,6 +254,7 @@ export class WorkspacesPanel implements Component {
 			const host = truncate(hostLabel(r), hostW)
 			const cells = [name, id, status, created, last]
 			if (!hideSessions) cells.push(pad(sessionsLabel(r), sessionsWidth))
+			cells.push(pad(cpuLabel(r), cpuWidth), pad(ramLabel(r), ramWidth), pad(pvcLabel(r), pvcWidth))
 			cells.push(host)
 			return cells.join(" ")
 		}
@@ -255,6 +275,11 @@ export class WorkspacesPanel implements Component {
 				styledCells.push(sessionsPad)
 				plainCells.push(sessionsPad)
 			}
+			const cpu = pad(cpuLabel(r), cpuWidth)
+			const ram = pad(ramLabel(r), ramWidth)
+			const pvc = pad(pvcLabel(r), pvcWidth)
+			styledCells.push(cpu, ram, pvc)
+			plainCells.push(cpu, ram, pvc)
 			styledCells.push(host)
 			plainCells.push(host)
 			return { styled: styledCells.join(" "), plainLen: plainCells.join(" ").length }

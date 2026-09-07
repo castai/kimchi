@@ -11,6 +11,7 @@ vi.mock("../ui/workspaces-panel.js", () => ({ pickWorkspace: pickWorkspaceMock }
 
 import type { Workspace } from "../../../sandbox/cloud/types.js"
 import type { TeleportContext } from "../types.js"
+import type { WorkspaceRow } from "../ui/workspaces-table.js"
 import { TeleportRefusal } from "./errors.js"
 import { isUuid, leftmostLabel, matchesHostNickname, resolveWorkspaceRef } from "./workspace-ref.js"
 
@@ -269,5 +270,29 @@ describe("resolveWorkspaceRef", () => {
 		await expect(resolveWorkspaceRef(ctx, undefined, { onEmpty: { kind: "mint" } })).rejects.toBeInstanceOf(
 			TeleportRefusal,
 		)
+	})
+
+	it("passes workspace resource fields through to the picker rows", async () => {
+		listWorkspacesMock.mockResolvedValue([ws({ cpuMillicores: 1500, ramBytes: 6442450944, pvcSizeBytes: 21474836480 })])
+		pickWorkspaceMock.mockResolvedValue({ action: "select", row: { id: UUID_A } })
+		const { ctx } = makeCtx()
+		await resolveWorkspaceRef(ctx, undefined, { onEmpty: { kind: "mint" } })
+		expect(pickWorkspaceMock.mock.calls[0][1][0]).toMatchObject({
+			id: UUID_A,
+			cpuMillicores: 1500,
+			ramBytes: 6442450944,
+			pvcSizeBytes: 21474836480,
+		})
+	})
+
+	it("leaves picker row resource fields undefined when the server omits them", async () => {
+		listWorkspacesMock.mockResolvedValue([ws()])
+		pickWorkspaceMock.mockResolvedValue({ action: "select", row: { id: UUID_A } })
+		const { ctx } = makeCtx()
+		await resolveWorkspaceRef(ctx, undefined, { onEmpty: { kind: "mint" } })
+		const row = pickWorkspaceMock.mock.calls[0][1][0] as WorkspaceRow
+		expect(row.cpuMillicores).toBeUndefined()
+		expect(row.ramBytes).toBeUndefined()
+		expect(row.pvcSizeBytes).toBeUndefined()
 	})
 })
