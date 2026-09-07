@@ -275,8 +275,12 @@ function stampEffectiveModel(
 
 	const sessionId = session.sessionManager?.getSessionId?.()
 	const effective = resolveEffectiveModel(sessionModel, sessionId ?? "")
-	// Only stamp when routing resolved to a different concrete model.
-	if (!effective || effective === sessionModel) return undefined
+	// Only stamp when routing resolved to a different concrete model. Compare by
+	// identity (provider/id), not reference — resolveEffectiveModel may return a
+	// distinct object that still represents the same Auto model.
+	if (!effective || (effective.provider === sessionModel.provider && effective.id === sessionModel.id)) {
+		return undefined
+	}
 
 	// Stamp the copy with the session model's identity so sameModel passes.
 	const msgProvider = message.provider
