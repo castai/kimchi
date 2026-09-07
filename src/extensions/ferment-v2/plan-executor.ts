@@ -37,9 +37,12 @@ export function getFermentV2PlanExecutor(pi: ExtensionAPI): FermentV2PlanExecuto
 }
 
 export function buildApprovedPlanObjective(planPath: string | undefined, planText: string): string {
-	return planPath
-		? `Implement the approved plan at "${planPath}".\nRead it first, complete its requirements, and verify the result.`
-		: `Implement this approved plan, complete its requirements, and verify the result.\n\n${planText.trim()}`
+	const reference = planPath ? `\n\nSaved plan copy (reference only): ${JSON.stringify(planPath)}` : ""
+	return (
+		"Implement the approved plan below, complete its requirements, and verify the result. " +
+		"This approved Markdown is authoritative even if the saved copy changes or is missing." +
+		`${reference}\n\n<approved_plan>\n${planText}\n</approved_plan>`
+	)
 }
 
 function isFermentV2PlanExecutorLookup(value: unknown): value is FermentV2PlanExecutorLookup {

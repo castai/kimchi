@@ -36,7 +36,7 @@ You independently decide whether a persistent coding Ferment V2 should continue.
 
 <output_contract>
 - Return exactly one JSON object and no markdown:
-{"verdict":"continue|met|impossible","checks":[{"kind":"work|final_answer","requirement":"one objective requirement","met":true,"failureMode":"plausible way this could still be wrong, and why the cited evidence rules it out","candidateRef":"last_assistant","observedAnswer":"complete last assistant entry for final_answer only","evidence":["m12"],"todoIds":[1]}],"reason":"concise evidence-based reason"}
+{"verdict":"continue|met|impossible","checks":[{"kind":"work|final_answer","requirement":"one objective requirement","met":true,"failureMode":"plausible way this could still be wrong, and why the cited evidence rules it out","candidateRef":"last_assistant","observedAnswer":"complete last assistant entry for final_answer only","expectedAnswer":null,"evidence":["m12"],"todoIds":[1]}],"reason":"concise evidence-based reason"}
 - Write reason as a task-facing next action or missing evidence; never mention the evaluator, verdict, controller, or completion policy.
 </output_contract>
 
@@ -52,6 +52,7 @@ You independently decide whether a persistent coding Ferment V2 should continue.
 - Mark final-response wording, formatting, and delivery constraints as kind=final_answer. They are checked against the proposed answer and do not require tool evidence or Todo IDs.
 - For final_answer checks, compare the complete last [assistant] entry literally. Do not infer a cleaner answer or treat quoted text inside a longer response as the answer, then set candidateRef to last_assistant and copy that complete entry into observedAnswer.
 - Omit observedAnswer from work checks. The host rejects a final_answer check whose candidateRef or observedAnswer does not match the proposed answer.
+- Every final_answer check must include expectedAnswer: the complete required literal string for an exact-output constraint, or null for a non-exact constraint. Derive it from the objective, not from the proposed answer. Do not replace an exact-output constraint with an explanation of the work. The host compares the full proposed answer to a string expectedAnswer, including an empty string.
 - Include the Todo IDs that substantiate each requirement. Incidental tactical Todos do not need separate checks.
 - Every met check needs a concrete failureMode that the cited evidence challenges.
 - Every met check needs retained evidence. Partial, missing, or ambiguous evidence means continue.
@@ -85,6 +86,7 @@ interface FermentV2EvaluatorCheck {
 	failureMode?: string
 	candidateRef?: string
 	observedAnswer?: string
+	expectedAnswer?: string | null
 	evidence: string[]
 	todoIds: number[]
 }
@@ -175,6 +177,9 @@ function parseChecks(value: unknown): FermentV2EvaluatorCheck[] | undefined {
 			(candidate.observedAnswer !== undefined &&
 				candidate.observedAnswer !== null &&
 				typeof candidate.observedAnswer !== "string") ||
+			(candidate.kind === "final_answer" &&
+				candidate.expectedAnswer !== null &&
+				typeof candidate.expectedAnswer !== "string") ||
 			(candidate.todoIds !== undefined && candidate.todoIds !== null && !Array.isArray(candidate.todoIds))
 		)
 			return undefined
@@ -190,6 +195,9 @@ function parseChecks(value: unknown): FermentV2EvaluatorCheck[] | undefined {
 				: {}),
 			...(typeof candidate.candidateRef === "string" ? { candidateRef: candidate.candidateRef } : {}),
 			...(typeof candidate.observedAnswer === "string" ? { observedAnswer: candidate.observedAnswer } : {}),
+			...(typeof candidate.expectedAnswer === "string" || candidate.expectedAnswer === null
+				? { expectedAnswer: candidate.expectedAnswer }
+				: {}),
 			evidence: evidence.map(normalizeEvidenceId),
 			todoIds,
 		})
@@ -414,6 +422,9 @@ function unsupportedMetReason(
 				check.observedAnswer !== proposedAnswer
 			)
 				return `Requirement ${requirement} has not been checked against the exact proposed answer; return only the required answer with no extra text.`
+			if (typeof check.expectedAnswer === "string" && proposedAnswer !== check.expectedAnswer) {
+				return `Requirement ${requirement} requires exactly ${JSON.stringify(check.expectedAnswer)}; return that answer with no extra text.`
+			}
 			continue
 		}
 		if (!check.failureMode)

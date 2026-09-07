@@ -321,10 +321,68 @@ describe("Ferment V2 evaluator", () => {
 		).resolves.toMatchObject({ verdict: "met", reason: "tests pass" })
 	})
 
+	it.each([
+		["explanatory prose", "Finding: the file changed.\n\nARTIFACT_ORIGINAL_OK", "ARTIFACT_ORIGINAL_OK", "continue"],
+		["corrected exact draft", "ARTIFACT_ORIGINAL_OK", "ARTIFACT_ORIGINAL_OK", "met"],
+		["non-exact answer", "A useful explanation.", null, "met"],
+		["empty required literal", "Unexpected prose", "", "continue"],
+	] as const)("validates the expected final answer independently of met: %s", async (_case, draft, expectedAnswer, verdict) => {
+		completeMock.mockResolvedValue(
+			assistant(
+				JSON.stringify({
+					verdict: "met",
+					reason: "ready",
+					checks: [
+						{
+							kind: "final_answer",
+							requirement: "Follow the final-response contract",
+							met: true,
+							candidateRef: "last_assistant",
+							observedAnswer: draft,
+							expectedAnswer,
+						},
+					],
+				}),
+			),
+		)
+		const result = await evaluateFermentV2(
+			{
+				objective: "Follow the final-response contract",
+				messages: [transcriptMessage("assistant", [{ type: "text", text: draft }])],
+				todos: [],
+			},
+			evaluatorContext(),
+		)
+		expect(result.verdict).toBe(verdict)
+		if (verdict === "continue") expect(result).not.toHaveProperty("acceptedFinalAnswer")
+		else expect(result).toHaveProperty("acceptedFinalAnswer", draft)
+	})
+
+	it.each([undefined, 42, false, {}])("fails closed for an invalid expectedAnswer: %j", (expectedAnswer) => {
+		expect(
+			parseFermentV2EvaluatorOutput(
+				JSON.stringify({
+					verdict: "met",
+					reason: "ready",
+					checks: [
+						{
+							kind: "final_answer",
+							requirement: "Reply exactly OK",
+							met: true,
+							candidateRef: "last_assistant",
+							observedAnswer: "OK",
+							expectedAnswer,
+						},
+					],
+				}),
+			),
+		).toBeUndefined()
+	})
+
 	it("accepts a final-answer check without tool evidence", async () => {
 		completeMock.mockResolvedValue(
 			assistant(
-				'{"verdict":"met","checks":[{"kind":"work","requirement":"tests pass","met":true,"failureMode":"tests could be skipped; m2 shows they ran","evidence":["m2"]},{"kind":"final_answer","requirement":"reply exactly OK","met":true,"failureMode":"the answer could contain extra text","candidateRef":"last_assistant","observedAnswer":"OK"}],"reason":"ready"}',
+				'{"verdict":"met","checks":[{"kind":"work","requirement":"tests pass","met":true,"failureMode":"tests could be skipped; m2 shows they ran","evidence":["m2"]},{"kind":"final_answer","requirement":"reply exactly OK","met":true,"failureMode":"the answer could contain extra text","candidateRef":"last_assistant","observedAnswer":"OK","expectedAnswer":"OK"}],"reason":"ready"}',
 			),
 		)
 
@@ -355,6 +413,7 @@ describe("Ferment V2 evaluator", () => {
 						{
 							kind: "final_answer",
 							requirement: "reply exactly OK",
+							expectedAnswer: "OK",
 							met: true,
 							failureMode: "the answer could contain extra text",
 							evidence: [],
@@ -403,7 +462,7 @@ describe("Ferment V2 evaluator", () => {
 	it("normalizes nullable optional check fields", () => {
 		expect(
 			parseFermentV2EvaluatorOutput(
-				'{"verdict":"continue","checks":[{"kind":"work","requirement":"tests pass","met":false,"candidateRef":null,"observedAnswer":null,"evidence":[]},{"kind":"final_answer","requirement":"reply exactly OK","met":false,"candidateRef":"last_assistant","observedAnswer":"not OK","evidence":null,"todoIds":null}],"reason":"fix output"}',
+				'{"verdict":"continue","checks":[{"kind":"work","requirement":"tests pass","met":false,"candidateRef":null,"observedAnswer":null,"evidence":[]},{"kind":"final_answer","requirement":"reply exactly OK","met":false,"candidateRef":"last_assistant","observedAnswer":"not OK","expectedAnswer":"OK","evidence":null,"todoIds":null}],"reason":"fix output"}',
 			),
 		).toMatchObject({
 			verdict: "continue",

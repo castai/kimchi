@@ -1,7 +1,34 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
 import { describe, expect, it, vi } from "vitest"
 import { createMiniEventBus } from "../__mocks__/mini-event-bus.js"
-import { getFermentV2PlanExecutor, registerFermentV2PlanExecutor } from "./plan-executor.js"
+import { buildApprovedPlanObjective, getFermentV2PlanExecutor, registerFermentV2PlanExecutor } from "./plan-executor.js"
+import { createFermentV2, putFermentV2Entry, restoreFermentV2 } from "./reducer.js"
+
+describe("approved-plan content authority", () => {
+	const plan = "\n# Approved requirements\n\nReturn exactly APPROVED_TOKEN, with no other text.\n\n"
+
+	it.each([undefined, "/tmp/approved-plan.md"])("retains exact reviewed Markdown with reference %s", (path) => {
+		const objective = buildApprovedPlanObjective(path, plan)
+		expect(objective).toContain(plan)
+		expect(objective).toContain("authoritative")
+		expect(objective).not.toContain("Read it first")
+		if (path) expect(objective).toContain(`Saved plan copy (reference only): ${JSON.stringify(path)}`)
+	})
+
+	it("quotes the saved reference without changing the approved requirements", () => {
+		const path = '/tmp/plan "copy"\n.md'
+		const objective = buildApprovedPlanObjective(path, plan)
+		expect(objective).toContain(JSON.stringify(path))
+		expect(objective).toContain(plan)
+	})
+
+	it("preserves exact reviewed Markdown through objective normalization and journal replay", () => {
+		const objective = buildApprovedPlanObjective("/tmp/reference.md", plan)
+		const state = createFermentV2(undefined, objective, "approved", "2026-09-07T00:00:00.000Z")
+		expect(state.objective).toContain(plan)
+		expect(restoreFermentV2([putFermentV2Entry(state)])?.objective).toBe(objective)
+	})
+})
 
 describe("Ferment V2 approved-plan executor registry", () => {
 	it("resolves an executor registered by another ExtensionAPI on the same event bus", async () => {

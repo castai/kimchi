@@ -195,6 +195,14 @@ export default function fermentV2Extension(pi: ExtensionAPI): void {
 	let currentSessionId: string | undefined
 	let currentContext: ExtensionContext | undefined
 	let pendingContinuation: PendingFermentV2Continuation | undefined
+	let deferredControl:
+		| {
+				owner: PendingFermentV2Continuation
+				content: string
+				details: Record<string, unknown>
+				deliverAs: "steer" | "followUp"
+		  }
+		| undefined
 	let pendingTerminalFeedback: PendingFermentV2Continuation | undefined
 	let pendingBudgetLimitedOutput: PendingFermentV2Continuation | undefined
 	let pendingFinalAnswer: PendingFermentV2Continuation | undefined
@@ -345,6 +353,7 @@ export default function fermentV2Extension(pi: ExtensionAPI): void {
 		releaseFermentV2WorkedForMessage()
 		releaseFermentV2WorkedDuration()
 		pendingContinuation = undefined
+		deferredControl = undefined
 		pendingTerminalFeedback = undefined
 		pendingBudgetLimitedOutput = undefined
 		clearFinalAnswerDelivery()
@@ -519,6 +528,34 @@ export default function fermentV2Extension(pi: ExtensionAPI): void {
 		)
 	}
 
+	function sendOrDeferControl(
+		ctx: ExtensionContext,
+		content: string,
+		details: Record<string, unknown>,
+		deliverAs: "steer" | "followUp" = "steer",
+		queueDuringAgentRun = false,
+	): boolean {
+		if (ctx.sessionManager.getSessionId() !== currentSessionId) return false
+		const current = currentFermentV2
+		if (!current) return false
+		if (details.source === "evaluation_accepted") {
+			if (!matchesFermentV2(pendingFinalAnswer, current, currentSessionId)) return false
+		} else if (current.status !== "active" || !fermentV2ToolsAvailable([UPDATE_FERMENT_V2_TOOL_NAME])) return false
+		if ((!queueDuringAgentRun && agentTurnIsBusy(ctx)) || fermentV2HasPendingMessages(ctx)) {
+			// Pi cannot remove one extension-owned queued message. Keep our intent
+			// retractable until settlement instead of lending it to the shared queue.
+			deferredControl = {
+				owner: { sessionId: ctx.sessionManager.getSessionId(), fermentV2Id: current.id, revision: current.revision },
+				content,
+				details,
+				deliverAs,
+			}
+			return true
+		}
+		deferredControl = undefined
+		return safeSendControl(ctx, content, details, deliverAs)
+	}
+
 	function safeSendControl(
 		ctx: ExtensionContext,
 		content: string,
@@ -549,6 +586,7 @@ export default function fermentV2Extension(pi: ExtensionAPI): void {
 		content: string,
 		source: string,
 		deliverAs: "steer" | "followUp" = "steer",
+		queueDuringAgentRun = false,
 	): boolean {
 		if (!fermentV2ToolsAvailable([UPDATE_FERMENT_V2_TOOL_NAME])) return false
 		const pending = pendingContinuation
@@ -566,7 +604,7 @@ export default function fermentV2Extension(pi: ExtensionAPI): void {
 			fermentV2Id: fermentV2.id,
 			revision: fermentV2.revision,
 		}
-		const sent = safeSendControl(
+		const sent = sendOrDeferControl(
 			ctx,
 			content,
 			{
@@ -575,6 +613,7 @@ export default function fermentV2Extension(pi: ExtensionAPI): void {
 				revision: fermentV2.revision,
 			},
 			deliverAs,
+			queueDuringAgentRun,
 		)
 		if (!sent) pendingContinuation = undefined
 		return sent
@@ -629,6 +668,7 @@ export default function fermentV2Extension(pi: ExtensionAPI): void {
 		fermentV2: SessionFermentV2,
 		deliverAs: "steer" | "followUp",
 		evaluatedDraft?: string,
+		queueDuringAgentRun = false,
 	): boolean {
 		if (!isReadyForFinalAnswer(fermentV2, todoStateFor, currentSessionId, ctx.hasUI)) return false
 		if (matchesFermentV2(pendingFinalAnswer, fermentV2, currentSessionId)) return true
@@ -639,11 +679,12 @@ export default function fermentV2Extension(pi: ExtensionAPI): void {
 			fermentV2Id: fermentV2.id,
 			revision: fermentV2.revision,
 		}
-		const sent = safeSendControl(
+		const sent = sendOrDeferControl(
 			ctx,
 			finalAnswerPrompt(draft),
 			{ source: "evaluation_accepted", fermentV2Id: fermentV2.id, revision: fermentV2.revision },
 			deliverAs,
+			queueDuringAgentRun,
 		)
 		if (!sent) pendingFinalAnswer = undefined
 		return sent
@@ -710,6 +751,7 @@ export default function fermentV2Extension(pi: ExtensionAPI): void {
 
 	function invalidateContinuation(): void {
 		pendingContinuation = undefined
+		deferredControl = undefined
 		turnStartFingerprint = undefined
 		clearFinalAnswerDelivery()
 	}
@@ -743,10 +785,17 @@ export default function fermentV2Extension(pi: ExtensionAPI): void {
 		return { ...current, updatedAt: timestamp() }
 	}
 
-	function isStaleFinalAnswerControlMessage(value: unknown): boolean {
+	function isStaleControlMessage(value: unknown): boolean {
 		if (!isRecord(value) || value.role !== "custom" || value.customType !== FERMENT_V2_CONTROL_MESSAGE_TYPE)
 			return false
-		if (!isRecord(value.details) || value.details.source !== "evaluation_accepted") return false
+		if (
+			!isRecord(value.details) ||
+			!currentFermentV2 ||
+			value.details.fermentV2Id !== currentFermentV2.id ||
+			value.details.revision !== currentFermentV2.revision
+		)
+			return true
+		if (value.details.source !== "evaluation_accepted") return currentFermentV2.status !== "active"
 		const active = matchesFermentV2(activeFinalAnswer, currentFermentV2, currentSessionId)
 			? activeFinalAnswer
 			: undefined
@@ -757,6 +806,7 @@ export default function fermentV2Extension(pi: ExtensionAPI): void {
 			? acceptedFinalAnswerDraft
 			: undefined
 		const marker = active ?? pending ?? accepted
+		if (currentFermentV2.status !== "active" && !active && !pending) return true
 		if (!marker || value.details.fermentV2Id !== marker.fermentV2Id || value.details.revision !== marker.revision) {
 			return true
 		}
@@ -1442,10 +1492,10 @@ export default function fermentV2Extension(pi: ExtensionAPI): void {
 		// and flagged redacted. Anthropic serializes `redacted` as an opaque
 		// redacted_thinking payload, so those blocks must never reach a provider.
 		let strippedHiddenThinking = false
-		let strippedStaleFinalAnswer = false
+		let strippedStaleControl = false
 		const currentMessages = event.messages.filter((message) => {
-			if (isStaleFinalAnswerControlMessage(message)) {
-				strippedStaleFinalAnswer = true
+			if (isStaleControlMessage(message)) {
+				strippedStaleControl = true
 				return false
 			}
 			return true
@@ -1460,7 +1510,7 @@ export default function fermentV2Extension(pi: ExtensionAPI): void {
 			return content.length === message.content.length ? message : { ...message, content }
 		})
 		const messages = replaceFermentV2ContextMessages(providerMessages, currentFermentV2, fermentV2Lessons)
-		return messages || strippedHiddenThinking || strippedStaleFinalAnswer
+		return messages || strippedHiddenThinking || strippedStaleControl
 			? { messages: messages ?? providerMessages }
 			: undefined
 	})
@@ -1944,7 +1994,7 @@ export default function fermentV2Extension(pi: ExtensionAPI): void {
 				activeSinceMs = undefined
 				invalidateContinuation()
 				if (queueDuringAgentRun) {
-					if (!queueFinalAnswerTurn(ctx, readyForFinalAnswer, "followUp", evaluatedDraft)) {
+					if (!queueFinalAnswerTurn(ctx, readyForFinalAnswer, "followUp", evaluatedDraft, true)) {
 						pauseFinalAnswerDelivery(ctx, readyForFinalAnswer)
 					}
 				} else {
@@ -2002,7 +2052,7 @@ export default function fermentV2Extension(pi: ExtensionAPI): void {
 			emitEvaluation(withContinuationCount)
 			const content = buildFermentV2Continuation(continuation.unchanged > 0, continuation.reason)
 			if (queueDuringAgentRun) {
-				if (!queueFermentV2Turn(ctx, withContinuationCount, content, "evaluation", "followUp")) {
+				if (!queueFermentV2Turn(ctx, withContinuationCount, content, "evaluation", "followUp", true)) {
 					releaseFermentV2PromptSummary()
 					resolveFermentV2Waiter(sessionId, withContinuationCount.id)
 				}
@@ -2108,6 +2158,20 @@ export default function fermentV2Extension(pi: ExtensionAPI): void {
 	pi.on("agent_settled", async (_event, ctx) => {
 		const sessionId = bindSession(ctx)
 		const capturedFermentV2 = currentFermentV2
+		const deferred = deferredControl
+		if (
+			deferred &&
+			capturedFermentV2 &&
+			(capturedFermentV2.status === "active" || matchesFermentV2(pendingFinalAnswer, capturedFermentV2, sessionId)) &&
+			matchesFermentV2(deferred.owner, capturedFermentV2, sessionId) &&
+			!pendingUserMutation &&
+			!agentTurnIsBusy(ctx) &&
+			!fermentV2HasPendingMessages(ctx)
+		) {
+			deferredControl = undefined
+			if (sendOrDeferControl(ctx, deferred.content, deferred.details, deferred.deliverAs)) return
+			clearPendingContinuation()
+		}
 		pendingBudgetLimitedOutput = undefined
 		const finalAnswer = activeFinalAnswer
 		if (capturedFermentV2 && finalAnswer && matchesFermentV2(finalAnswer, capturedFermentV2, sessionId)) {

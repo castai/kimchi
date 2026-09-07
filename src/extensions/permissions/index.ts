@@ -419,6 +419,7 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 		updateStatus(ctx)
 		maybeShowYoloWarning(ctx)
 		appliedPermissionMode = next
+		if (reason !== "session_start" && next.initiatedBy === "user") maybePersistPermissionMode(ctx)
 		pi.events.emit(PERMISSION_EVENTS.MODE_CHANGED, { from, to: next, reason })
 	}
 
@@ -599,6 +600,7 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 			const current = appliedPermissionMode
 			if (!current || current.mode === next.mode) {
 				appliedPermissionMode = next
+				if (next.initiatedBy === "user") maybePersistPermissionMode(ctx)
 				return
 			}
 
@@ -649,9 +651,8 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 		return { kind: "enter-mode", mode: "adhoc", reason: "questionnaire tool call in default mode" }
 	})
 
-	// Persist user-sourced mode changes at turn boundaries. This satisfies the
-	// spec requirement that shift+tab cycling updates the UI immediately but is
-	// only written to the session log when the next agent run starts.
+	// Initial modes and temporary Ferment elevation are recorded when work starts.
+	// User-owned changes are also persisted immediately by their transition paths.
 	pi.on("before_agent_start", (_event, ctx) => {
 		maybePersistPermissionMode(ctx)
 	})

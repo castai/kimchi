@@ -82,10 +82,13 @@ export async function showInitialSurvey(ctx: ExtensionContext, options: ShowInit
 	const restoreTips = setTipWidgetLocation("hidden")
 	let result: InitialSurveyResult
 	try {
-		result = await ctx.ui.custom<InitialSurveyResult>((tui, theme, _kb, done) => {
-			const component = new InitialSurveyComponent(theme, () => tui.requestRender(), done, markRendered)
-			return component
-		})
+		result = await ctx.ui.custom<InitialSurveyResult>(
+			(tui, theme, _kb, done) => {
+				const component = new InitialSurveyComponent(theme, () => tui.requestRender(), done, markRendered)
+				return component
+			},
+			{ overlay: true },
+		)
 	} finally {
 		restoreTips()
 	}

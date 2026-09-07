@@ -280,13 +280,14 @@ test("approved plan Execute starts a neutral named Ferment V2 run when enabled",
 			const snapshot = fermentV2Snapshot(await waitForChatRequest(fixture.fake.requests, 2))
 			const planPath = join(realpathSync(fixture.workDir), ".kimchi", "plans", "streaming-parser.md")
 			expect(snapshot).toMatchObject({
-				objective: `Implement the approved plan at "${planPath}".\nRead it first, complete its requirements, and verify the result.`,
+				objective: expect.stringContaining(planText),
 				status: "active",
 			})
+			expect(snapshot.objective).toContain(`Saved plan copy (reference only): ${JSON.stringify(planPath)}`)
 			expect(readFileSync(planPath, "utf-8")).toBe(planText)
 			await waitForText(terminal, "Plan execution blocked.", { timeoutMs: STREAM_TIMEOUT_MS })
 			expect(fullText(terminal)).not.toContain("Ferment V2 created.")
-			trace.step("model request carried the saved-plan objective and the terminal stayed neutral")
+			trace.step("model request carried the approved Markdown and the terminal stayed neutral")
 		},
 	)
 })

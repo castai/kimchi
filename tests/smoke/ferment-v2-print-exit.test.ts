@@ -51,7 +51,7 @@ it("recovers from malformed evaluation, completes headless, and delivers the eva
 				{
 					match: isFermentV2EvaluatorRequest,
 					stream: [
-						'{"verdict":"met","checks":[{"kind":"final_answer","requirement":"reply exactly NO_TODO_DRAFT","met":true,"failureMode":"the answer could contain extra text","candidateRef":"last_assistant","observedAnswer":"NO_TODO_DRAFT","evidence":[]}],"reason":"ready"}',
+						'{"verdict":"met","checks":[{"kind":"final_answer","requirement":"reply exactly NO_TODO_DRAFT","met":true,"failureMode":"the answer could contain extra text","candidateRef":"last_assistant","observedAnswer":"NO_TODO_DRAFT","expectedAnswer":"NO_TODO_DRAFT","evidence":[]}],"reason":"ready"}',
 					],
 				},
 				{ stream: ["\n\nNO_TODO_DRAFT\n"] },
