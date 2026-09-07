@@ -2,7 +2,11 @@ import type { Api, Model } from "@earendil-works/pi-ai"
 import type { ModelRegistry } from "@earendil-works/pi-coding-agent"
 import { splitModelRef } from "../model-catalog/ref-utils.js"
 
-export const DEFAULT_CLASSIFIER_CANDIDATE_REFS = ["kimchi-dev/deepseek-v4-flash-0731", "kimchi-dev/minimax-m3"] as const
+export const DEFAULT_CLASSIFIER_CANDIDATE_REFS = [
+	"kimchi-dev/deepseek-v4-flash-0731",
+	"kimchi-dev/glm-5.3-flash",
+	"kimchi-dev/minimax-m3",
+] as const
 
 /** The only classifier seam that knows the catalog's model preferences. */
 export function resolveClassifierCandidates(registry: Pick<ModelRegistry, "find">): {
