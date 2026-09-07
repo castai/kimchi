@@ -50,6 +50,8 @@ import { isRawInputCaptureActive } from "../shared-input.js"
 import { markHarnessSteer } from "../steer-marker.js"
 import { TODO_TOOL_NAMES } from "../todos/tool.js"
 import { classifyToolCall } from "./classifier.js"
+import { classifierHealth } from "./classifier-health.js"
+import { resolveClassifierCandidates } from "./classifier-models.js"
 import { registerCommands } from "./commands.js"
 import { type LoadedConfig, loadConfig } from "./config.js"
 import { BUILTIN_DENY, DEFAULT_CONFIG, PERMISSION_MODES_WITH_META as MODES, PERMISSIONS_ENV_KEY } from "./constants.js"
@@ -249,6 +251,7 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 	})
 
 	const session = new SessionMemory()
+	const classifierWarnings = new Set<string>()
 	const builtinRules: Rule[] = parseRules(BUILTIN_DENY, "deny", "builtin")
 	// Base KIMCHI_PERMISSIONS env var used as a launch-time default. Subagent
 	// inheritance is handled separately in session_start via the parent session's
@@ -489,6 +492,7 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 	}
 
 	pi.on("session_start", async (_event, ctx) => {
+		classifierWarnings.clear()
 		currentCtx = ctx
 		cliMode = undefined
 		activePlanSlug = undefined
@@ -1147,12 +1151,25 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 			// through the classifier; prompts without a frontend fail closed.
 			const promptAvailable = canPrompt(ctx)
 			if (mode === "auto" || !promptAvailable) {
+				const { candidates, missingRefs } = resolveClassifierCandidates(ctx.modelRegistry)
 				const verdict = await classifyToolCall(
+					candidates,
 					ctx.modelRegistry,
 					{ toolName, input, cwd: ctx.cwd },
-					{ timeoutMs: loaded.config.classifierTimeoutMs },
+					{
+						timeoutMs: loaded.config.classifierTimeoutMs,
+						maxTotalMs: loaded.config.classifierMaxTotalMs,
+					},
 					ctx.signal,
 				)
+				const health = classifierHealth(verdict, candidates, missingRefs, ctx.signal)
+				if (health) {
+					pi.events.emit(health.channel, health.payload)
+					if (ctx.hasUI && !classifierWarnings.has(health.channel)) {
+						classifierWarnings.add(health.channel)
+						ctx.ui.notify(health.message, "warning")
+					}
+				}
 
 				if (verdict.verdict === "safe") return undefined
 				if (!promptAvailable) {

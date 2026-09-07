@@ -13,6 +13,7 @@ import { FermentEventStore } from "../../ferment/event-store.js"
 import { registerAcpPrompter, unregisterAcpPrompter } from "../../modes/acp/permission-prompter-registry.js"
 import { createExtensionApi } from "../__mocks__/extension-api.js"
 import { createMiniEventBus } from "../__mocks__/mini-event-bus.js"
+import { createModel, createModelRegistry } from "../__mocks__/model-registry.js"
 import { runAsAgentWorker } from "../agent-worker-context.js"
 import { PARENT_SESSION_ID_ENV_KEY } from "../agents/manager/constants.js"
 import { FERMENT_TOOLS } from "../ferment/tool-names.js"
@@ -21,11 +22,13 @@ import { buildSystemPrompt, type EnvironmentInfo } from "../prompt-construction/
 import { createToolVisibility } from "../prompt-construction/tool-visibility.js"
 import { TODO_TOOL_NAMES } from "../todos/tool.js"
 import { classifyToolCall } from "./classifier.js"
+import { DEFAULT_CLASSIFIER_CANDIDATE_REFS, resolveClassifierCandidates } from "./classifier-models.js"
 import { PERMISSIONS_ENV_KEY } from "./constants.js"
 import permissionsExtension, { checkCompoundCommand, handleCompoundConfirm, notifyFermentActive } from "./index.js"
 import { PERMISSION_MODE_SESSION_ENTRY_TYPE } from "./mode.js"
 import { getPermissionMode } from "./mode-controller.js"
 import { unregisterSessionPermissionFlagController } from "./mode-controller-registry.js"
+import { PERMISSION_EVENTS } from "./permissions-events.js"
 import { SessionMemory } from "./session-memory.js"
 import type { PermissionModeState, Rule } from "./types.js"
 
@@ -44,7 +47,24 @@ vi.mock("./classifier.js", async () => {
 	const actual = await vi.importActual<typeof import("./classifier.js")>("./classifier.js")
 	return {
 		...actual,
-		classifyToolCall: vi.fn(async () => ({ verdict: "safe", riskScore: "low", reason: "mock safe" })),
+		classifyToolCall: vi.fn(async () => ({
+			verdict: "safe",
+			riskScore: "low",
+			reason: "mock safe",
+			ok: true,
+			usedModelId: "deepseek-v4-flash-0731",
+		})),
+	}
+})
+
+vi.mock("./classifier-models.js", async (importOriginal) => {
+	const actual = await importOriginal<typeof import("./classifier-models.js")>()
+	return {
+		...actual,
+		resolveClassifierCandidates: vi.fn(() => ({
+			candidates: [createModel("deepseek-v4-flash-0731"), createModel("minimax-m3")],
+			missingRefs: [],
+		})),
 	}
 })
 
@@ -131,20 +151,15 @@ function createMockContext(
 }
 
 function createClassifierContext(): ExtensionContext {
-	// Expose the deterministic classifier models so resolveClassifierModels
-	// finds both primary (deepseek-v4-flash) and fallback (minimax-m3).
-	const primaryModel = { provider: "test-provider", id: "deepseek-v4-flash" }
-	const fallbackModel = { provider: "test-provider", id: "minimax-m3" }
+	const primaryModel = createModel("deepseek-v4-flash-0731")
+	const fallbackModel = createModel("minimax-m3")
 	const model = primaryModel
 	return {
 		...createMockContext([]),
 		hasUI: false,
 		cwd: "/test",
 		model,
-		modelRegistry: {
-			getAvailable: vi.fn(() => [primaryModel, fallbackModel]),
-			find: vi.fn(() => primaryModel),
-		},
+		modelRegistry: createModelRegistry([primaryModel, fallbackModel]),
 	} as unknown as ExtensionContext
 }
 
@@ -217,6 +232,128 @@ function createPermissionsHarness(
 		},
 	}
 }
+
+describe("classifier health reporting", () => {
+	const event = {
+		type: "tool_call",
+		toolCallId: "health-call",
+		toolName: "bash",
+		input: { command: "touch SENTINEL_SECRET" },
+	}
+	const unavailable = {
+		verdict: "requires-confirmation",
+		ok: false,
+		reason: "SENTINEL_SECRET",
+		failureCode: "no_candidates",
+	} as const
+	const degraded = { verdict: "safe", ok: true, reason: "SENTINEL_SECRET", usedModelId: "minimax-m3" } as const
+
+	beforeEach(() => {
+		vi.mocked(classifyToolCall).mockClear()
+	})
+
+	it("warns once per session for missing models and emits only structured unavailable events", async () => {
+		const harness = createPermissionsHarness(["bash"], { auto: true })
+		const ctx = { ...createClassifierContext(), hasUI: true }
+		const emissions = vi.fn()
+		harness.pi.events.on(PERMISSION_EVENTS.CLASSIFIER_UNAVAILABLE, emissions)
+		const degradedEvents = vi.fn()
+		harness.pi.events.on(PERMISSION_EVENTS.CLASSIFIER_DEGRADED, degradedEvents)
+		await harness.fire("session_start", {}, ctx)
+		vi.mocked(ctx.ui.notify).mockClear()
+		for (let i = 0; i < 2; i++) {
+			vi.mocked(resolveClassifierCandidates).mockReturnValueOnce({
+				candidates: [],
+				missingRefs: [...DEFAULT_CLASSIFIER_CANDIDATE_REFS],
+			})
+			vi.mocked(classifyToolCall).mockResolvedValueOnce(unavailable)
+			await harness.fire("tool_call", event, ctx)
+		}
+		expect(emissions).toHaveBeenCalledTimes(2)
+		expect(emissions).toHaveBeenLastCalledWith({
+			failureCode: "no_candidates",
+			missingRefs: [...DEFAULT_CLASSIFIER_CANDIDATE_REFS],
+		})
+		expect(degradedEvents).not.toHaveBeenCalled()
+		expect(ctx.ui.notify).toHaveBeenCalledTimes(1)
+		expect(JSON.stringify([emissions.mock.calls, vi.mocked(ctx.ui.notify).mock.calls])).not.toContain("SENTINEL_SECRET")
+		await harness.fire("session_start", {}, ctx)
+		vi.mocked(ctx.ui.notify).mockClear()
+		vi.mocked(classifyToolCall).mockResolvedValueOnce(unavailable)
+		await harness.fire("tool_call", event, ctx)
+		expect(ctx.ui.notify).toHaveBeenCalledTimes(1)
+	})
+
+	it("warns once for fallback and allows escalation to unavailable", async () => {
+		const harness = createPermissionsHarness(["bash"], { auto: true })
+		const ctx = { ...createClassifierContext(), hasUI: true }
+		const emissions = vi.fn()
+		harness.pi.events.on(PERMISSION_EVENTS.CLASSIFIER_DEGRADED, emissions)
+		await harness.fire("session_start", {}, ctx)
+		vi.mocked(ctx.ui.notify).mockClear()
+		for (const result of [degraded, degraded, unavailable]) {
+			vi.mocked(classifyToolCall).mockResolvedValueOnce(result)
+			await harness.fire("tool_call", event, ctx)
+		}
+		expect(emissions).toHaveBeenCalledTimes(2)
+		expect(emissions).toHaveBeenLastCalledWith({ usedModelId: "minimax-m3", missingRefs: [] })
+		expect(ctx.ui.notify).toHaveBeenCalledTimes(2)
+	})
+
+	it("does not let cancellation consume the unavailable warning", async () => {
+		const harness = createPermissionsHarness(["bash"], { auto: true })
+		const ctx = { ...createClassifierContext(), hasUI: true }
+		const emissions = vi.fn()
+		harness.pi.events.on(PERMISSION_EVENTS.CLASSIFIER_UNAVAILABLE, emissions)
+		await harness.fire("session_start", {}, ctx)
+		vi.mocked(ctx.ui.notify).mockClear()
+		vi.mocked(classifyToolCall).mockResolvedValueOnce({
+			...unavailable,
+			reason: "classifier aborted",
+			failureCode: "aborted",
+		})
+		await harness.fire("tool_call", event, ctx)
+		expect(emissions).not.toHaveBeenCalled()
+		expect(ctx.ui.notify).not.toHaveBeenCalled()
+		vi.mocked(classifyToolCall).mockResolvedValueOnce(unavailable)
+		await harness.fire("tool_call", event, ctx)
+		expect(emissions).toHaveBeenCalledTimes(1)
+		expect(ctx.ui.notify).toHaveBeenCalledTimes(1)
+	})
+
+	it("emits headless failures without UI notifications and blocks the call", async () => {
+		const harness = createPermissionsHarness(["bash"], { auto: true })
+		const ctx = createClassifierContext()
+		const emissions = vi.fn()
+		harness.pi.events.on(PERMISSION_EVENTS.CLASSIFIER_UNAVAILABLE, emissions)
+		await harness.fire("session_start", {}, ctx)
+		vi.mocked(ctx.ui.notify).mockClear()
+		vi.mocked(classifyToolCall).mockResolvedValueOnce(unavailable)
+		expect(await harness.fire("tool_call", event, ctx)).toMatchObject({ block: true })
+		expect(emissions).toHaveBeenCalledTimes(1)
+		expect(ctx.ui.notify).not.toHaveBeenCalled()
+	})
+
+	it.each([
+		undefined,
+		9000,
+	])("passes the default or configured total budget (%s) without warning on healthy success", async (budget) => {
+		const dir = mkdtempSync(join(tmpdir(), "classifier-config-"))
+		try {
+			const path = join(dir, "permissions.json")
+			writeFileSync(path, JSON.stringify({ classifierMaxTotalMs: budget }))
+			const harness = createPermissionsHarness(["bash"], { auto: true, "permissions-config": path })
+			const ctx = { ...createClassifierContext(), hasUI: true }
+			await harness.fire("session_start", {}, ctx)
+			vi.mocked(ctx.ui.notify).mockClear()
+			expect(await harness.fire("tool_call", event, ctx)).toBeUndefined()
+			expect(vi.mocked(classifyToolCall).mock.calls[0]?.[3]).toEqual({ timeoutMs: 8000, maxTotalMs: budget ?? 25000 })
+			expect(ctx.ui.notify).not.toHaveBeenCalled()
+		} finally {
+			rmSync(dir, { recursive: true, force: true })
+		}
+	})
+})
 
 describe("permissions plan-mode tool visibility", () => {
 	afterEach(() => {
@@ -1152,7 +1289,7 @@ describe("permissions internal tool classification", () => {
 
 		expect(result).toBeUndefined()
 		expect(classifyToolCall).toHaveBeenCalledTimes(1)
-		expect(vi.mocked(classifyToolCall).mock.calls[0]?.[1]).toMatchObject({
+		expect(vi.mocked(classifyToolCall).mock.calls[0]?.[2]).toMatchObject({
 			toolName: "unknown_tool",
 			input: { value: 1 },
 			cwd: "/test",
