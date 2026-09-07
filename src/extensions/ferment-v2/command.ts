@@ -1,6 +1,6 @@
-import { truncateToWidth } from "@earendil-works/pi-tui"
 import { formatCount } from "../format.js"
 import { FERMENT_V2_COMMAND_NAME } from "./constants.js"
+import { deriveFermentV2Name } from "./name.js"
 import type { SessionFermentV2 } from "./types.js"
 
 export type FermentV2Command =
@@ -15,11 +15,12 @@ export const FERMENT_V2_COMMAND_COMPLETIONS = ["edit", "pause", "resume", "clear
 
 export function formatFermentV2Status(fermentV2: SessionFermentV2 | undefined, evaluating = false): string | undefined {
 	if (!fermentV2) return undefined
-	const title = truncateToWidth((fermentV2.presentation?.title ?? fermentV2.objective).replace(/\s+/g, " ").trim(), 44)
+	const title = deriveFermentV2Name(fermentV2.objective, fermentV2.name ?? fermentV2.presentation?.title)
+	const label = fermentV2.presentation?.kind === "approved-plan" ? "Plan execution" : "Ferment V2"
 	const state =
 		fermentV2.status === "active" ? (evaluating ? "checking" : "running") : fermentV2.status.replace("_", " ")
 	const hint = fermentV2.status === "paused" || fermentV2.status === "blocked" ? " · /ferment-v2 resume" : ""
-	return `◈ ${state} · ${title}${hint}`
+	return `◈ ${label}: ${state} · ${title}${hint}`
 }
 
 export function parseFermentV2Command(args: string): FermentV2Command {
@@ -44,11 +45,8 @@ export function formatFermentV2Summary(fermentV2: SessionFermentV2 | undefined, 
 	if (!fermentV2) return `No Ferment V2 is currently set.\nUse /${FERMENT_V2_COMMAND_NAME} <objective> to create one.`
 	const evaluation = fermentV2.lastEvaluation
 	const approvedPlan = fermentV2.presentation?.kind === "approved-plan" ? fermentV2.presentation : undefined
-	const title = approvedPlan
-		? approvedPlan.title.startsWith("Plan:")
-			? approvedPlan.title
-			: `Plan: ${approvedPlan.title}`
-		: "Ferment V2"
+	const name = deriveFermentV2Name(fermentV2.objective, fermentV2.name ?? approvedPlan?.title)
+	const title = `${approvedPlan ? "Plan execution" : "Ferment V2"}: ${name}`
 	return [
 		title,
 		`Status: ${fermentV2.status}`,

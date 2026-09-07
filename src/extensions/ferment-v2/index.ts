@@ -494,11 +494,11 @@ export default function fermentV2Extension(pi: ExtensionAPI): void {
 	}
 
 	function displayName(fermentV2: SessionFermentV2 | undefined): string {
-		return fermentV2?.presentation?.kind === "approved-plan" ? "Approved plan" : "Ferment V2"
+		return fermentV2?.presentation?.kind === "approved-plan" ? "Plan execution" : "Ferment V2"
 	}
 
 	function displayObjectName(fermentV2: SessionFermentV2 | undefined): string {
-		return fermentV2?.presentation?.kind === "approved-plan" ? "approved plan run" : "Ferment V2"
+		return fermentV2?.presentation?.kind === "approved-plan" ? "plan execution" : "Ferment V2"
 	}
 
 	function fermentV2ToolsAvailable(fermentV2ToolNames: readonly string[] = [UPDATE_FERMENT_V2_TOOL_NAME]): boolean {
@@ -1031,8 +1031,8 @@ export default function fermentV2Extension(pi: ExtensionAPI): void {
 				ctx.ui.notify(
 					approvedPlan
 						? captured
-							? "Approved plan replaced."
-							: "Approved plan started."
+							? "Plan execution replaced."
+							: "Plan execution started."
 						: captured
 							? "Ferment V2 replaced."
 							: "Ferment V2 created.",

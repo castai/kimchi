@@ -10,6 +10,7 @@ test.use(TUI_TEST_CONFIG)
 const COMPACTION_SUMMARY_MARKER = "FERMENT_V2_COMPACTION_SUMMARY"
 
 test("stopping a run preserves a paused goal that can be edited, resumed and cleared", async ({ terminal }) => {
+	const objective = "Build a complete OAuth login and account linking migration with rollout safeguards"
 	await runKimchiSession(
 		terminal,
 		{
@@ -32,14 +33,14 @@ test("stopping a run preserves a paused goal that can be edited, resumed and cle
 			],
 		},
 		async (fixture, trace) => {
-			terminal.submit("/ferment-v2 original work")
-			await waitForChatRequest(fixture.fake.requests, 1)
-			await waitForText(terminal, "◈ running · original work", { timeoutMs: 5_000 })
+			terminal.submit(`/ferment-v2 ${objective}`)
+			expect(fermentV2Snapshot(await waitForChatRequest(fixture.fake.requests, 1))).toMatchObject({ objective })
+			await waitForText(terminal, "◈ Ferment V2: running · Build a complete OAuth login and", { timeoutMs: 5_000 })
 			terminal.keyCtrlC()
-			await waitForText(terminal, "◈ paused · original work", { timeoutMs: 5_000 })
-			trace.step("Ctrl+C paused the running goal")
+			await waitForText(terminal, "◈ Ferment V2: paused · Build a complete OAuth login and", { timeoutMs: 5_000 })
+			trace.step("the short name survives pausing while the model receives the complete objective")
 			terminal.submit("/ferment-v2 edit finish authenticated setup")
-			await waitForText(terminal, "◈ paused · finish authenticated setup", { timeoutMs: 5_000 })
+			await waitForText(terminal, "◈ Ferment V2: paused · finish authenticated setup", { timeoutMs: 5_000 })
 			expect(chatRequests(fixture.fake.requests)).toHaveLength(1)
 			trace.step("editing while paused did not start work")
 			terminal.submit("/ferment-v2 resume")
@@ -48,7 +49,7 @@ test("stopping a run preserves a paused goal that can be edited, resumed and cle
 				objective: "finish authenticated setup",
 				status: "active",
 			})
-			await waitForText(terminal, "◈ blocked · finish authenticated setup", { timeoutMs: 5_000 })
+			await waitForText(terminal, "◈ Ferment V2: blocked · finish authenticated setup", { timeoutMs: 5_000 })
 			trace.step("resume used the new objective and surfaced its blockage")
 			terminal.submit("/ferment-v2 clear")
 			await waitForText(terminal, "Ferment V2 cleared.", { timeoutMs: 5_000 })

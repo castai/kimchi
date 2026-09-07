@@ -63,19 +63,19 @@ describe("Ferment V2 command", () => {
 			presentation: { kind: "approved-plan", title: "Cache Layer", planPath: "/tmp/cache-layer.md" },
 		})
 
-		expect(manual.startsWith("Ferment V2\n")).toBe(true)
-		expect(automatic).toContain("Plan: Cache Layer")
+		expect(manual.startsWith("Ferment V2: ship it\n")).toBe(true)
+		expect(automatic).toContain("Plan execution: Cache Layer")
 		expect(automatic).toContain("Commands: /ferment-v2 edit, /ferment-v2 pause, /ferment-v2 clear")
 	})
 
 	it("shows the run state and resume hint without adding a prompt decoration", () => {
 		expect(formatFermentV2Status(undefined)).toBeUndefined()
-		expect(formatFermentV2Status(fermentV2("active"))).toBe("◈ running · ship it")
-		expect(formatFermentV2Status(fermentV2("active"), true)).toBe("◈ checking · ship it")
-		expect(formatFermentV2Status(fermentV2("paused"), true)).toBe("◈ paused · ship it · /ferment-v2 resume")
-		expect(formatFermentV2Status(fermentV2("blocked"))).toBe("◈ blocked · ship it · /ferment-v2 resume")
-		expect(formatFermentV2Status(fermentV2("complete"))).toBe("◈ complete · ship it")
-		expect(formatFermentV2Status(fermentV2("budget_limited"))).toBe("◈ budget limited · ship it")
+		expect(formatFermentV2Status(fermentV2("active"))).toBe("◈ Ferment V2: running · ship it")
+		expect(formatFermentV2Status(fermentV2("active"), true)).toBe("◈ Ferment V2: checking · ship it")
+		expect(formatFermentV2Status(fermentV2("paused"), true)).toBe("◈ Ferment V2: paused · ship it · /ferment-v2 resume")
+		expect(formatFermentV2Status(fermentV2("blocked"))).toBe("◈ Ferment V2: blocked · ship it · /ferment-v2 resume")
+		expect(formatFermentV2Status(fermentV2("complete"))).toBe("◈ Ferment V2: complete · ship it")
+		expect(formatFermentV2Status(fermentV2("budget_limited"))).toBe("◈ Ferment V2: budget limited · ship it")
 	})
 
 	it("shows evaluation details only in the full command summary", () => {
@@ -93,6 +93,16 @@ describe("Ferment V2 command", () => {
 			"Evaluations: 2\nLast evaluation: continue — missing smoke test",
 		)
 		expect(formatFermentV2Accounting(evaluated)).toBe("<1m · 1.5k tokens")
+	})
+
+	it("shows a bounded name in the footer and the complete objective in the summary", () => {
+		const objective =
+			"Implement a streaming parser with incremental input and preserve every existing API and test case"
+		const run = { ...fermentV2("active"), objective }
+		const status = formatFermentV2Status(run)
+		expect(status).toBe("◈ Ferment V2: running · Implement a streaming parser with")
+		expect(formatFermentV2Summary(run)).toContain(`Objective: ${objective}`)
+		expect(formatFermentV2Status({ ...run, name: "Streaming parser" })).toBe("◈ Ferment V2: running · Streaming parser")
 	})
 
 	it("shows the persisted blocked reason", () => {

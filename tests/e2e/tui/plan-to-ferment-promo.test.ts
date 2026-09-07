@@ -221,7 +221,7 @@ test("plan-to-ferment promotion — side effects: plan file written + tool swap 
 
 test("approved plan Execute starts a neutral named Ferment V2 run when enabled", async ({ terminal }) => {
 	const planText =
-		"## Goal\nImplement a streaming think parser.\n\n" +
+		"# Streaming parser\n\n## Goal\nImplement a streaming think parser with incremental input and existing API compatibility.\n\n" +
 		"## Constraints\n- Preserve the existing parser API\n\n" +
 		"## Verification Strategy\nRun the parser tests.\n"
 
@@ -271,18 +271,20 @@ test("approved plan Execute starts a neutral named Ferment V2 run when enabled",
 			trace.step("submit_plan opened the approval menu")
 
 			terminal.keyPress(Key.Enter)
-			await waitForText(terminal, "Approved plan started.", { timeoutMs: STREAM_TIMEOUT_MS })
-			await waitForText(terminal, "◈ running · Implement a streaming think parser.", { timeoutMs: STREAM_TIMEOUT_MS })
+			await waitForText(terminal, "Plan execution started.", { timeoutMs: STREAM_TIMEOUT_MS })
+			await waitForText(terminal, "◈ Plan execution: running · Streaming parser", {
+				timeoutMs: STREAM_TIMEOUT_MS,
+			})
 			trace.step("execute selected and neutral approved-plan run started")
 
 			const snapshot = fermentV2Snapshot(await waitForChatRequest(fixture.fake.requests, 2))
-			const planPath = join(realpathSync(fixture.workDir), ".kimchi", "plans", "implement-a-streaming-think-parser.md")
+			const planPath = join(realpathSync(fixture.workDir), ".kimchi", "plans", "streaming-parser.md")
 			expect(snapshot).toMatchObject({
-				objective: `Read the approved plan at "${planPath}" before continuing.\nExecute and verify every requirement in that plan.`,
+				objective: `Implement the approved plan at "${planPath}".\nRead it first, complete its requirements, and verify the result.`,
 				status: "active",
 			})
 			expect(readFileSync(planPath, "utf-8")).toBe(planText)
-			await waitForText(terminal, "Approved plan blocked.", { timeoutMs: STREAM_TIMEOUT_MS })
+			await waitForText(terminal, "Plan execution blocked.", { timeoutMs: STREAM_TIMEOUT_MS })
 			expect(fullText(terminal)).not.toContain("Ferment V2 created.")
 			trace.step("model request carried the saved-plan objective and the terminal stayed neutral")
 		},
@@ -324,7 +326,7 @@ test("disabled Ferment V2 keeps approved-plan Execute on the legacy path", async
 			expect(JSON.stringify(requests)).not.toContain("kimchi_session_ferment_v2")
 			expect(JSON.stringify(requests)).not.toContain('"name":"update_ferment_v2"')
 			expect(fullText(terminal)).not.toContain("◈")
-			expect(fullText(terminal)).not.toContain("Approved plan started.")
+			expect(fullText(terminal)).not.toContain("Plan execution started.")
 			trace.step("legacy execution continued with no V2 tools, context, or footer")
 		},
 	)
@@ -345,7 +347,7 @@ test("enabling automatic plan execution leaves ordinary no-plan work untouched",
 				timeoutMs: STREAM_TIMEOUT_MS,
 			})
 
-			expect(fullText(terminal)).not.toContain("Approved plan started.")
+			expect(fullText(terminal)).not.toContain("Plan execution started.")
 			expect(existsSync(join(fixture.workDir, ".kimchi", "plans"))).toBe(false)
 			expect(chatRequests(fixture.fake.requests)).toHaveLength(1)
 			expect(JSON.stringify(chatRequests(fixture.fake.requests)[0]?.body)).not.toContain("<kimchi_session_ferment_v2>")

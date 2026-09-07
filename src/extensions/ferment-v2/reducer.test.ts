@@ -18,6 +18,43 @@ const T1 = "2026-07-16T10:00:00.000Z"
 const T2 = "2026-07-16T10:01:00.000Z"
 
 describe("Ferment V2 reducer", () => {
+	it("assigns a short plan name without shortening the execution objective", () => {
+		const objective =
+			"Implement every requirement from the approved plan and verify the complete migration without changing the public API."
+		const presentation = { kind: "approved-plan" as const, title: "Cache migration", planPath: "/tmp/cache-plan.md" }
+		const run = createFermentV2(undefined, objective, "named-plan", T1, undefined, presentation)
+		expect(run.name).toBe("Cache migration")
+		expect(run.objective).toBe(objective)
+		expect(restoreFermentV2([putFermentV2Entry(run)])).toEqual(run)
+	})
+
+	it("names direct runs locally and refreshes the name when the objective changes", () => {
+		const objective = "Build a complete OAuth login and account linking migration with rollout safeguards"
+		const run = createFermentV2(undefined, objective, "named-run", T1)
+		expect(run.name).toBe("Build a complete OAuth login and")
+		expect(run.objective).toBe(objective)
+		const edited = editFermentV2(run, run.id, 1, "# Cache migration\n\nVerify every requirement.", T2)
+		expect(edited.name).toBe("Cache migration")
+		expect(restoreFermentV2([putFermentV2Entry(edited)])?.name).toBe("Cache migration")
+	})
+
+	it("derives a short name for old journals and ignores malformed cosmetic names", () => {
+		const run = createFermentV2(undefined, "Verify the cache migration", "legacy-run", T1)
+		for (const name of [undefined, null, 42, "  "]) {
+			const restored = restoreFermentV2([{ ...putFermentV2Entry(run), fermentV2: { ...run, name } }])
+			expect(restored?.name).toBe("Verify the cache migration")
+			expect(restored?.objective).toBe(run.objective)
+		}
+	})
+
+	it("bounds long names and falls back when an objective contains only quotes", () => {
+		const run = replaceFermentV2("x".repeat(100), "long-run", T1)
+		expect(run.name).toBe(`${"x".repeat(35)}…`)
+		expect(run.objective).toHaveLength(100)
+		expect(replaceFermentV2('""', "empty-name", T1).name).toBe("Untitled run")
+		expect(replaceFermentV2("## Goal\nCache migration\n", "goal-name", T1).name).toBe("Cache migration")
+	})
+
 	it("creates revision one and preserves meaningful internal whitespace", () => {
 		const fermentV2 = createFermentV2(undefined, "  first line\n\n  second line  ", "ferment-v2-a", T1)
 
@@ -26,6 +63,7 @@ describe("Ferment V2 reducer", () => {
 			id: "ferment-v2-a",
 			revision: 1,
 			objective: "first line\n\n  second line",
+			name: "first line second line",
 			status: "active",
 			tokensUsed: 0,
 			timeUsedMs: 0,

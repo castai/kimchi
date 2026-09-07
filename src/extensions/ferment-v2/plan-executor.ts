@@ -38,8 +38,8 @@ export function getFermentV2PlanExecutor(pi: ExtensionAPI): FermentV2PlanExecuto
 
 export function buildApprovedPlanObjective(planPath: string | undefined, planText: string): string {
 	return planPath
-		? `Read the approved plan at "${planPath}" before continuing.\nExecute and verify every requirement in that plan.`
-		: `Execute and verify the approved plan below.\n\n${planText.trim()}`
+		? `Implement the approved plan at "${planPath}".\nRead it first, complete its requirements, and verify the result.`
+		: `Implement this approved plan, complete its requirements, and verify the result.\n\n${planText.trim()}`
 }
 
 function isFermentV2PlanExecutorLookup(value: unknown): value is FermentV2PlanExecutorLookup {

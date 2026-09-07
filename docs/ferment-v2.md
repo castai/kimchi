@@ -44,7 +44,7 @@ Editing a paused run leaves it paused. Editing a completed run reopens it as pau
 
 With V2 enabled, approving a plan with **Execute** starts the same persistent controller and switches Plan to Auto. The initial objective references the saved approved plan, or uses its Markdown if saving failed. With V2 disabled, approval retains the legacy execution path.
 
-The footer displays `◈ running · <plan title or objective>`, changes to `checking` during evaluation, and shows paused, blocked, complete, or budget-limited state. Narrow terminals shorten it to the state; `/ferment-v2` shows full details. There is no extra plan title or gradient in the prompt editor.
+The footer displays `◈ Plan execution: running · <name>` for approved plans and `◈ Ferment V2: running · <name>` for direct objectives. Each run gets a persisted name from the plan heading or objective, limited to six words and 36 display columns without another model request. Editing the objective refreshes its name; older sessions derive one on replay. The full objective and approved plan remain unchanged for execution and are available through `/ferment-v2` and the saved plan file. The footer changes to `checking` during evaluation and shows paused, blocked, complete, or budget-limited state. Narrow terminals shorten it to the state. There is no extra plan title or gradient in the prompt editor.
 
 The optional Plannotator adapter feeds the same approval path. It does not install Plannotator: without the external extension, use the TUI review popup. Browser results must match the current review ID; an old browser tab cannot approve a newer plan. The first decision from either surface wins.
 

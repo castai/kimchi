@@ -34,6 +34,7 @@ export interface SessionFermentV2 {
 	id: string
 	revision: number
 	objective: string
+	name?: string
 	status: FermentV2Status
 	presentation?: FermentV2Presentation
 	blockedReason?: string

@@ -288,10 +288,10 @@ describe("Ferment V2 extension", () => {
 			customType: FERMENT_V2_CONTROL_MESSAGE_TYPE,
 			details: expect.objectContaining({ source: "approved_plan" }),
 		})
-		expect(harness.ui.notify).toHaveBeenLastCalledWith("Approved plan started.", "info")
+		expect(harness.ui.notify).toHaveBeenLastCalledWith("Plan execution started.", "info")
 		expect(JSON.stringify(harness.ui.notify.mock.calls)).not.toMatch(/ferment[- ]v2/i)
 		expect(JSON.stringify(harness.ui.confirm.mock.calls)).not.toMatch(/ferment[- ]v2/i)
-		expect(harness.ui.setStatus).toHaveBeenLastCalledWith("ferment-v2", "◈ running · Cache plan")
+		expect(harness.ui.setStatus).toHaveBeenLastCalledWith("ferment-v2", "◈ Plan execution: running · Cache plan")
 	})
 
 	it("fails an automatic approved-plan start silently when its required tools are unavailable", async () => {
@@ -329,7 +329,7 @@ describe("Ferment V2 extension", () => {
 
 		harness.ui.setStatus.mockClear()
 		await harness.fire("session_tree", { type: "session_tree" })
-		expect(harness.ui.setStatus).toHaveBeenLastCalledWith("ferment-v2", "◈ running · Cache plan")
+		expect(harness.ui.setStatus).toHaveBeenLastCalledWith("ferment-v2", "◈ Plan execution: running · Cache plan")
 
 		harness.setBranch([])
 		await harness.fire("session_tree", { type: "session_tree" })
@@ -366,6 +366,10 @@ describe("Ferment V2 extension", () => {
 		expect(harness.ui.notify).toHaveBeenLastCalledWith("Current run kept.", "info")
 		expect(JSON.stringify(harness.ui.notify.mock.calls.slice(1))).not.toMatch(/ferment[- ]v2/i)
 		expect(JSON.stringify(harness.ui.confirm.mock.calls)).not.toMatch(/ferment[- ]v2/i)
+
+		harness.ui.confirm.mockResolvedValueOnce(true)
+		await executor({ objective: "replacement", title: "Replacement plan", planText: "# Replacement plan" }, harness.ctx)
+		expect(harness.ui.notify).toHaveBeenLastCalledWith("Plan execution replaced.", "info")
 	})
 
 	it.each([true, false])("lets an explicit edit replace the approved plan objective (saved=%s)", async (saved) => {
@@ -390,7 +394,7 @@ describe("Ferment V2 extension", () => {
 		expect(harness.currentFermentV2()).not.toHaveProperty("presentation")
 		expect(harness.ui.setStatus).toHaveBeenLastCalledWith(
 			"ferment-v2",
-			"◈ paused · Only verify the new requirement. · /ferment-v2 resume",
+			"◈ Ferment V2: paused · Only verify the new requirement. · /ferment-v2 resume",
 		)
 		const before = harness.sendMessage.mock.calls.length
 		await harness.fire("session_tree", { type: "session_tree" })

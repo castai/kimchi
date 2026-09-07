@@ -1,3 +1,4 @@
+import { deriveFermentV2Name } from "./name.js"
 import {
 	FERMENT_V2_COMPLETION_CONFIDENCES,
 	FERMENT_V2_EVALUATION_VERDICTS,
@@ -55,10 +56,12 @@ export function editFermentV2(
 		presentation: _presentation,
 		...editable
 	} = current
+	const nextObjective = normalizeObjective(objective)
 	return {
 		...editable,
 		revision: current.revision + 1,
-		objective: normalizeObjective(objective),
+		objective: nextObjective,
+		name: deriveFermentV2Name(nextObjective),
 		status: current.status === "complete" ? "paused" : current.status,
 		updatedAt: now,
 	}
@@ -225,11 +228,13 @@ function newFermentV2(
 	if (tokenBudget !== undefined && !isPositiveInteger(tokenBudget)) {
 		throw new Error("Ferment V2 token budget must be a positive integer.")
 	}
+	const normalizedObjective = normalizeObjective(objective)
 	return {
 		schemaVersion: 1,
 		id,
 		revision: 1,
-		objective: normalizeObjective(objective),
+		objective: normalizedObjective,
+		name: deriveFermentV2Name(normalizedObjective, presentation?.title),
 		status: "active",
 		tokensUsed: 0,
 		...(presentation ? { presentation } : {}),
@@ -296,6 +301,7 @@ function parseFermentV2(value: unknown): SessionFermentV2 | undefined {
 		id: value.id,
 		revision: value.revision,
 		objective: value.objective,
+		name: deriveFermentV2Name(value.objective, isNonEmptyString(value.name) ? value.name : presentation?.title),
 		status,
 		...(presentation ? { presentation } : {}),
 		...(status === "blocked" && value.blockedReason !== undefined

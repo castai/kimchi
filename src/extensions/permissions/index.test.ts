@@ -723,7 +723,7 @@ describe("plan mode assumption detection", () => {
 					planText: PLAN_V1,
 				})
 				expect(execution.objective).toBe(
-					`Read the approved plan at "${execution.planPath}" before continuing.\nExecute and verify every requirement in that plan.`,
+					`Implement the approved plan at "${execution.planPath}".\nRead it first, complete its requirements, and verify the result.`,
 				)
 				return "started"
 			})
@@ -783,7 +783,7 @@ describe("plan mode assumption detection", () => {
 
 				expect(executions).toEqual([
 					{
-						objective: `Execute and verify the approved plan below.\n\n${PLAN_V1.trim()}`,
+						objective: `Implement this approved plan, complete its requirements, and verify the result.\n\n${PLAN_V1.trim()}`,
 						planPath: undefined,
 					},
 				])
