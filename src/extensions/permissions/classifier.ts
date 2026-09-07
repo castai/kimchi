@@ -42,6 +42,8 @@ export async function classifyToolCall(
 		const reserve =
 			index < candidates.length - 1 && remaining >= 2 * MIN_ATTEMPT_MS ? Math.min(options.timeoutMs, remaining / 2) : 0
 		const candidateDeadline = deadline - reserve
+		// getApiKeyAndHeaders accepts no signal: withinDeadline races it against the
+		// candidate deadline and outer cancellation, and ignores late settlement.
 		const authResult = await withinDeadline(() => modelRegistry.getApiKeyAndHeaders(model), candidateDeadline, signal)
 		if (signal?.aborted || authResult.status === "aborted") return unavailable("classifier aborted", "aborted")
 		if (authResult.status !== "ok" || !authResult.value.ok || !authResult.value.apiKey) {
