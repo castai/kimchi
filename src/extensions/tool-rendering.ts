@@ -23,6 +23,7 @@ import {
 	createLsTool,
 	createReadTool,
 	createWriteTool,
+	getMarkdownTheme,
 	ToolExecutionComponent,
 	UserMessageComponent,
 } from "@earendil-works/pi-coding-agent"
@@ -34,6 +35,7 @@ import {
 	getImageDimensions,
 	type ImageDimensions,
 	imageFallback,
+	Markdown,
 	Text,
 	truncateToWidth,
 	visibleWidth,
@@ -2819,8 +2821,15 @@ function genericToolLabel(name: string): string {
 	return isMcpToolName(name) ? "MCP" : humanizeToolName(name)
 }
 
-function renderGenericToolCall(name: string, args: unknown, theme: Theme, ctx: ToolRenderContext): Text {
+function renderGenericToolCall(name: string, args: unknown, theme: Theme, ctx: ToolRenderContext): Component {
 	ctx.state._openAiPatchFiles = []
+	if (name === "submit_plan") {
+		// The tool call is persisted and replayed; its plan must remain readable even when tools are collapsed.
+		const transcript = new Container()
+		transcript.addChild(new Text(toolHeader("Submit Plan", "", theme, toolStatusDot(ctx, theme)), 0, 0))
+		transcript.addChild(new Markdown(getStringArg(args, "plan"), 0, 0, getMarkdownTheme()))
+		return transcript
+	}
 	const sp = (path: string) => shortPath(ctx.cwd ?? process.cwd(), path)
 	if (isMcpToolName(name)) {
 		// For MCP calls the summary may already contain ANSI color codes (muted

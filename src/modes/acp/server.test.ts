@@ -75,6 +75,7 @@ import {
 import { updateModelsConfig } from "../../models.js"
 import { getAcpPrompter } from "./permission-prompter-registry.js"
 import {
+	ACP_REATTACH_MID_TURN_META_KEY,
 	type AcpSessionFactory,
 	type AcpSessionLister,
 	type AcpSessionLoader,
@@ -6004,6 +6005,67 @@ describe("KimchiAcpAgent loadSession", () => {
 			sessionUpdate: "user_message_chunk",
 			content: { type: "text", text: "already here" },
 		})
+	})
+
+	it("allows loadSession to attach while a turn is in progress (client takeover)", async () => {
+		// Reconnect-after-disconnect attaches mid-turn: replay history and let
+		// the in-flight turn keep streaming to the new client.
+		const live = new FakeAgentSession("live-turn")
+		live.branch = [userTextEntry("earlier", "u1", null)]
+		live.promptImpl = () => new Promise<void>(() => {}) // turn never settles
+		const { conn, updates } = makeRecordingConn()
+		const agent = new KimchiAcpAgent(conn, {
+			extensionFactories: [],
+			agentDir: "/tmp/fake-agent-dir",
+			sessionFactory: async () => asSession(live),
+			sessionLoader: async () => asSession(new FakeAgentSession("unused")),
+		})
+		await agent.newSession({ cwd: "/tmp", mcpServers: [] })
+		// Start a turn that never unwinds (mirrors the post-disconnect wedge).
+		void agent.prompt({
+			sessionId: "live-turn",
+			prompt: [{ type: "text", text: "go" }],
+		})
+		// entry.turn is assigned after an await (skill-command parse) inside
+		// prompt() — give it a macrotask so the turn is firmly in progress.
+		await new Promise((r) => setTimeout(r, 0))
+
+		// Previously this rejected with "has a turn in progress; cancel it first".
+		const res = await agent.loadSession({
+			sessionId: "live-turn",
+			cwd: "/tmp",
+			mcpServers: [],
+			_meta: { [ACP_REATTACH_MID_TURN_META_KEY]: true },
+		})
+
+		expect(res.models).toMatchObject({ currentModelId: "test/test-model" })
+		// History was replayed for the attaching client.
+		const replayUpdates = replayOnly(updates)
+		expect(replayUpdates.some((u) => u.update.sessionUpdate === "user_message_chunk")).toBe(true)
+	})
+
+	it("still rejects mid-turn loadSession without the reattach opt-in flag", async () => {
+		// The strict ACP guard stays the default: clients that don't declare
+		// a takeover get the original error and may cancel the turn first.
+		const live = new FakeAgentSession("guarded-turn")
+		live.promptImpl = () => new Promise<void>(() => {}) // turn never settles
+		const { conn } = makeRecordingConn()
+		const agent = new KimchiAcpAgent(conn, {
+			extensionFactories: [],
+			agentDir: "/tmp/fake-agent-dir",
+			sessionFactory: async () => asSession(live),
+			sessionLoader: async () => asSession(new FakeAgentSession("unused")),
+		})
+		await agent.newSession({ cwd: "/tmp", mcpServers: [] })
+		void agent.prompt({
+			sessionId: "guarded-turn",
+			prompt: [{ type: "text", text: "go" }],
+		})
+		await new Promise((r) => setTimeout(r, 0))
+
+		await expect(agent.loadSession({ sessionId: "guarded-turn", cwd: "/tmp", mcpServers: [] })).rejects.toThrow(
+			"has a turn in progress; cancel it first",
+		)
 	})
 
 	it("returns configOptions in loadSession response", async () => {

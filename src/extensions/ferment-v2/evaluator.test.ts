@@ -1,4 +1,4 @@
-import { mkdtempSync, readdirSync, rmSync } from "node:fs"
+import { mkdirSync, mkdtempSync, readdirSync, realpathSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import type { Api, Model, StopReason } from "@earendil-works/pi-ai"
@@ -88,6 +88,42 @@ describe("Ferment V2 evaluator", () => {
 		const ctx = evaluatorContext()
 		expect(resolveFermentV2EvaluatorModel(ctx)).toEqual(sessionModel)
 		expect(ctx.modelRegistry.find).not.toHaveBeenCalled()
+	})
+
+	it("evaluates managed file requirements without restoring the full text into the objective", async () => {
+		const cwd = realpathSync(mkdtempSync(join(tmpdir(), "kimchi-v2-objective-evaluator-")))
+		try {
+			const path = join(cwd, ".kimchi/plans/12345678-1234-4234-8234-123456789abc-objective.md")
+			mkdirSync(join(cwd, ".kimchi/plans"), { recursive: true })
+			const body = "# Edited requirements\nReturn exactly FILE_REQUIREMENT_OK after verifying the revised task."
+			writeFileSync(path, body)
+			const objective = `Read the Kimchi objective file at ${JSON.stringify(path)} before continuing.`
+			const input = { objective, messages: [], todos: [] }
+			completeMock.mockResolvedValue(assistant('{"verdict":"continue","reason":"Verify the new requirement."}'))
+			await evaluateFermentV2(input, { ...evaluatorContext(), cwd })
+			expect(JSON.stringify(completeMock.mock.calls[0]?.[1])).toContain(body.replace(/\n/g, "\\n"))
+			expect(input.objective).toBe(objective)
+		} finally {
+			rmSync(cwd, { recursive: true, force: true })
+		}
+	})
+
+	it.each(["missing", "empty"])("does not call the evaluator for a %s managed objective file", async (kind) => {
+		const cwd = realpathSync(mkdtempSync(join(tmpdir(), "kimchi-v2-objective-evaluator-")))
+		try {
+			const path = join(cwd, ".kimchi/plans/12345678-1234-4234-8234-123456789abc-objective.md")
+			if (kind === "empty") {
+				mkdirSync(join(cwd, ".kimchi/plans"), { recursive: true })
+				writeFileSync(path, " \n\t")
+			}
+			const objective = `Read the Kimchi objective file at ${JSON.stringify(path)} before continuing.`
+			completeMock.mockResolvedValue(assistant('{"verdict":"impossible","reason":"No evidence."}'))
+			const result = await evaluateFermentV2({ objective, messages: [], todos: [] }, { ...evaluatorContext(), cwd })
+			expect(result).toMatchObject({ verdict: "unavailable", reason: expect.stringMatching(/objective file/i) })
+			expect(completeMock).not.toHaveBeenCalled()
+		} finally {
+			rmSync(cwd, { recursive: true, force: true })
+		}
 	})
 
 	it("uses the judge role in multi-model mode and falls back to the session model", () => {
@@ -321,10 +357,68 @@ describe("Ferment V2 evaluator", () => {
 		).resolves.toMatchObject({ verdict: "met", reason: "tests pass" })
 	})
 
+	it.each([
+		["explanatory prose", "Finding: the file changed.\n\nARTIFACT_ORIGINAL_OK", "ARTIFACT_ORIGINAL_OK", "continue"],
+		["corrected exact draft", "ARTIFACT_ORIGINAL_OK", "ARTIFACT_ORIGINAL_OK", "met"],
+		["non-exact answer", "A useful explanation.", null, "met"],
+		["empty required literal", "Unexpected prose", "", "continue"],
+	] as const)("validates the expected final answer independently of met: %s", async (_case, draft, expectedAnswer, verdict) => {
+		completeMock.mockResolvedValue(
+			assistant(
+				JSON.stringify({
+					verdict: "met",
+					reason: "ready",
+					checks: [
+						{
+							kind: "final_answer",
+							requirement: "Follow the final-response contract",
+							met: true,
+							candidateRef: "last_assistant",
+							observedAnswer: draft,
+							expectedAnswer,
+						},
+					],
+				}),
+			),
+		)
+		const result = await evaluateFermentV2(
+			{
+				objective: "Follow the final-response contract",
+				messages: [transcriptMessage("assistant", [{ type: "text", text: draft }])],
+				todos: [],
+			},
+			evaluatorContext(),
+		)
+		expect(result.verdict).toBe(verdict)
+		if (verdict === "continue") expect(result).not.toHaveProperty("acceptedFinalAnswer")
+		else expect(result).toHaveProperty("acceptedFinalAnswer", draft)
+	})
+
+	it.each([undefined, 42, false, {}])("fails closed for an invalid expectedAnswer: %j", (expectedAnswer) => {
+		expect(
+			parseFermentV2EvaluatorOutput(
+				JSON.stringify({
+					verdict: "met",
+					reason: "ready",
+					checks: [
+						{
+							kind: "final_answer",
+							requirement: "Reply exactly OK",
+							met: true,
+							candidateRef: "last_assistant",
+							observedAnswer: "OK",
+							expectedAnswer,
+						},
+					],
+				}),
+			),
+		).toBeUndefined()
+	})
+
 	it("accepts a final-answer check without tool evidence", async () => {
 		completeMock.mockResolvedValue(
 			assistant(
-				'{"verdict":"met","checks":[{"kind":"work","requirement":"tests pass","met":true,"failureMode":"tests could be skipped; m2 shows they ran","evidence":["m2"]},{"kind":"final_answer","requirement":"reply exactly OK","met":true,"failureMode":"the answer could contain extra text","candidateRef":"last_assistant","observedAnswer":"OK"}],"reason":"ready"}',
+				'{"verdict":"met","checks":[{"kind":"work","requirement":"tests pass","met":true,"failureMode":"tests could be skipped; m2 shows they ran","evidence":["m2"]},{"kind":"final_answer","requirement":"reply exactly OK","met":true,"failureMode":"the answer could contain extra text","candidateRef":"last_assistant","observedAnswer":"OK","expectedAnswer":"OK"}],"reason":"ready"}',
 			),
 		)
 
@@ -355,6 +449,7 @@ describe("Ferment V2 evaluator", () => {
 						{
 							kind: "final_answer",
 							requirement: "reply exactly OK",
+							expectedAnswer: "OK",
 							met: true,
 							failureMode: "the answer could contain extra text",
 							evidence: [],
@@ -403,7 +498,7 @@ describe("Ferment V2 evaluator", () => {
 	it("normalizes nullable optional check fields", () => {
 		expect(
 			parseFermentV2EvaluatorOutput(
-				'{"verdict":"continue","checks":[{"kind":"work","requirement":"tests pass","met":false,"candidateRef":null,"observedAnswer":null,"evidence":[]},{"kind":"final_answer","requirement":"reply exactly OK","met":false,"candidateRef":"last_assistant","observedAnswer":"not OK","evidence":null,"todoIds":null}],"reason":"fix output"}',
+				'{"verdict":"continue","checks":[{"kind":"work","requirement":"tests pass","met":false,"candidateRef":null,"observedAnswer":null,"evidence":[]},{"kind":"final_answer","requirement":"reply exactly OK","met":false,"candidateRef":"last_assistant","observedAnswer":"not OK","expectedAnswer":"OK","evidence":null,"todoIds":null}],"reason":"fix output"}',
 			),
 		).toMatchObject({
 			verdict: "continue",

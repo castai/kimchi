@@ -1,6 +1,6 @@
 import { initTheme, type Theme, ToolExecutionComponent, UserMessageComponent } from "@earendil-works/pi-coding-agent"
-import { Text, visibleWidth } from "@earendil-works/pi-tui"
-import { beforeAll, describe, expect, it } from "vitest"
+import { ProcessTerminal, Text, TuiMainScreen, visibleWidth } from "@earendil-works/pi-tui"
+import { beforeAll, describe, expect, it, vi } from "vitest"
 import { createExtensionApi } from "./__mocks__/extension-api.js"
 import { createToolRenderContext } from "./__mocks__/tool-render-context.js"
 import { FERMENT_V2_TOOL_NAMES } from "./ferment-v2/constants.js"
@@ -217,6 +217,31 @@ describe("hidden tool block rendering", () => {
 		const rendered = component.render(80).map(stripSgr).join("\n")
 		expect(rendered).toContain("Custom Tool")
 		expect(rendered).not.toContain("custom non-Agent renderer")
+	})
+
+	it("keeps complete submitted plans in the transcript before results and after replay or collapse", () => {
+		const plan = `# Cache migration\n\n${Array.from({ length: 80 }, (_, index) => `- Requirement ${index + 1}`).join("\n")}`
+		const args = { plan }
+		const tui = new TuiMainScreen(new ProcessTerminal())
+		vi.spyOn(tui, "requestRender").mockImplementation(() => {})
+		const create = (input: typeof args) =>
+			new ToolExecutionComponent("submit_plan", "tc-plan", input, {}, undefined, tui, "/tmp")
+		const component = create({ plan: "# Draft" })
+		component.updateArgs(args)
+		component.setArgsComplete()
+		for (const current of [component, create(JSON.parse(JSON.stringify(args)))]) {
+			for (const expanded of [false, true, false]) {
+				current.setExpanded(expanded)
+				const rendered = current.render(80).map(stripSgr).join("\n")
+				expect(rendered).toContain("Cache migration")
+				for (let index = 1; index <= 80; index++) expect(rendered).toContain(`Requirement ${index}`)
+			}
+			current.updateResult(
+				{ content: [{ type: "text", text: "Plan submitted for review. Waiting for user decision." }], isError: false },
+				false,
+			)
+			expect(current.render(80).map(stripSgr).join("\n")).toContain("Requirement 80")
+		}
 	})
 })
 
