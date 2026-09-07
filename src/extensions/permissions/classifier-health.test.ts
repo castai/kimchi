@@ -25,6 +25,7 @@ describe("classifierHealth", () => {
 	}) => {
 		expect(classifierHealth({ ...healthy, usedModelId }, candidates, missingRefs)).toMatchObject({
 			channel: PERMISSION_EVENTS.CLASSIFIER_DEGRADED,
+			notifyKey: PERMISSION_EVENTS.CLASSIFIER_DEGRADED,
 			payload: { usedModelId, missingRefs },
 		})
 	})
@@ -70,8 +71,10 @@ describe("classifierHealth", () => {
 	it("selects actionable copy for no_api_key and generic copy otherwise", () => {
 		const noKey = classifierHealth({ ...healthy, ok: false, failureCode: "no_api_key" }, [primary], [])
 		expect(noKey?.message).toContain("KIMCHI_API_KEY")
+		expect(noKey?.notifyKey).toBe(`${PERMISSION_EVENTS.CLASSIFIER_UNAVAILABLE}:no_api_key`)
 		const other = classifierHealth({ ...healthy, ok: false, failureCode: "provider_error" }, [primary], [])
 		expect(other?.message).not.toContain("KIMCHI_API_KEY")
+		expect(other?.notifyKey).toBe(PERMISSION_EVENTS.CLASSIFIER_UNAVAILABLE)
 		expect(other?.message).toBe(
 			"Permissions classifier unavailable. Calls requiring classification need confirmation or are blocked without a UI.",
 		)

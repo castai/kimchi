@@ -11,11 +11,15 @@ type ClassifierHealth =
 			channel: typeof PERMISSION_EVENTS.CLASSIFIER_UNAVAILABLE
 			payload: ClassifierUnavailablePayload
 			message: string
+			/** Dedup key for once-per-session warnings: one per distinct notification copy. */
+			notifyKey: string
 	  }
 	| {
 			channel: typeof PERMISSION_EVENTS.CLASSIFIER_DEGRADED
 			payload: ClassifierDegradedPayload
 			message: string
+			/** Dedup key for once-per-session warnings: one per distinct notification copy. */
+			notifyKey: string
 	  }
 
 /** Keep free-form model/provider diagnostics out of health events and notifications. */
@@ -31,6 +35,11 @@ export function classifierHealth(
 		return {
 			channel: PERMISSION_EVENTS.CLASSIFIER_UNAVAILABLE,
 			payload: { failureCode, missingRefs },
+			// Only no_api_key has distinct copy; other codes share one generic warning.
+			notifyKey:
+				failureCode === "no_api_key"
+					? `${PERMISSION_EVENTS.CLASSIFIER_UNAVAILABLE}:no_api_key`
+					: PERMISSION_EVENTS.CLASSIFIER_UNAVAILABLE,
 			// Fixed copy per failure code; never interpolate free-form diagnostics.
 			message:
 				failureCode === "no_api_key"
@@ -42,6 +51,7 @@ export function classifierHealth(
 		return {
 			channel: PERMISSION_EVENTS.CLASSIFIER_DEGRADED,
 			payload: { usedModelId: result.usedModelId, missingRefs },
+			notifyKey: PERMISSION_EVENTS.CLASSIFIER_DEGRADED,
 			message: "Permissions classifier is using a fallback model or has reduced model availability.",
 		}
 	}

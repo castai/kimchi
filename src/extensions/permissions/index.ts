@@ -1165,8 +1165,8 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 				const health = classifierHealth(verdict, candidates, missingRefs, ctx.signal)
 				if (health) {
 					pi.events.emit(health.channel, health.payload)
-					if (ctx.hasUI && !classifierWarnings.has(health.channel)) {
-						classifierWarnings.add(health.channel)
+					if (ctx.hasUI && !classifierWarnings.has(health.notifyKey)) {
+						classifierWarnings.add(health.notifyKey)
 						ctx.ui.notify(health.message, "warning")
 					}
 				}
