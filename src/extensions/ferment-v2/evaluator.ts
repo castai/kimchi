@@ -337,6 +337,7 @@ export async function evaluateFermentV2(
 		const timeoutMs = evaluationTimeoutMs
 		const request = async (requestContext = context, correcting = false) => {
 			const requestOnce = async () => {
+				input.signal?.throwIfAborted()
 				deadline = AbortSignal.timeout(timeoutMs)
 				const signal = input.signal ? AbortSignal.any([deadline, input.signal]) : deadline
 				providerRequestCount++

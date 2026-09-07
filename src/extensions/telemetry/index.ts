@@ -29,6 +29,7 @@ import {
 	FERMENT_V2_EVENTS,
 	type FermentV2ContextChangedPayload,
 	type FermentV2EvaluatedPayload,
+	type FermentV2EventName,
 	type FermentV2LifecyclePayload,
 } from "../ferment-v2/domain-events.js"
 import {
@@ -337,7 +338,7 @@ function onFermentStarted(raw: unknown): void {
 	})
 }
 
-function externalFermentV2EventName(eventName: string): string | undefined {
+function externalFermentV2EventName(eventName: FermentV2EventName): string | undefined {
 	switch (eventName) {
 		case FERMENT_V2_EVENTS.STARTED:
 			return "ferment_v2.started"
@@ -361,12 +362,17 @@ function externalFermentV2EventName(eventName: string): string | undefined {
 			return "ferment_v2.stalled"
 		case FERMENT_V2_EVENTS.AGENT_ERROR:
 			return "ferment_v2.agent_error"
-		default:
+		case FERMENT_V2_EVENTS.EVALUATED:
+		case FERMENT_V2_EVENTS.CONTEXT_CHANGED:
 			return undefined
+		default: {
+			const _exhaustive: never = eventName
+			return undefined
+		}
 	}
 }
 
-function fermentV2LifecycleTelemetryHandler(eventName: string, raw: unknown): void {
+function fermentV2LifecycleTelemetryHandler(eventName: FermentV2EventName, raw: unknown): void {
 	if (!isEnabled()) return
 	const ctx = _telemetryCtx
 	if (!ctx) return

@@ -985,7 +985,7 @@ describe("Ferment V2 evaluator", () => {
 		expect(completeMock).toHaveBeenCalledTimes(2)
 	})
 
-	it("reports a caller cancellation as cancelled, not as a timeout", async () => {
+	it("does not dispatch or count a request when the caller is already cancelled", async () => {
 		completeMock.mockRejectedValue(new DOMException("aborted", "AbortError"))
 		const cancelled = AbortSignal.abort()
 
@@ -995,8 +995,27 @@ describe("Ferment V2 evaluator", () => {
 			verdict: "unavailable",
 			reason: "Evaluator session/main was cancelled.",
 			model: "session/main",
+			diagnostics: { failureType: "cancelled", providerRequestCount: 0, timeoutCount: 0 },
 		})
-		expect(completeMock).toHaveBeenCalledOnce()
+		expect(completeMock).not.toHaveBeenCalled()
+	})
+
+	it("does not dispatch or count a request cancelled while authentication resolves", async () => {
+		const cancelled = new AbortController()
+		const ctx = evaluatorContext()
+		vi.mocked(ctx.modelRegistry.getApiKeyAndHeaders).mockImplementationOnce(async () => {
+			cancelled.abort()
+			return { ok: true, apiKey: "test-key" }
+		})
+		const result = await evaluateFermentV2(
+			{ objective: "ship it", messages: [], todos: [], signal: cancelled.signal },
+			ctx,
+		)
+		expect(result).toMatchObject({
+			verdict: "unavailable",
+			diagnostics: { failureType: "cancelled", providerRequestCount: 0, timeoutCount: 0 },
+		})
+		expect(completeMock).not.toHaveBeenCalled()
 	})
 
 	it("keeps the newest messages, not the oldest, when the transcript overflows the budget", async () => {
