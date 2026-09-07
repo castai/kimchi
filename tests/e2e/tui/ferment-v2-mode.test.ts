@@ -67,11 +67,22 @@ test("experimental Ferment V2 leaves Plan mode, writes, and completes", async ({
 			artifactName: "ferment-v2-from-plan-mode",
 			seedHome: enableFermentV2Mode,
 			extraArgs: ["--plan=true"],
+			// The classifier resolves the kimchi-dev ladder provider-exactly, so the
+			// classifier model needs the dated slug under provider kimchi-dev (with
+			// ai-enabler metadata, catalog refresh preserves that provider).
+			providerId: "kimchi-dev",
 			models: [
-				{ slug: "basic", displayName: "Fake Basic", contextWindow: 200_000, maxTokens: 8192 },
 				{
-					slug: "deepseek-v4-flash",
+					slug: "basic",
+					displayName: "Fake Basic",
+					provider: "ai-enabler",
+					contextWindow: 200_000,
+					maxTokens: 8192,
+				},
+				{
+					slug: "deepseek-v4-flash-0731",
 					displayName: "DeepSeek V4 Flash",
+					provider: "ai-enabler",
 					contextWindow: 200_000,
 					maxTokens: 8192,
 				},
