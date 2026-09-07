@@ -733,7 +733,10 @@ export class KimchiAcpAgent implements Agent {
 		if (existing) {
 			// Mid-turn attach is opt-in; clients passing the flag declared the
 			// previous connection dead, so attach and replay instead of rejecting.
-			// Everyone else keeps the strict guard.
+			// Everyone else keeps the strict guard. Turn updates keep flowing over
+			// this process's single stdout pipe — routing them to the currently
+			// attached client is the transport bridge's job (see the
+			// kimchi-sandbox-worker takeover handler).
 			if (existing.turn && params._meta?.[ACP_REATTACH_MID_TURN_META_KEY] !== true) {
 				throw RequestError.invalidRequest(undefined, `session ${sessionId} has a turn in progress; cancel it first`)
 			}
