@@ -34,7 +34,7 @@ import { formatBytes } from "../ui/format-bytes.js"
 import { promptTeleportHelp } from "../ui/help-modal.js"
 import { createTeleportProgress } from "../ui/progress.js"
 import { parseTeleportArgs } from "./args.js"
-import { refuse, warn } from "./errors.js"
+import { authFailureMessage, refuse, warn } from "./errors.js"
 import { resolveWorkspaceRef } from "./workspace-ref.js"
 
 /** Per-call timeout for createSession: 5min — the 30s WorkerClient default aborts mid-flight on large repos. */
@@ -174,7 +174,7 @@ export async function runTeleport(rawArgs: string, ctx: TeleportContext): Promis
 			})
 		} catch (err) {
 			if (signal.aborted) throw err
-			refuse(ctx, `Authentication failed: ${err instanceof Error ? err.message : String(err)}`)
+			refuse(ctx, authFailureMessage(err))
 		}
 		progress.complete("Authenticated")
 

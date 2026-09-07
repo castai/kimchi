@@ -51,6 +51,33 @@ describe("checkResponse", () => {
 		})
 	})
 
+	it("maps 429 quota bodies to a friendly RemoteQuotaError", async () => {
+		const resp = new Response('{"message":"quota exceeded: user CPU limit exceeded","fieldViolations":[]}', {
+			status: 429,
+		})
+		await expect(checkResponse(resp, "https://x")).rejects.toMatchObject({
+			name: "RemoteQuotaError",
+			message: "Unable to provision workspace: user CPU limit exceeded",
+			statusCode: 429,
+		})
+	})
+
+	it("keeps a 429 message verbatim when it has no 'quota exceeded' prefix", async () => {
+		const resp = new Response('{"message":"user memory limit exceeded"}', { status: 429 })
+		await expect(checkResponse(resp, "https://x")).rejects.toMatchObject({
+			name: "RemoteQuotaError",
+			message: "Unable to provision workspace: user memory limit exceeded",
+		})
+	})
+
+	it("falls back to the raw format for 429s without a JSON message", async () => {
+		const resp = new Response("slow down", { status: 429 })
+		await expect(checkResponse(resp, "https://x")).rejects.toMatchObject({
+			name: "RemoteNetworkError",
+			message: expect.stringContaining("HTTP 429 from https://x"),
+		})
+	})
+
 	it("maps non-auth statuses without a body to RemoteNetworkError", async () => {
 		await expect(checkResponse(new Response(null, { status: 502 }), "https://x")).rejects.toBeInstanceOf(
 			RemoteNetworkError,

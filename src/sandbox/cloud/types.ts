@@ -89,3 +89,19 @@ export class RemoteNetworkError extends Error {
 		this.name = "RemoteNetworkError"
 	}
 }
+
+/**
+ * Thrown when the cloud API rejects a request because the user's resource
+ * quota is exhausted (HTTP 429 with a quota body, e.g. "user CPU limit
+ * exceeded"). Carries an already user-facing message — surfaced verbatim
+ * instead of being wrapped in "Authentication failed: ...".
+ */
+export class RemoteQuotaError extends RemoteNetworkError {
+	constructor(
+		message: string,
+		public readonly statusCode: number,
+	) {
+		super(message)
+		this.name = "RemoteQuotaError"
+	}
+}

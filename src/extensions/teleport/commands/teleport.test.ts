@@ -151,6 +151,7 @@ vi.mock("../ui/progress.js", () => ({
 	},
 }))
 
+import { RemoteQuotaError } from "../../../sandbox/cloud/types.js"
 import { WorkspaceFileError } from "../../../sandbox/cloud/workspace-file.js"
 import type { TeleportContext } from "../types.js"
 import { TeleportRefusal } from "./errors.js"
@@ -576,6 +577,18 @@ describe("runTeleport", () => {
 
 		await expect(runTeleport("--bogus", ctx)).rejects.toBeInstanceOf(TeleportRefusal)
 		expect(ui.notify).toHaveBeenCalledWith(expect.stringMatching(/Unknown flag/), "error")
+	})
+
+	it("refuses with the quota message verbatim, without the 'Authentication failed' prefix", async () => {
+		authMock.mockRejectedValueOnce(new RemoteQuotaError("Unable to provision workspace: user CPU limit exceeded", 429))
+		const { ctx, ui } = makeCtx()
+
+		await expect(runTeleport("mysession --workspace 22222222-2222-4222-8222-222222222222", ctx)).rejects.toBeInstanceOf(
+			TeleportRefusal,
+		)
+		expect(ui.notify).toHaveBeenCalledWith("Unable to provision workspace: user CPU limit exceeded", "error")
+		expect(waitReadyMock).not.toHaveBeenCalled()
+		expect(overlayMock).not.toHaveBeenCalled()
 	})
 
 	it("generates a default session name when none is given", async () => {
