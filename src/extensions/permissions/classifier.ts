@@ -127,14 +127,16 @@ function withinDeadline<T>(
 	})
 }
 
+/** Auth for a candidate that cleared the engine's auth check: the ok-branch of the registry result. */
+type CandidateAuth = Extract<Awaited<ReturnType<ModelRegistry["getApiKeyAndHeaders"]>>, { ok: true }>
+
 async function runClassifier(
 	model: Model<Api>,
-	auth: Awaited<ReturnType<ModelRegistry["getApiKeyAndHeaders"]>>,
+	auth: CandidateAuth,
 	call: ClassifyInput,
 	deadline: number,
 	signal?: AbortSignal,
 ): Promise<ClassifierResult> {
-	if (!auth.ok || !auth.apiKey) return unavailable("no API key for classifier", "auth_unavailable")
 	const outcome = await withinDeadline(
 		(attemptSignal) =>
 			complete(
