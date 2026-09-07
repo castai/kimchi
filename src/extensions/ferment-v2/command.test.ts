@@ -7,7 +7,7 @@ import {
 	formatFermentV2Summary,
 	parseFermentV2Command,
 } from "./command.js"
-import type { FermentV2Status, SessionFermentV2 } from "./types.js"
+import { FERMENT_V2_STATUSES, type FermentV2Status, type SessionFermentV2 } from "./types.js"
 
 describe("Ferment V2 command", () => {
 	it("parses management commands and inline objectives", () => {
@@ -66,6 +66,32 @@ describe("Ferment V2 command", () => {
 		expect(manual.startsWith("Ferment V2: ship it\n")).toBe(true)
 		expect(automatic).toContain("Plan execution: Cache Layer")
 		expect(automatic).toContain("Commands: /ferment-v2 edit, /ferment-v2 pause, /ferment-v2 clear")
+	})
+
+	describe.each(FERMENT_V2_STATUSES)("approved plan summary while %s", (status) => {
+		it.each([
+			"/tmp/cache-layer.md",
+			undefined,
+		])("shows only the saved reference (%s), preserving the snapshot", (planPath) => {
+			const run = {
+				...fermentV2(status),
+				objective: "Internal approved objective with exact requirements.",
+				presentation: {
+					kind: "approved-plan",
+					title: "Cache Layer",
+					planPath,
+					planText: "# Full approved Markdown\nDo not repeat this in a summary.",
+				},
+			} satisfies SessionFermentV2
+			const before = structuredClone(run)
+			const summary = formatFermentV2Summary(run)
+			expect(summary).toContain(`Plan: ${planPath ?? "no saved file"}`)
+			expect(summary).toContain(`Status: ${status}`)
+			expect(summary).not.toContain("Objective:")
+			expect(summary).not.toContain(run.objective)
+			expect(summary).not.toContain(run.presentation.planText)
+			expect(run).toEqual(before)
+		})
 	})
 
 	it("shows the run state and resume hint without adding a prompt decoration", () => {

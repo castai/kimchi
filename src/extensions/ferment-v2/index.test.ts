@@ -1,4 +1,16 @@
 import { randomUUID } from "node:crypto"
+import {
+	existsSync,
+	mkdirSync,
+	mkdtempSync,
+	readdirSync,
+	readFileSync,
+	realpathSync,
+	rmSync,
+	writeFileSync,
+} from "node:fs"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
 import type {
 	ContextEvent,
 	ExtensionAPI,
@@ -29,7 +41,8 @@ import {
 import { FERMENT_V2_EVENTS } from "./domain-events.js"
 import { evaluateFermentV2 } from "./evaluator.js"
 import fermentV2Extension from "./index.js"
-import { getFermentV2PlanExecutor } from "./plan-executor.js"
+import { objectiveFilePath, saveObjectiveFile } from "./objective-file.js"
+import { buildApprovedPlanObjective, getFermentV2PlanExecutor } from "./plan-executor.js"
 import { DEFAULT_FERMENT_V2_SETTINGS, getFermentV2Settings } from "./settings.js"
 import type { FermentV2JournalEntry, SessionFermentV2 } from "./types.js"
 
@@ -76,6 +89,7 @@ type ToolConfig = {
 
 describe("Ferment V2 extension", () => {
 	let harness: ReturnType<typeof createHarness>
+	let cwd: string
 
 	beforeEach(async () => {
 		__resetTodoStore()
@@ -86,7 +100,8 @@ describe("Ferment V2 extension", () => {
 			usage: EVALUATOR_USAGE,
 		})
 		fermentV2SettingsMock.mockReturnValue({ ...DEFAULT_FERMENT_V2_SETTINGS })
-		harness = createHarness()
+		cwd = realpathSync(mkdtempSync(join(tmpdir(), "kimchi-v2-edit-")))
+		harness = createHarness({ cwd })
 		await harness.fire("session_start", { type: "session_start", reason: "new" })
 	})
 
@@ -96,6 +111,7 @@ describe("Ferment V2 extension", () => {
 		unregisterSessionPermissionFlagController(TEST_SESSION_ID)
 		__resetTodoStore()
 		vi.restoreAllMocks()
+		rmSync(cwd, { recursive: true, force: true })
 	})
 
 	it("registers the commands, completions, tools, and empty-state behavior", async () => {
@@ -387,10 +403,13 @@ describe("Ferment V2 extension", () => {
 		await harness.command("pause")
 		await harness.command("edit Only verify the new requirement.")
 		expect(harness.currentFermentV2()).toMatchObject({
-			objective: "Only verify the new requirement.",
+			objective: expect.stringMatching(/^Read the Kimchi objective file at /),
 			status: "paused",
 			revision: 2,
 		})
+		const reference = harness.currentFermentV2()?.objective ?? ""
+		const path = JSON.parse(reference.slice("Read the Kimchi objective file at ".length, -" before continuing.".length))
+		expect(readFileSync(path, "utf8")).toBe("Only verify the new requirement.")
 		expect(harness.currentFermentV2()).not.toHaveProperty("presentation")
 		expect(harness.ui.setStatus).toHaveBeenLastCalledWith(
 			"ferment-v2",
@@ -402,8 +421,150 @@ describe("Ferment V2 extension", () => {
 		await harness.command("resume")
 		expect(harness.currentFermentV2()).toMatchObject({
 			status: "active",
-			objective: "Only verify the new requirement.",
+			objective: reference,
 		})
+	})
+
+	it("re-edits managed content into a new file without changing the approved snapshot or prior file", async () => {
+		const original = buildApprovedPlanObjective(join(cwd, "original.md"), "# Approved snapshot\nOriginal requirement.")
+		const executor = getFermentV2PlanExecutor(harness.pi)
+		if (!executor) throw new Error("expected approved-plan executor")
+		await executor({ objective: original, title: "Approved snapshot", planText: "unused saved metadata" }, harness.ctx)
+		await harness.command("pause")
+		const editedText = `${original}\n\n# Revised requirement\n${"Detail. ".repeat(700)}`
+		harness.ui.editor.mockImplementationOnce(async (_title, value) => {
+			expect(value).toBe(original)
+			return editedText
+		})
+		await harness.command("edit")
+		const revisionTwo = harness.currentFermentV2()
+		expect(revisionTwo?.objective).toMatch(/^Read the Kimchi objective file at /)
+		expect(revisionTwo?.objective.length).toBeLessThan(500)
+		expect(revisionTwo).not.toHaveProperty("presentation")
+		const filesBefore = readdirSync(join(cwd, ".kimchi/plans"))
+		expect(filesBefore).toHaveLength(1)
+		expect(readFileSync(join(cwd, ".kimchi/plans", filesBefore[0]), "utf8")).toBe(editedText)
+		await harness.fire("session_tree", { type: "session_tree" })
+		harness.ui.editor.mockImplementationOnce(async (_title, value) => {
+			expect(value).toBe(editedText)
+			return "# Replacement requirement\nOnly do the new task."
+		})
+		await harness.command("edit")
+		expect(harness.currentFermentV2()).toMatchObject({ revision: 3, name: "Replacement requirement", status: "paused" })
+		expect(harness.currentFermentV2()?.objective).not.toBe(revisionTwo?.objective)
+		expect(readdirSync(join(cwd, ".kimchi/plans"))).toHaveLength(2)
+		expect(readFileSync(join(cwd, ".kimchi/plans", filesBefore[0]), "utf8")).toBe(editedText)
+		expect(
+			harness.branch.some(
+				(entry) => entry.type === "custom" && JSON.stringify(entry.data).includes(JSON.stringify(original)),
+			),
+		).toBe(true)
+	})
+
+	it("materializes an already-edited approved snapshot only on a new explicit edit", async () => {
+		const snapshot = `${buildApprovedPlanObjective(undefined, "# Original plan\nDo original work.")}\n\nAdded requirement.`
+		await harness.command("original manual objective")
+		harness.ui.editor.mockResolvedValueOnce(snapshot)
+		await harness.command("edit")
+		await harness.command("pause")
+		expect(harness.currentFermentV2()?.revision).toBe(2)
+		expect(harness.currentFermentV2()).not.toHaveProperty("presentation")
+		await harness.fire("session_tree", { type: "session_tree" })
+		expect(harness.currentFermentV2()?.objective).toBe(snapshot)
+		expect(existsSync(join(cwd, ".kimchi/plans"))).toBe(false)
+		harness.ui.editor.mockResolvedValueOnce("# Changed plan\nNew requirement.")
+		await harness.command("edit")
+		expect(harness.currentFermentV2()?.objective).toMatch(/^Read the Kimchi objective file at /)
+		expect(harness.currentFermentV2()?.revision).toBe(3)
+		expect(harness.currentFermentV2()?.name).toBe("Changed plan")
+	})
+
+	it.each([
+		"# Manual plan\n<approved_plan>\nDo work.\n</approved_plan>",
+		"Read the approved plan at /tmp/manual.md",
+	])("keeps an ordinary manual objective inline when edited: %s", async (objective) => {
+		await harness.command(objective)
+		harness.ui.editor.mockResolvedValueOnce("# Manual replacement\nNew requirement.")
+		await harness.command("edit")
+		expect(harness.currentFermentV2()?.objective).toBe("# Manual replacement\nNew requirement.")
+		expect(existsSync(join(cwd, ".kimchi/plans"))).toBe(false)
+	})
+
+	it("keeps the current state and sends no work when saving an edited snapshot fails", async () => {
+		await harness.command(buildApprovedPlanObjective(undefined, "# Initial plan"))
+		await harness.command("pause")
+		const before = harness.currentFermentV2()
+		mkdirSync(join(cwd, ".kimchi"))
+		writeFileSync(join(cwd, ".kimchi/plans"), "not a directory")
+		harness.sendMessage.mockClear()
+		await harness.command("edit replacement")
+		expect(harness.currentFermentV2()).toEqual(before)
+		expect(harness.sendMessage).not.toHaveBeenCalled()
+		expect(harness.ui.notify).toHaveBeenLastCalledWith(expect.stringMatching(/objective file/i), "warning")
+	})
+
+	it.each([undefined, " \n\t"])("does not create a file for cancelled or blank snapshot edits", async (answer) => {
+		await harness.command(buildApprovedPlanObjective(undefined, "# Initial plan"))
+		const before = harness.currentFermentV2()
+		harness.ui.editor.mockResolvedValueOnce(answer)
+		harness.sendMessage.mockClear()
+		await harness.command("edit")
+		expect(harness.currentFermentV2()).toEqual(before)
+		expect(existsSync(join(cwd, ".kimchi/plans"))).toBe(false)
+		expect(harness.sendMessage).not.toHaveBeenCalled()
+	})
+
+	it("does not save a stale editor draft after another edit creates a managed revision", async () => {
+		await harness.command(buildApprovedPlanObjective(undefined, "# Initial plan"))
+		await harness.command("pause")
+		harness.ui.editor.mockImplementationOnce(async () => {
+			await harness.command("edit concurrent replacement")
+			return "stale editor text"
+		})
+		await harness.command("edit")
+		expect(harness.currentFermentV2()?.revision).toBe(2)
+		const files = readdirSync(join(cwd, ".kimchi/plans"))
+		expect(files).toHaveLength(1)
+		expect(readFileSync(join(cwd, ".kimchi/plans", files[0]), "utf8")).toBe("concurrent replacement")
+		expect(harness.ui.notify).toHaveBeenLastCalledWith(
+			expect.stringContaining("changed while the editor was open"),
+			"warning",
+		)
+	})
+
+	it("rejects an unreadable managed edit without reopening the short reference as plain text", async () => {
+		const reference = saveObjectiveFile("full objective", cwd)
+		await harness.command(reference)
+		await harness.command("pause")
+		const path = objectiveFilePath(reference, cwd)
+		if (!path) throw new Error("expected managed path")
+		rmSync(path)
+		const before = harness.currentFermentV2()
+		harness.ui.editor.mockClear()
+		await harness.command("edit")
+		expect(harness.ui.editor).not.toHaveBeenCalled()
+		expect(harness.currentFermentV2()).toEqual(before)
+		expect(harness.ui.notify).toHaveBeenLastCalledWith(
+			expect.stringMatching(/Could not read Kimchi objective file/),
+			"warning",
+		)
+	})
+
+	it("retains a successfully saved objective when journal persistence rejects the edit", async () => {
+		await harness.command(buildApprovedPlanObjective(undefined, "# Initial plan"))
+		await harness.command("pause")
+		const before = harness.currentFermentV2()
+		harness.sendMessage.mockClear()
+		harness.appendEntry.mockImplementationOnce(() => {
+			throw new Error("journal failed")
+		})
+		await harness.command("edit replacement requiring a retained file")
+		expect(harness.currentFermentV2()).toEqual(before)
+		expect(harness.sendMessage).not.toHaveBeenCalled()
+		const files = readdirSync(join(cwd, ".kimchi/plans"))
+		expect(files).toHaveLength(1)
+		expect(readFileSync(join(cwd, ".kimchi/plans", files[0]), "utf8")).toBe("replacement requiring a retained file")
+		expect(harness.ui.notify).toHaveBeenLastCalledWith("journal failed", "warning")
 	})
 
 	it("reopens an edited completed goal as paused and permits explicit resume", async () => {
@@ -3988,7 +4149,7 @@ describe("Ferment V2 extension", () => {
 	})
 })
 
-function createHarness(options: { hasUI?: boolean } = {}) {
+function createHarness(options: { hasUI?: boolean; cwd?: string } = {}) {
 	const handlers = new Map<string, ExtensionHandler[]>()
 	const commands = new Map<string, CommandConfig>()
 	const tools = new Map<string, ToolConfig>()
@@ -4003,7 +4164,7 @@ function createHarness(options: { hasUI?: boolean } = {}) {
 	const ui = {
 		notify: vi.fn(),
 		confirm: vi.fn(async () => true),
-		editor: vi.fn(async (_title: string, value: string) => value),
+		editor: vi.fn(async (_title: string, value: string): Promise<string | undefined> => value),
 		setStatus: vi.fn(),
 		setWorkingVisible: vi.fn(),
 		setWidget: vi.fn(),
@@ -4030,6 +4191,7 @@ function createHarness(options: { hasUI?: boolean } = {}) {
 		getActiveTools: vi.fn(() => activeTools),
 	} as unknown as ExtensionAPI
 	const ctx = {
+		cwd: options.cwd ?? process.cwd(),
 		hasUI: options.hasUI ?? true,
 		mode: "tui",
 		ui,

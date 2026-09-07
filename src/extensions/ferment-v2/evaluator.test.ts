@@ -1,4 +1,4 @@
-import { mkdtempSync, readdirSync, rmSync } from "node:fs"
+import { mkdirSync, mkdtempSync, readdirSync, realpathSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import type { Api, Model, StopReason } from "@earendil-works/pi-ai"
@@ -88,6 +88,42 @@ describe("Ferment V2 evaluator", () => {
 		const ctx = evaluatorContext()
 		expect(resolveFermentV2EvaluatorModel(ctx)).toEqual(sessionModel)
 		expect(ctx.modelRegistry.find).not.toHaveBeenCalled()
+	})
+
+	it("evaluates managed file requirements without restoring the full text into the objective", async () => {
+		const cwd = realpathSync(mkdtempSync(join(tmpdir(), "kimchi-v2-objective-evaluator-")))
+		try {
+			const path = join(cwd, ".kimchi/plans/12345678-1234-4234-8234-123456789abc-objective.md")
+			mkdirSync(join(cwd, ".kimchi/plans"), { recursive: true })
+			const body = "# Edited requirements\nReturn exactly FILE_REQUIREMENT_OK after verifying the revised task."
+			writeFileSync(path, body)
+			const objective = `Read the Kimchi objective file at ${JSON.stringify(path)} before continuing.`
+			const input = { objective, messages: [], todos: [] }
+			completeMock.mockResolvedValue(assistant('{"verdict":"continue","reason":"Verify the new requirement."}'))
+			await evaluateFermentV2(input, { ...evaluatorContext(), cwd })
+			expect(JSON.stringify(completeMock.mock.calls[0]?.[1])).toContain(body.replace(/\n/g, "\\n"))
+			expect(input.objective).toBe(objective)
+		} finally {
+			rmSync(cwd, { recursive: true, force: true })
+		}
+	})
+
+	it.each(["missing", "empty"])("does not call the evaluator for a %s managed objective file", async (kind) => {
+		const cwd = realpathSync(mkdtempSync(join(tmpdir(), "kimchi-v2-objective-evaluator-")))
+		try {
+			const path = join(cwd, ".kimchi/plans/12345678-1234-4234-8234-123456789abc-objective.md")
+			if (kind === "empty") {
+				mkdirSync(join(cwd, ".kimchi/plans"), { recursive: true })
+				writeFileSync(path, " \n\t")
+			}
+			const objective = `Read the Kimchi objective file at ${JSON.stringify(path)} before continuing.`
+			completeMock.mockResolvedValue(assistant('{"verdict":"impossible","reason":"No evidence."}'))
+			const result = await evaluateFermentV2({ objective, messages: [], todos: [] }, { ...evaluatorContext(), cwd })
+			expect(result).toMatchObject({ verdict: "unavailable", reason: expect.stringMatching(/objective file/i) })
+			expect(completeMock).not.toHaveBeenCalled()
+		} finally {
+			rmSync(cwd, { recursive: true, force: true })
+		}
 	})
 
 	it("uses the judge role in multi-model mode and falls back to the session model", () => {

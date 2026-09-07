@@ -1,7 +1,12 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
 import { describe, expect, it, vi } from "vitest"
 import { createMiniEventBus } from "../__mocks__/mini-event-bus.js"
-import { buildApprovedPlanObjective, getFermentV2PlanExecutor, registerFermentV2PlanExecutor } from "./plan-executor.js"
+import {
+	buildApprovedPlanObjective,
+	getFermentV2PlanExecutor,
+	isApprovedPlanObjective,
+	registerFermentV2PlanExecutor,
+} from "./plan-executor.js"
 import { createFermentV2, putFermentV2Entry, restoreFermentV2 } from "./reducer.js"
 
 describe("approved-plan content authority", () => {
@@ -27,6 +32,23 @@ describe("approved-plan content authority", () => {
 		const state = createFermentV2(undefined, objective, "approved", "2026-09-07T00:00:00.000Z")
 		expect(state.objective).toContain(plan)
 		expect(restoreFermentV2([putFermentV2Entry(state)])?.objective).toBe(objective)
+	})
+
+	it.each([
+		undefined,
+		'/tmp/plan "copy".md',
+	])("recognizes generated snapshot framing with appended edits: %s", (path) => {
+		const objective = `${buildApprovedPlanObjective(path, plan)}\n\nNew user requirement.`
+		expect(isApprovedPlanObjective(objective)).toBe(true)
+	})
+
+	it.each([
+		"# Manual plan\n<approved_plan>\nDo work.\n</approved_plan>",
+		buildApprovedPlanObjective(undefined, plan).replace("This approved Markdown", "This manual Markdown"),
+		buildApprovedPlanObjective(undefined, plan).replace("</approved_plan>", ""),
+		buildApprovedPlanObjective("/tmp/reference.md", plan).replace('"/tmp/reference.md"', "not-json"),
+	])("does not treat near-match manual content as generated framing", (objective) => {
+		expect(isApprovedPlanObjective(objective)).toBe(false)
 	})
 })
 

@@ -51,7 +51,12 @@ import {
 	recoverAcceptedFinalAnswerDraft,
 } from "./final-answer.js"
 import { type FermentV2Lesson, updateFermentV2Lessons } from "./lessons.js"
-import { type FermentV2PlanExecutorResult, registerFermentV2PlanExecutor } from "./plan-executor.js"
+import { objectiveFilePath, objectiveText, saveObjectiveFile } from "./objective-file.js"
+import {
+	type FermentV2PlanExecutorResult,
+	isApprovedPlanObjective,
+	registerFermentV2PlanExecutor,
+} from "./plan-executor.js"
 import {
 	buildFermentV2Continuation,
 	buildFermentV2EditSteer,
@@ -1110,9 +1115,10 @@ export default function fermentV2Extension(pi: ExtensionAPI): void {
 				ctx.ui.notify(`Use /${FERMENT_V2_COMMAND_NAME} edit <objective> outside the interactive TUI.`, "warning")
 				return
 			}
-			editedObjective = await ctx.ui.editor(`Edit ${displayName(captured)}`, captured.objective)
+			editedObjective = await ctx.ui.editor(`Edit ${displayName(captured)}`, objectiveText(captured.objective, ctx.cwd))
 			if (editedObjective === undefined) return
 		}
+		const submittedObjective = editedObjective
 
 		try {
 			await serializeUserMutation(
@@ -1130,16 +1136,23 @@ export default function fermentV2Extension(pi: ExtensionAPI): void {
 					const nowMs = Date.now()
 					const now = timestamp(nowMs)
 					const accounted = checkpointFermentV2(current, 0, nowMs)
-					const edited = editFermentV2(accounted, current.id, current.revision, editedObjective, now)
+					const edited = editFermentV2(accounted, current.id, current.revision, submittedObjective, now)
 					// Reset both guard counters in the committed revision so a later restart
 					// doesn't restore a streak that belonged to a superseded objective.
-					const next = setFermentV2UnchangedContinuationTurns(
+					let next = setFermentV2UnchangedContinuationTurns(
 						setFermentV2ConsecutiveErrorTurns(edited, edited.id, edited.revision, 0, now),
 						edited.id,
 						edited.revision,
 						0,
 						now,
 					)
+					if (
+						current.presentation?.kind === "approved-plan" ||
+						isApprovedPlanObjective(current.objective) ||
+						objectiveFilePath(current.objective, ctx.cwd)
+					) {
+						next = { ...next, objective: saveObjectiveFile(submittedObjective, ctx.cwd) }
+					}
 					const retainedTodoState =
 						todoStateFor && matchesFermentV2(todoStateFor, current, sessionId)
 							? rebindTodoState(todoStateFor, next)

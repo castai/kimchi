@@ -54,7 +54,7 @@ export function formatFermentV2Summary(fermentV2: SessionFermentV2 | undefined, 
 			? [`Blocked reason: ${fermentV2.blockedReason}`]
 			: []),
 		`Revision: ${fermentV2.revision}`,
-		`Objective: ${fermentV2.objective}`,
+		approvedPlan ? `Plan: ${approvedPlan.planPath ?? "no saved file"}` : `Objective: ${fermentV2.objective}`,
 		`${approvedPlan ? "Run time" : "Fermenting time"}: ${formatFermentV2Accounting(fermentV2, liveElapsedMs)}`,
 		...(fermentV2.evaluationCount === undefined ? [] : [`Evaluations: ${fermentV2.evaluationCount}`]),
 		...(evaluation ? [`Last evaluation: ${evaluation.verdict} — ${evaluation.reason}`] : []),

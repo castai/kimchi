@@ -8,6 +8,7 @@ import { redactTextOrThrow } from "../pii-redaction/redactor.js"
 import type { TodoItem } from "../todos/types.js"
 import { latestFinalAnswerDraft } from "./final-answer.js"
 import { type FermentV2Lesson, MAX_FERMENT_V2_LESSON_CHARS, MAX_FERMENT_V2_LESSONS } from "./lessons.js"
+import { objectiveText } from "./objective-file.js"
 import { isRecord } from "./reducer.js"
 import { getFermentV2Settings } from "./settings.js"
 import type { FermentV2EvaluatorUsage } from "./types.js"
@@ -248,6 +249,7 @@ export async function evaluateFermentV2(
 	let deadline: AbortSignal | undefined
 	let evaluationTimeoutMs: number | undefined
 	try {
+		const objective = objectiveText(input.objective, ctx.cwd)
 		const model = resolveFermentV2EvaluatorModel(ctx)
 		if (!model) return { verdict: "unavailable", reason: "No evaluator model is available." }
 		modelRef = `${model.provider}/${model.id}`
@@ -265,7 +267,7 @@ export async function evaluateFermentV2(
 		const transcript = renderRecentTranscript(input.messages)
 		const lessons = renderFermentV2Lessons(input.lessons)
 		const evidenceIds = new Set([...transcript.evidenceIds, ...lessons.evidenceIds])
-		let prompt = `Objective:\n${input.objective}\n\nCurrent Todo state:\n${todoState}\n\nDurable Ferment V2 lessons:\n${lessons.text || "(none)"}\n\nRecent transcript:\n${transcript.text}`
+		let prompt = `Objective:\n${objective}\n\nCurrent Todo state:\n${todoState}\n\nDurable Ferment V2 lessons:\n${lessons.text || "(none)"}\n\nRecent transcript:\n${transcript.text}`
 		if (getRedactionConfig().enabled) prompt = await redactTextOrThrow(prompt)
 		const context: Context = {
 			systemPrompt: EVALUATOR_SYSTEM_PROMPT,
