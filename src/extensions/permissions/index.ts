@@ -410,7 +410,7 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 		if (current === "plan" && next.mode !== "plan") {
 			restoreToolsFromPlanMode()
 			activePlanSlug = undefined
-	planStopNudgeCounts.delete(ctx.sessionManager.getSessionId())
+			planStopNudgeCounts.delete(ctx.sessionManager.getSessionId())
 		}
 		if (next.mode === "plan") applyPlanModeTools()
 		// Dismiss all active permission prompts so tool_call handlers re-evaluate under the new mode.
