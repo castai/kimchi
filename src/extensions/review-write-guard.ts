@@ -127,6 +127,10 @@ export class OrchestratorWriteGuard {
 	}
 
 	recordSubagentReturn(outcome?: AgentOutcomeSummary): void {
+		// Polling includes structured outcomes before completion. It must neither
+		// arm this guard nor reset counters from a previously returned worker.
+		if (outcome?.status === "running" || outcome?.status === "queued") return
+
 		// Arm on any subagent return. The guard stays armed for the remainder
 		// of this user turn; pi.on("agent_start") resets at the next user prompt.
 		this.armed = true
@@ -195,17 +199,19 @@ function extractAgentOutcome(event: { details?: unknown }): AgentOutcomeSummary 
 	const details = event.details
 	if (!details || typeof details !== "object") return undefined
 
-	const agentOutcome = (details as Record<string, unknown>).agentOutcome
+	const record = details as Record<string, unknown>
+	const agentOutcome = record.agentOutcome
 	if (!agentOutcome || typeof agentOutcome !== "object") return undefined
 
 	const ao = agentOutcome as Record<string, unknown>
-	const rawStatus = typeof ao.status === "string" ? ao.status : undefined
 	const rawOutcome = typeof ao.outcome === "string" ? ao.outcome : undefined
-	const detailsSubagentType = (details as Record<string, unknown>).subagentType
+	const detailsSubagentType = record.subagentType
 
-	const status = AGENT_RECORD_STATUSES.includes(rawStatus as AgentRecord["status"])
-		? (rawStatus as AgentRecord["status"])
-		: undefined
+	// A resumed worker keeps its previous outcome until it finishes. The outer
+	// status describes the live record and takes precedence over that snapshot.
+	const status =
+		AGENT_RECORD_STATUSES.find((value) => value === record.status) ??
+		AGENT_RECORD_STATUSES.find((value) => value === ao.status)
 	const outcome = AGENT_OUTCOME_KINDS.includes(rawOutcome as AgentOutcomeKind)
 		? (rawOutcome as AgentOutcomeKind)
 		: undefined
@@ -347,8 +353,8 @@ export default function reviewWriteGuardExtension(pi: ExtensionAPI, options?: Re
 			return
 		}
 
-		// Only a terminal get_subagent_result carries a worker outcome. Ignore
-		// status-only polling results so running/queued workers cannot arm the guard.
+		// Polling can carry a nonterminal outcome; recordSubagentReturn ignores it.
+		// Status-only results without an outcome cannot arm the guard either.
 		if (event.toolName === "get_subagent_result") {
 			const outcome = extractAgentOutcome(event)
 			if (!outcome) return

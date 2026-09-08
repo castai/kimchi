@@ -505,7 +505,8 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 		const branch = (ctx.sessionManager as SessionManager).getBranch?.() ?? []
 		for (const entry of [...branch].reverse()) {
 			if (entry.type !== "message" || entry.message.role !== "assistant") continue
-			return extractTextFromContent(entry.message.content as unknown[]).trim()
+			const text = extractTextFromContent(entry.message.content as unknown[]).trim()
+			if (text) return text
 		}
 		return ""
 	}
@@ -1032,7 +1033,8 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 		if (!reviewCtx) return
 		const { ctx, planPath, planText, rawText, activePlanSlug: reviewedPlanSlug } = reviewCtx
 		const sessionId = ctx.sessionManager.getSessionId()
-		const restoreMode: PermissionModeState = planModeSnapshots.get(sessionId)?.mode ?? {
+		const planModeSnapshot = planModeSnapshots.get(sessionId)
+		const restoreMode: PermissionModeState = planModeSnapshot?.mode ?? {
 			mode: "default",
 			source: "config",
 			initiatedBy: "user",
@@ -1073,6 +1075,7 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 				const message = err instanceof Error ? err.message : String(err)
 				ctx.ui?.notify?.(`Could not start the cloud agent: ${message}`, "error")
 				if (approvedSlug) activePlanSlugs.set(sessionId, approvedSlug)
+				if (planModeSnapshot) planModeSnapshots.set(sessionId, planModeSnapshot)
 				changeMode(ctx, "auto", { mode: "plan", initiatedBy: "user", source: "runtime" }, "cloud_spawn_failed")
 			}
 		} else if (payload.decision === "feedback") {

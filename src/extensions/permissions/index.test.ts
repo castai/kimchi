@@ -24,6 +24,7 @@ import { FERMENT_V2_RESOURCE_ID, FERMENT_V2_TOOL_NAMES } from "../ferment-v2/con
 import { registerFermentV2PlanExecutor } from "../ferment-v2/plan-executor.js"
 import { buildSystemPrompt, type EnvironmentInfo } from "../prompt-construction/system-prompt.js"
 import { createToolVisibility } from "../prompt-construction/tool-visibility.js"
+import * as remoteRun from "../remote-run/runner.js"
 import { TODO_TOOL_NAMES } from "../todos/tool.js"
 import { classifyToolCall } from "./classifier.js"
 import { DEFAULT_CLASSIFIER_CANDIDATE_REFS, resolveClassifierCandidates } from "./classifier-models.js"
@@ -142,6 +143,7 @@ function createMockContext(
 		sessionManager: {
 			getSessionId: () => sessionId,
 			getEntries: () => sessionEntries,
+			getBranch: () => sessionEntries,
 		},
 		ui: {
 			select: vi.fn(async (_: string, __: string[], selectOpts?: { signal?: AbortSignal }) => {
@@ -639,12 +641,12 @@ describe("plan mode assumption detection", () => {
 	// artefacts) have run before assertions.
 	async function firePlanExit(
 		harness: ReturnType<typeof createPermissionsHarness>,
-		plan: string,
+		plan: string | undefined,
 		ctx: ExtensionContext,
 	): Promise<unknown> {
 		const tool = harness.tools.get("ExitPlanMode")
 		if (!tool) throw new Error("ExitPlanMode tool was not registered with pi")
-		const result = await tool.execute("tc-submit-plan", { plan }, undefined, undefined, ctx)
+		const result = await tool.execute("tc-submit-plan", plan === undefined ? {} : { plan }, undefined, undefined, ctx)
 		await new Promise<void>((resolve) => setTimeout(resolve, 0))
 		return result
 	}
@@ -868,6 +870,68 @@ describe("plan mode assumption detection", () => {
 		})
 		const handoff = (harness.pi.sendUserMessage as ReturnType<typeof vi.fn>).mock.calls[0]?.[0] as string
 		expect(handoff).not.toContain("Verification Strategy")
+	})
+
+	it("ExitPlanMode without plan skips its persisted tool-only assistant message", async () => {
+		const plan = "# Prior plan\n\n## Goal\nPreserve the API."
+		const harness = createPermissionsHarness(["read", "bash"], { plan: true })
+		const ctx = createMockContext(["Rework the plan"], TEST_SESSION_ID, {
+			sessionEntries: [
+				{ type: "message", message: { role: "assistant", content: [{ type: "text", text: plan }] } },
+				{
+					type: "message",
+					message: { role: "assistant", content: [{ type: "toolCall", name: "ExitPlanMode", arguments: {} }] },
+				},
+			],
+		})
+		const tmpDir = mkdtempSync(join(tmpdir(), "plan-exit-fallback-"))
+		ctx.cwd = tmpDir
+		try {
+			await harness.fire("session_start", {}, ctx)
+			const result = await firePlanExit(harness, undefined, ctx)
+
+			expect(result).toMatchObject({ details: { submitted: true } })
+			expect(ctx.ui.select).toHaveBeenCalled()
+			expect(readFileSync(join(tmpDir, ".kimchi", "plans", "prior-plan.md"), "utf8")).toBe(plan)
+		} finally {
+			rmSync(tmpDir, { recursive: true, force: true })
+		}
+	})
+
+	it.each([
+		"default",
+		"yolo",
+	] as const)("failed cloud approval preserves the original %s mode and tools for local execution", async (originalMode) => {
+		vi.stubEnv("KIMCHI_REMOTE_RUN", "1")
+		const harness = createPermissionsHarness(["read", "bash", "write", "edit"])
+		const ctx = createMockContext(["Start execution in cloud", "Execute the plan"])
+		const tmpDir = mkdtempSync(join(tmpdir(), "plan-cloud-rollback-"))
+		ctx.cwd = tmpDir
+		const cloudRun = vi.spyOn(remoteRun, "runCloudAgent").mockImplementationOnce(async () => {
+			// The active surface can change while cloud startup is pending.
+			harness.pi.setActiveTools(["read", "bash", "write"])
+			throw new Error("cloud unavailable")
+		})
+		try {
+			await harness.fire("session_start", {}, ctx)
+			await harness.commands.get("permissions")?.handler(`mode ${originalMode}`, ctx)
+			const priorMode = getPermissionMode(TEST_SESSION_ID)
+			const priorTools = harness.activeTools().slice().sort()
+			await harness.commands.get("permissions")?.handler("mode plan", ctx)
+			const plan = "# Cloud plan\n\n## Goal\nPreserve the API."
+			await firePlanExit(harness, plan, ctx)
+
+			expect(getPermissionMode(TEST_SESSION_ID)?.mode).toBe("plan")
+			expect(ctx.ui.notify).toHaveBeenCalledWith("Could not start the cloud agent: cloud unavailable", "error")
+			await firePlanExit(harness, plan, ctx)
+
+			expect(getPermissionMode(TEST_SESSION_ID)).toEqual(priorMode)
+			expect(harness.activeTools().slice().sort()).toEqual(priorTools)
+			expect(harness.pi.sendUserMessage).toHaveBeenCalledOnce()
+		} finally {
+			cloudRun.mockRestore()
+			rmSync(tmpDir, { recursive: true, force: true })
+		}
 	})
 
 	describe("plan file persistence", () => {
