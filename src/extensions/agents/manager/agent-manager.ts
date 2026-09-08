@@ -5,8 +5,10 @@ import type { Api, Model } from "@earendil-works/pi-ai"
 import type { AgentSession, ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
 import { loadConfig } from "../../../config.js"
 import { listWorkspaces } from "../../../sandbox/cloud/workspaces.js"
-import { resolveClonePlan } from "../../teleport/provisioning/clone-plan.js"
+import { type ClonePlan, resolveClonePlan } from "../../teleport/provisioning/clone-plan.js"
+import { resolveGitToken } from "../../teleport/provisioning/git-token.js"
 import { repoBasename } from "../../teleport/provisioning/paths.js"
+import { GitTokenPromptComponent, type GitTokenPromptResult } from "../../teleport/ui/git-token-prompt.js"
 import type { AgentContact, AgentContactList, AgentMessageCapability } from "../message-tool.js"
 import {
 	AGENT_MESSAGE_LIMITS,
@@ -54,6 +56,7 @@ import {
 	type BoardSummary,
 } from "./board.js"
 import { runRemoteAgent } from "./remote-agent-runner.js"
+import { RemoteAgentSession } from "./remote-agent-session.js"
 import { addUsage, type LifetimeUsage } from "./usage.js"
 
 export type OnAgentComplete = (record: AgentRecord) => void
@@ -67,8 +70,11 @@ const DEFAULT_MAX_CONTINUATION_RESUMES = 2
 const DEFAULT_MAX_REPORT_FINALIZERS = 1
 const REPORT_FINALIZATION_LIMITS = { maxTurns: 2, maxDuration: 30, tokenBudget: 8192 } as const
 
-/** Result shape returned by `_runRemote()` and the injected ACP runner, mirroring `RunResult` from agent-runner.ts. */
-export type RemoteRunResult = Omit<RunResult, "session"> & { session: undefined }
+/** Result shape returned by `_runRemote()`, mirroring `RunResult` from agent-runner.ts. */
+type RemoteRunResult = Omit<RunResult, "session"> & { session: AgentSession }
+
+/** Result shape returned by the injected ACP runner: external agents never own an in-process session. */
+export type AcpRunResult = Omit<RunResult, "session"> & { session: undefined }
 
 /** Runner for ACP external agents, injected by the acp-agents extension (experimental). */
 export type AcpRunner = (
@@ -76,7 +82,7 @@ export type AcpRunner = (
 	prompt: string,
 	options: SpawnOptions,
 	ctx: ExtensionContext,
-) => Promise<RemoteRunResult>
+) => Promise<AcpRunResult>
 
 interface SpawnArgs {
 	pi: ExtensionAPI
@@ -93,6 +99,7 @@ export interface SpawnOptions {
 	/** Parent session ID, supplied by the host Agent tool when communication is enabled. */
 	rootSessionId?: string
 	model?: Model<Api>
+	requiresVision?: boolean
 	maxTurns?: number
 	isolated?: boolean
 	inheritContext?: boolean
@@ -409,6 +416,7 @@ export class AgentManager {
 					: runAgent(ctx, type, prompt, {
 							pi,
 							model: options.model,
+							requiresVision: options.requiresVision,
 							maxTurns: options.maxTurns,
 							tokenBudget: options.tokenBudget,
 							inactivityTimeout: options.inactivityTimeout,
@@ -435,7 +443,9 @@ export class AgentManager {
 							sessionDir: options.sessionDir,
 							signal: record.abortController?.signal,
 							onToolActivity: (activity) => {
-								if (activity.type === "end") record.toolUses++
+								// Count only terminal statuses — a "pending" notification is
+								// not a completed tool use.
+								if (activity.status === "completed" || activity.status === "failed") record.toolUses++
 								options.onToolActivity?.(activity)
 							},
 							agentMessage: this.createMessageCapability(record),
@@ -527,7 +537,7 @@ export class AgentManager {
 		prompt: string,
 		options: SpawnOptions,
 		ctx: ExtensionContext,
-	): Promise<RemoteRunResult> {
+	): Promise<AcpRunResult> {
 		if (!this.acpRunner) {
 			// spawn() rejects this already — belt for direct manager callers.
 			throw new Error("ACP runner is not registered.")
@@ -568,6 +578,7 @@ export class AgentManager {
 		// shallow clone of the repo (like /teleport --fast) instead of an empty dir.
 		// If cwd isn't a git repo or has no origin, this is a no-op.
 		let gitDetails: { repo: string; branch?: string; targetDirectory: string; noHistory?: boolean } | undefined
+		let gitCredential: { host: string; token: string } | undefined
 		try {
 			const clonePlan = await resolveClonePlan(ctx.cwd, undefined, { signal: record.abortController?.signal })
 			gitDetails = {
@@ -576,29 +587,64 @@ export class AgentManager {
 				targetDirectory: repoBasename(clonePlan.url),
 				noHistory: true,
 			}
+			// Resolve git credential separately — a failure here (bad URL, prompt
+			// rejection) must not wipe the clone plan. The clone proceeds without
+			// creds; private repos fail, public repos still work.
+			try {
+				gitCredential = await resolveGitCredential(ctx, clonePlan)
+			} catch (err) {
+				gitCredential = undefined
+				console.warn(`[agent-manager] git credential resolution failed: ${err instanceof Error ? err.message : err}`)
+			}
 		} catch {
 			// Not a git repo or no origin — proceed without git details.
 			gitDetails = undefined
+			gitCredential = undefined
 		}
+
+		// Create the adapter before calling runRemoteAgent so it's available
+		// on record.session as soon as the prompt starts — enables steer_subagent
+		// and get_subagent_result to work mid-run.
+		const remoteSession = new RemoteAgentSession()
+		record.session = remoteSession as unknown as AgentSession
+
+		// Seed the transcript with the user prompt so ConversationViewer shows it
+		// immediately, before any assistant text arrives.
+		remoteSession.setUserPrompt(prompt)
 
 		const result = await runRemoteAgent(workspaceId, prompt, {
 			apiKey,
 			endpoint: process.env.KIMCHI_REMOTE_ENDPOINT,
 			signal: record.abortController?.signal,
 			gitDetails,
+			gitCredential,
 			localPath: ctx.cwd,
 			workspaceName: dirName,
+			onReady: (acpClient, meta) => {
+				remoteSession.bindClient(acpClient, meta)
+			},
 			callbacks: {
-				onTextDelta: (delta, fullText) => options.onTextDelta?.(delta, fullText),
+				onTextDelta: (delta, fullText) => {
+					remoteSession.appendAssistantText(fullText)
+					options.onTextDelta?.(delta, fullText)
+				},
 				onToolActivity: (activity) => {
-					if (activity.type === "end") record.toolUses++
+					if (activity.status === "in_progress") {
+						remoteSession.recordToolCallStart(activity.toolName, activity.toolCallId)
+					} else {
+						const isError = activity.status === "failed"
+						remoteSession.recordToolCallEnd(activity.toolName, activity.toolCallId, isError)
+						record.toolUses++
+					}
 					options.onToolActivity?.(activity)
 				},
 				onTurnEnd: (turnCount) => {
 					record.lastTurnCount = turnCount
+					remoteSession.incrementTurnCount()
 					options.onTurnEnd?.(turnCount)
 				},
 				onAssistantUsage: (usage) => {
+					remoteSession.addUsage(usage)
 					addUsage(record.lifetimeUsage, usage)
 					options.onAssistantUsage?.(usage)
 				},
@@ -608,13 +654,15 @@ export class AgentManager {
 			},
 		})
 
+		record.remoteSession = result.remoteSession
+
 		return {
 			responseText: result.responseText,
-			session: undefined,
+			session: remoteSession as unknown as AgentSession,
 			aborted: result.stopReason === "cancelled",
 			abortReason: undefined,
 			steered: false,
-			turnsUsed: 1,
+			turnsUsed: remoteSession.turnCount,
 			maxTurns: undefined,
 		}
 	}
@@ -739,7 +787,7 @@ export class AgentManager {
 				: withAgentReportProtocol(prompt ?? "", record.taskRef)
 		const resumePromise = resumeAgent(record.session, attemptPrompt, {
 			onToolActivity: (activity) => {
-				if (activity.type === "end") record.toolUses++
+				if (activity.status === "completed" || activity.status === "failed") record.toolUses++
 			},
 			onTurnEnd: (turnCount) => {
 				record.lastTurnCount = turnCount
@@ -2274,6 +2322,31 @@ export function classifyAgentOutcome(record: Pick<AgentRecord, "status" | "abort
 		return "budget_exhausted"
 	}
 	return "failed"
+}
+
+/**
+ * Resolve a git credential for the sandbox clone. Checks for a cached token
+ * first (config.json), then prompts the user via the same PAT dialog
+ * teleport uses. Returns undefined when no token is available (e.g. user
+ * skipped or non-interactive mode) — the clone proceeds without creds and
+ * will succeed for public repos only.
+ */
+async function resolveGitCredential(
+	ctx: ExtensionContext,
+	clonePlan: ClonePlan,
+): Promise<{ host: string; token: string } | undefined> {
+	const host = new URL(clonePlan.httpsUrl).hostname
+	const prompt: () => Promise<GitTokenPromptResult> =
+		ctx.mode === "tui"
+			? () =>
+					ctx.ui.custom(
+						(tui, theme, _kb, done) => new GitTokenPromptComponent(theme, host, done, () => tui.requestRender()),
+					)
+			: async () => ({ outcome: "skipped" as const })
+	const token = await resolveGitToken(host, prompt, (err) =>
+		console.warn(`[agent-manager] could not save git token: ${err instanceof Error ? err.message : err}`),
+	)
+	return token ? { host, token } : undefined
 }
 
 function buildRemainingWorkGuidance(

@@ -88,10 +88,10 @@ describe("StdioAcpClient", () => {
 	})
 
 	it("surfaces tool_call notifications as tool activity", async () => {
-		const acts: Array<{ type: string; toolName: string }> = []
+		const acts: Array<{ status: string; toolName: string }> = []
 		const client = makeClient({
 			onToolActivity: (a) => {
-				acts.push({ type: a.type, toolName: a.toolName })
+				acts.push({ status: a.status, toolName: a.toolName })
 			},
 		})
 		await client.initialize()
@@ -99,8 +99,8 @@ describe("StdioAcpClient", () => {
 		await client.prompt("USE_TOOLS now")
 
 		expect(acts).toEqual([
-			{ type: "start", toolName: "fake tool" },
-			{ type: "end", toolName: "fake tool" },
+			{ status: "in_progress", toolName: "fake tool" },
+			{ status: "completed", toolName: "fake tool" },
 		])
 		client.close()
 	})

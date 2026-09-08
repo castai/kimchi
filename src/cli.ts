@@ -5,9 +5,14 @@ import { mkdirSync, readFileSync, writeFileSync } from "node:fs"
 import { dirname, resolve } from "node:path"
 import { fileURLToPath } from "node:url"
 import { AgentSession, parseArgs as parsePiArgs } from "@earendil-works/pi-coding-agent"
+import piWorkflowsExtension from "@kimchi-dev/kimchi-workflows/extension"
 import {
+	getParsedCliArgs,
+	hasFermentOneshotArg,
+	hasPrintFlag,
 	isCliAtFileArg,
 	isExperimentalFeaturesArg,
+	isExplicitAutoModelSelection,
 	isHelpOrVersionArgs,
 	isTerminalUiMode,
 	normalizeResumeIdArgs,
@@ -46,21 +51,26 @@ import autoUpdateSettingsExtension from "./extensions/auto-update-settings.js"
 import bashControlExtension from "./extensions/bash-background/bash-control-extension.js"
 import { bashBackgroundExtension } from "./extensions/bash-background/index.js"
 import bashDefaultTimeoutExtension from "./extensions/bash-default-timeout.js"
+import bashHooksAdapterExtension from "./extensions/bash-hooks-adapter.js"
 import bashTimeoutGuidanceExtension from "./extensions/bash-timeout-guidance.js"
 import bashToolGuardExtension from "./extensions/bash-tool-guard.js"
 import behavioursExtension from "./extensions/behaviours/index.js"
 import budgetCommandExtension from "./extensions/billing/command.js"
 import { refreshBillingStatusFromConfig } from "./extensions/billing/status.js"
 import branchCommandExtension from "./extensions/branch-command.js"
+import cacheSummaryExtension from "./extensions/cache-summary.js"
 import claudeCodeHooksAdapter from "./extensions/claude-code-hook-adapter/index.js"
 import claudeCodeSkillsExtension from "./extensions/claude-code-skills/index.js"
 import clipboardImageExtension from "./extensions/clipboard-image.js"
+import contextAssemblyExtension from "./extensions/context-assembly.js"
 import customizeStatusLineExtension from "./extensions/customize-status-line-command.js"
 import daemonExtension from "./extensions/daemon/index.js"
 import dapExtension from "./extensions/dap.js"
 import { setExperimentalFeaturesEnabled } from "./extensions/experimental.js"
 import explorationGuardExtension from "./extensions/exploration-guard.js"
 import fermentExtension from "./extensions/ferment/index.js"
+import { FERMENT_V2_RESOURCE_ID } from "./extensions/ferment-v2/constants.js"
+import fermentV2Extension from "./extensions/ferment-v2/index.js"
 import helpExtension from "./extensions/help.js"
 import hiddenToolGuidanceExtension from "./extensions/hidden-tool-guidance.js"
 import hideThinkingExtension from "./extensions/hide-thinking.js"
@@ -82,7 +92,6 @@ import lspExtension from "./extensions/lsp.js"
 import mcpAdapterExtension from "./extensions/mcp-adapter/index.js"
 import modelGuardExtension from "./extensions/model-guard.js"
 import modelSwitchExtension from "./extensions/model-switch.js"
-import omitKimchiMaxTokensExtension from "./extensions/omit-kimchi-max-tokens.js"
 import { createSessionModeOnboardingForStartup } from "./extensions/onboarding/session-mode-startup.js"
 import { applyRoleAugmentation } from "./extensions/orchestration/model-roles.js"
 import orphanToolResultSanitizerExtension from "./extensions/orphan-tool-result-sanitizer.js"
@@ -91,7 +100,9 @@ import permissionsExtension from "./extensions/permissions/index.js"
 import { writeKimchiKeybindingDefaults } from "./extensions/permissions/keybindings.js"
 import { installPiNativeCompatibilityShim } from "./extensions/pi-package-lookup/native-compat.js"
 import piiRedactionExtension from "./extensions/pii-redaction/index.js"
+import plannotatorExtension from "./extensions/plannotator/index.js"
 import pluginPackageHooksAdapter from "./extensions/plugin-package-hook-adapter/index.js"
+import { setPrintGate } from "./extensions/print-mode.js"
 import promptEnrichmentExtension from "./extensions/prompt-construction/prompt-enrichment.js"
 import promptSummaryExtension from "./extensions/prompt-summary.js"
 import questionnaireExtension from "./extensions/questionnaire/index.js"
@@ -100,7 +111,8 @@ import remoteRunExtension from "./extensions/remote-run/index.js"
 import reportBugExtension from "./extensions/report-bug.js"
 import requestTimingExtension from "./extensions/request-timing.js"
 import reviewWriteGuardExtension from "./extensions/review-write-guard.js"
-import rtkRewriteExtension from "./extensions/rtk-rewrite.js"
+import { installAutoModelAdapters } from "./extensions/router/adapters.js"
+import autoModelExtension from "./extensions/router/index.js"
 import sessionMetadataExtension from "./extensions/session-metadata/index.js"
 import sessionNameExtension from "./extensions/session-name.js"
 import orphanToolResultRepairExtension from "./extensions/session-repair/orphan-tool-result-repair.js"
@@ -136,6 +148,7 @@ import {
 	KIMCHI_INFRA_ERROR_EXIT_CODE,
 } from "./infrastructure-error.js"
 import {
+	injectAutoModel,
 	injectExperimentalProvider,
 	isTransientModelsError,
 	readExperimentalModels,
@@ -157,7 +170,7 @@ import { runSetupWizard } from "./setup-wizard.js"
 import { setAvailableModels } from "./startup-context.js"
 import { probeTerminalBackground } from "./terminal-bg-probe.js"
 import { installInlineCompactPatch } from "./upstream-inline-compact-patch.js"
-import { installInfrastructureRetryPatch } from "./upstream-retry-patch.js"
+import { installCompactionRecoveryPatch, installInfrastructureRetryPatch } from "./upstream-retry-patch.js"
 import {
 	postProcessHtmlExport,
 	postProcessJsonlExport,
@@ -168,6 +181,7 @@ import { captureSessionStart } from "./utils/session-metadata-store.js"
 import { getVersion } from "./utils.js"
 
 installInfrastructureRetryPatch()
+installCompactionRecoveryPatch()
 installInlineCompactPatch()
 installPiNativeCompatibilityShim()
 // Wrap InteractiveMode.prototype.showError so retried provider errors are
@@ -291,6 +305,13 @@ try {
 		// steering text) can gate on it — the CLI arg is stripped from the
 		// args that reach main(), so pi.getFlag can't discover it.
 		setExperimentalFeaturesEnabled(experimentalFeatures)
+		installAutoModelAdapters()
+		// Publish the print-mode gate the
+		// same way so interactive-only (questionnaire) and ferment-mode-only
+		// (set_phase, list_ferments, ferment suite) tools stay out of headless
+		// --print sessions. The ferment-oneshot argv scan is the load-bearing
+		// composition: a headless one-shot planner still needs the suite.
+		setPrintGate(hasPrintFlag(originalArgs), hasFermentOneshotArg(originalArgs))
 		let config = loadConfig()
 
 		const envKey = process.env.KIMCHI_API_KEY || undefined
@@ -360,6 +381,7 @@ try {
 				injectExperimentalProvider(modelsJsonPath, currentApiKey ?? "")
 				models = [...models, ...readExperimentalModels(modelsJsonPath)]
 			}
+			injectAutoModel(modelsJsonPath)
 			// Auto-discover a local Ollama server and merge its models into the
 			// registry. Probe is silent on failure — startup is never blocked.
 			await injectOllamaProvider(modelsJsonPath, resolveOllamaHost())
@@ -384,6 +406,7 @@ try {
 					injectExperimentalProvider(modelsJsonPath, currentApiKey)
 					models = [...models, ...readExperimentalModels(modelsJsonPath)]
 				}
+				injectAutoModel(modelsJsonPath)
 				await injectOllamaProvider(modelsJsonPath, resolveOllamaHost())
 				models = [...models, ...readOllamaModelMetadata(modelsJsonPath)]
 			} else if (isTransientModelsError(err)) {
@@ -493,6 +516,9 @@ try {
 		// before upstream pi-mono sees them (it does not recognize "multi-model"
 		// as a model id).
 		populateCliArgs(rawArgs)
+		if (!experimentalFeatures && isExplicitAutoModelSelection(getParsedCliArgs())) {
+			throw new Error("kimchi-dev/auto is experimental. Re-run with --enable-experimental-features to select it.")
+		}
 		const rawArgsWithoutMultiModel = stripMultiModelArgs(rawArgs)
 
 		const terminalIo = {
@@ -611,6 +637,10 @@ try {
 			// session_shutdown intentionally kills nothing here.
 			// EXPERIMENTAL: gated behind --enable-experimental-features.
 			...(experimentalFeatures ? [daemonExtension] : []),
+			// Re-wires user bash hooks (`applyEnabledBashHooks`) for `tool_call`
+			// and `user_bash` events. Must run before bashToolGuardExtension so
+			// hooks see the original command and any rewrite/block propagates.
+			bashHooksAdapterExtension,
 			bashToolGuardExtension,
 			bashTimeoutGuidanceExtension,
 			hiddenToolGuidanceExtension,
@@ -623,11 +653,12 @@ try {
 				{ id: "extensions.ferment", factory: fermentExtension },
 			] satisfies ManagedExtensionFactory[]),
 			questionnaireExtension,
+			// Resolve kimchi-dev/auto before prompt construction needs concrete model behavior.
+			autoModelExtension,
 			...enabledExtensionFactories([
 				{ id: "extensions.claude-code-skills", factory: (pi) => claudeCodeSkillsExtension(pi, effectiveSkillPaths) },
 			] satisfies ManagedExtensionFactory[]),
 			promptEnrichmentExtension(effectiveSkillPaths),
-			rtkRewriteExtension,
 			...enabledExtensionFactories([
 				{ id: "extensions.claude-code-hook-adapter", factory: claudeCodeHooksAdapter },
 			] satisfies ManagedExtensionFactory[]),
@@ -636,6 +667,7 @@ try {
 			// by each package's own resource toggle (see pluginPackageHookSources).
 			pluginPackageHooksAdapter,
 			kimchiHooksAdapter,
+			plannotatorExtension,
 			permissionsExtension,
 			resourcesExtension,
 			resourceToolBlockerExtension,
@@ -657,6 +689,10 @@ try {
 			...(experimentalFeatures ? [acpAgentsExtension] : []),
 			...enabledExtensionFactories([
 				{ id: "extensions.agents", factory: agentsExtension },
+				{ id: "extensions.workflows", factory: piWorkflowsExtension },
+			] satisfies ManagedExtensionFactory[]),
+			...enabledExtensionFactories([
+				{ id: FERMENT_V2_RESOURCE_ID, factory: fermentV2Extension },
 			] satisfies ManagedExtensionFactory[]),
 			helpExtension,
 			themeSelectorExtension,
@@ -679,10 +715,11 @@ try {
 			modelGuardExtension,
 			orphanToolResultRepairExtension,
 			orphanToolResultSanitizerExtension,
-			omitKimchiMaxTokensExtension,
 			piiRedactionExtension,
 			stripImagesExtension,
 			traceIdExtension,
+			contextAssemblyExtension,
+			cacheSummaryExtension,
 			requestTimingExtension,
 			llmResponseLogExtension,
 			activityExtension,
@@ -706,11 +743,11 @@ try {
 			const { main } = await import("@earendil-works/pi-coding-agent")
 			await main(rawArgsWithoutMultiModel, { extensionFactories })
 		}
-		// Only reclassify runs that already failed (print mode sets exitCode 1);
-		// a clean interactive quit after a transient error stays a success.
-		if (process.exitCode) {
-			applyPostMainInfrastructureExitPolicy(infrastructureErrorTracker.getFailure())
-		}
+		applyPostMainInfrastructureExitPolicy(
+			infrastructureErrorTracker.getFailure(),
+			process.exit,
+			Boolean(process.exitCode) || hasPrintFlag(rawArgs),
+		)
 	}
 } catch (err) {
 	await drainPreSessionTelemetry()

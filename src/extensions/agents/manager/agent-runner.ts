@@ -12,27 +12,24 @@ import {
 	getAgentDir,
 	type InlineExtension,
 	type ModelRuntime,
+	type ModelRegistry as PiModelRegistry,
 	SessionManager,
 	SettingsManager,
 } from "@earendil-works/pi-coding-agent"
 import { readTelemetryConfig } from "../../../config.js"
-import {
-	derivePlanTitle,
-	savePlanMarkdown,
-	slugifyPlanName,
-	stripPlanCompletionMarkers,
-} from "../../../shared/planning/plan-markdown.js"
 import { getAvailableModels } from "../../../startup-context.js"
 import { runAsAgentWorker } from "../../agent-worker-context.js"
 import bashDefaultTimeoutExtension, { createSubagentBashClampExtension } from "../../bash-default-timeout.js"
 import dapExtension from "../../dap.js"
 import { FERMENT_TOOL_NAMES } from "../../ferment/tool-names.js"
 import infrastructureBreakerExtension from "../../infrastructure-breaker.js"
-import omitKimchiMaxTokensExtension from "../../omit-kimchi-max-tokens.js"
 import { buildPhaseGuidelinesSection } from "../../orchestration/model-registry/guidelines/guidelines-resolver.js"
 import { ModelRegistry } from "../../orchestration/model-registry/index.js"
 import type { Phase } from "../../orchestration/model-registry/types.js"
 import { loadProjectContextFiles } from "../../prompt-construction/context-files.js"
+import { isAutoModel } from "../../router/constants.js"
+import { createAutoModelExtension } from "../../router/index.js"
+import { getEffectiveModel } from "../../router/state.js"
 import { getCurrentPhase, setCurrentPhase } from "../../tags.js"
 import telemetryExtension from "../../telemetry/index.js"
 import { detectEnv } from "../env.js"
@@ -173,7 +170,7 @@ export function setGraceTurns(n: number): void {
  */
 function resolveDefaultModel(
 	parentModel: Model<Api> | undefined,
-	registry: { find(provider: string, modelId: string): Model<Api> | undefined; getAvailable?(): Model<Api>[] },
+	registry: Pick<PiModelRegistry, "find" | "getAvailable">,
 	configModel?: string,
 ): Model<Api> | undefined {
 	if (configModel) {
@@ -182,16 +179,8 @@ function resolveDefaultModel(
 			const provider = configModel.slice(0, slashIdx)
 			const modelId = configModel.slice(slashIdx + 1)
 
-			const available = registry.getAvailable?.()
-			const availableKeys = available
-				? new Set(
-						available.map(
-							(m: unknown) =>
-								`${(m as { provider: string; id: string }).provider}/${(m as { provider: string; id: string }).id}`,
-						),
-					)
-				: undefined
-			const isAvailable = (p: string, id: string) => !availableKeys || availableKeys.has(`${p}/${id}`)
+			const availableKeys = new Set(registry.getAvailable().map((model) => `${model.provider}/${model.id}`))
+			const isAvailable = (p: string, id: string) => availableKeys.has(`${p}/${id}`)
 
 			const found = registry.find(provider, modelId)
 			if (found && isAvailable(provider, modelId)) return found
@@ -210,14 +199,18 @@ function getGuidelinesRegistry(): ModelRegistry {
 
 /** Info about a tool event in the subagent. */
 export interface ToolActivity {
-	type: "start" | "end"
 	toolName: string
+	toolCallId?: string
+	/** ACP tool-call status — "in_progress" = start, "completed"/"failed" = end. */
+	status: "pending" | "in_progress" | "completed" | "failed"
 }
 
 export interface RunOptions {
 	/** ExtensionAPI instance — used for pi.exec() instead of execSync. */
 	pi: ExtensionAPI
 	model?: Model<Api>
+	/** The parent is forwarding image context as file paths to this child. */
+	requiresVision?: boolean
 	maxTurns?: number
 	signal?: AbortSignal
 	isolated?: boolean
@@ -287,6 +280,24 @@ function collectResponseText(session: AgentSession) {
 		}
 	})
 	return { getText: () => text, unsubscribe }
+}
+
+/**
+ * Find the worker session's submit_plan tool result and return the saved plan
+ * path from the structured `details` payload (`{ submitted: true, planPath }`).
+ * pi-mono preserves `details` on stored tool-result messages, so this is the
+ * sole extraction path.
+ */
+function extractSubmitPlanPath(session: AgentSession): string | undefined {
+	for (let i = session.messages.length - 1; i >= 0; i--) {
+		const msg = session.messages[i]
+		if (msg.role !== "toolResult" || msg.toolName !== "submit_plan") continue
+		const details = msg.details as { submitted?: boolean; planPath?: unknown } | undefined
+		if (details?.submitted === true && typeof details.planPath === "string" && details.planPath) {
+			return details.planPath
+		}
+	}
+	return undefined
 }
 
 function getLastAssistantText(session: AgentSession): string {
@@ -433,10 +444,7 @@ ${skillLines}`
 
 	const disallowedSet = agentConfig?.disallowedTools ? new Set(agentConfig.disallowedTools) : undefined
 
-	const modelId = (options.model as { id?: string } | undefined)?.id
 	const guidelinePhase = agentConfig?.roles?.[0] as Phase | undefined
-	const guidelinesBlock = buildPhaseGuidelinesSection(modelId, guidelinePhase, getGuidelinesRegistry())
-	if (guidelinesBlock) extras.guidelinesBlock = guidelinesBlock
 
 	const effectiveMaxTurns = normalizeMaxTurns(options.maxTurns ?? agentConfig?.maxTurns ?? defaultMaxTurns)
 	const MIN_TOKEN_BUDGET = 1024
@@ -446,8 +454,12 @@ ${skillLines}`
 		extras.budget = { maxTurns: effectiveMaxTurns, tokenBudget: effectiveTokenBudget }
 	}
 
-	const buildSystemPrompt = (activeToolNames: string[]) => {
+	const model = options.model ?? resolveDefaultModel(ctx.model, ctx.modelRegistry, agentConfig?.models?.[0])
+
+	const buildSystemPrompt = (activeToolNames: string[], promptModelId = model?.id) => {
 		extras.activeToolNames = activeToolNames
+		const guidelinesBlock = buildPhaseGuidelinesSection(promptModelId, guidelinePhase, getGuidelinesRegistry())
+		extras.guidelinesBlock = guidelinesBlock
 		if (agentConfig) return buildAgentPrompt(agentConfig, effectiveCwd, env, parentSystemPrompt, extras)
 		const fallback = DEFAULT_AGENTS.get(AGENT_GENERAL_PURPOSE)
 		if (!fallback) throw new Error(`No fallback config available for unknown type "${type}"`)
@@ -489,11 +501,24 @@ ${skillLines}`
 			: bashDefaultTimeoutExtension
 	// Subagents share this process and its patched retry classifier, so their
 	// successes must close the shared infrastructure breaker just like the parent's.
+	const autoExtensionFactories: InlineExtension[] = isAutoModel(model)
+		? [
+				createAutoModelExtension({ requiresVision: options.requiresVision }),
+				(pi) => {
+					pi.on("before_agent_start", (_event, childCtx) => {
+						const effectiveModel = getEffectiveModel(childCtx)
+						const rebuilt = buildSystemPrompt(pi.getActiveTools(), effectiveModel?.id)
+						options.onSystemPrompt?.(rebuilt)
+						return { systemPrompt: rebuilt }
+					})
+				},
+			]
+		: []
 	const extensionFactories: InlineExtension[] = [
 		telemetryExtension(readTelemetryConfig()),
+		...autoExtensionFactories,
 		bashExtension,
 		infrastructureBreakerExtension,
-		omitKimchiMaxTokensExtension,
 	]
 	// Personas that request DAP debugger tools (e.g. Debugger) need the dap
 	// extension registered in the child session: repo-native extensions wired
@@ -522,17 +547,6 @@ ${skillLines}`
 		extensionFactories,
 	})
 	await loader.reload()
-
-	const model =
-		options.model ??
-		resolveDefaultModel(
-			ctx.model as Model<Api> | undefined,
-			ctx.modelRegistry as {
-				find(provider: string, modelId: string): Model<Api> | undefined
-				getAvailable?(): Model<Api>[]
-			},
-			agentConfig?.models?.[0],
-		)
 
 	const thinkingLevel = options.thinkingLevel ?? agentConfig?.thinking
 
@@ -563,7 +577,7 @@ ${skillLines}`
 	await session.bindExtensions({
 		onError: (err) => {
 			options.onToolActivity?.({
-				type: "end",
+				status: "completed",
 				toolName: `extension-error:${err.extensionPath}`,
 			})
 		},
@@ -678,11 +692,11 @@ ${skillLines}`
 				// to ensure the agent loop halts and this tool call is skipped.
 				hardAbort(session)
 			} else {
-				options.onToolActivity?.({ type: "start", toolName: event.toolName })
+				options.onToolActivity?.({ status: "in_progress", toolName: event.toolName })
 			}
 		}
 		if (event.type === "tool_execution_end") {
-			options.onToolActivity?.({ type: "end", toolName: event.toolName })
+			options.onToolActivity?.({ status: "completed", toolName: event.toolName })
 			if (event.toolName === WORKER_REPORT_TOOL_NAME && options.workerReport?.isAccepted()) {
 				reportAccepted = true
 				queueMicrotask(() => hardAbort(session))
@@ -824,20 +838,14 @@ ${skillLines}`
 
 	const responseText = collector.getText().trim() || getLastAssistantText(session)
 
-	// When a Plan agent emits a completion marker, the harness saves the plan
-	// to .kimchi/plans/<slug>.md regardless of permission mode — delegated
-	// Plan agents run outside plan permission mode so the turn_end handler in
-	// permissions/index.ts does not fire for them.
+	// A Plan agent completes by calling the submit_plan tool, which saves the
+	// plan itself (see permissions/index.ts) and terminates the turn. Extract
+	// the saved path from the tool result so the parent orchestrator can
+	// surface it. Stays undefined for non-Plan agents and when no submit_plan
+	// call happened.
 	let planPath: string | undefined
-	if (type === "Plan" && responseText.includes("<!-- PLAN_COMPLETE -->")) {
-		const planText = stripPlanCompletionMarkers(responseText)
-		const slug = slugifyPlanName(derivePlanTitle(planText))
-		try {
-			planPath = savePlanMarkdown({ cwd: effectiveCwd, name: slug, planText })
-		} catch (err) {
-			const detail = err instanceof Error ? err.message : String(err)
-			console.error(`agent-runner: failed to save plan file: ${detail}`)
-		}
+	if (type === "Plan") {
+		planPath = extractSubmitPlanPath(session)
 	}
 
 	return {
@@ -928,11 +936,11 @@ export async function resumeAgent(
 			if (budgetAborted) {
 				hardAbort(session)
 			} else {
-				options.onToolActivity?.({ type: "start", toolName: event.toolName })
+				options.onToolActivity?.({ status: "in_progress", toolName: event.toolName })
 			}
 		}
 		if (event.type === "tool_execution_end") {
-			options.onToolActivity?.({ type: "end", toolName: event.toolName })
+			options.onToolActivity?.({ status: "completed", toolName: event.toolName })
 			if (options.shouldTerminateAfterTool?.(event.toolName)) {
 				terminationToolCompleted = true
 				queueMicrotask(() => hardAbort(session))

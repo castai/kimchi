@@ -333,10 +333,10 @@ export class StdioAcpClient {
 		status: ToolCallStatus | null | undefined,
 		title: string,
 	): void {
-		if (status === "in_progress") {
-			cb.onToolActivity?.({ type: "start", toolName: title })
-		} else if (status === "completed" || status === "failed") {
-			cb.onToolActivity?.({ type: "end", toolName: title })
+		// Mirrors the sandbox client's table: in_progress = start,
+		// completed/failed = end. toolName carries the display title.
+		if (status === "in_progress" || status === "completed" || status === "failed") {
+			cb.onToolActivity?.({ toolName: title, status })
 		}
 	}
 

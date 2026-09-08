@@ -4,7 +4,7 @@
  * Mirrors `_runRemote()` in AgentManager: resolves the server config, drives
  * an ACP client (stdio child process, or WebSocket reusing the sandbox
  * client) through the turn loop, maps `AcpSessionCallbacks` onto the spawn
- * callbacks, and returns a `RemoteRunResult`. One `prompt()` call is one
+ * callbacks, and returns an `AcpRunResult`. One `prompt()` call is one
  * turn; steers and pending peer messages are delivered as follow-up prompts
  * between turns (see the drain hook in the loop).
  *
@@ -22,7 +22,7 @@ import type { ExtensionContext } from "@earendil-works/pi-coding-agent"
 import { type AcpPromptResult, type AcpSessionCallbacks, AcpSessionClient } from "../../sandbox/worker/acp-client.js"
 import { getAgentInvocation } from "../../utils/spawn-kimchi-subprocess.js"
 import { getActiveManager } from "../agents/index.js"
-import type { PendingAgentMessage, RemoteRunResult, SpawnOptions } from "../agents/manager/agent-manager.js"
+import type { AcpRunResult, PendingAgentMessage, SpawnOptions } from "../agents/manager/agent-manager.js"
 import { addUsage, type LifetimeUsage } from "../agents/manager/usage.js"
 import type { AgentAbortReason, AgentRecord } from "../agents/personas/types.js"
 import { type AcpMcpServer, StdioAcpClient } from "./acp-agent-client.js"
@@ -93,7 +93,7 @@ export async function runAcpAgent(
 	prompt: string,
 	options: SpawnOptions,
 	ctx: ExtensionContext,
-): Promise<RemoteRunResult> {
+): Promise<AcpRunResult> {
 	const serverName = record.acp?.server
 	if (!serverName) throw new Error("ACP run requires record.acp.server.")
 	const config = loadAcpAgentServers(ctx.cwd).get(serverName)
@@ -124,7 +124,7 @@ export async function runAcpAgent(
 			options.onTextDelta?.(delta, fullText)
 		},
 		onToolActivity: (activity) => {
-			if (activity.type === "end") record.toolUses++
+			if (activity.status === "completed" || activity.status === "failed") record.toolUses++
 			options.onToolActivity?.(activity)
 		},
 		onTurnEnd: (turnCount) => {
