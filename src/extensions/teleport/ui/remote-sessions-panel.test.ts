@@ -346,6 +346,8 @@ describe("RemoteSessionsPanel", () => {
 				maxCpuMillicores: 16000,
 				currentRamBytes: 6442450944,
 				maxRamBytes: 17179869184,
+				currentPvcSizeBytes: 21474836480,
+				maxPvcSizeBytes: 128849018880,
 			},
 			orgUsage: {
 				currentSandboxes: 7,
@@ -354,20 +356,24 @@ describe("RemoteSessionsPanel", () => {
 				maxCpuMillicores: 16000,
 				currentRamBytes: 6442450944,
 				maxRamBytes: 17179869184,
+				currentPvcSizeBytes: 32212254720,
+				maxPvcSizeBytes: 429496729600,
 			},
 		}
 
 		const summaryLine = (panel: RemoteSessionsPanel): string | undefined =>
 			panel
-				.render(120)
+				// Wide enough for the full two-scope summary; truncation at narrower
+				// widths is covered by the narrow-terminal render tests.
+				.render(200)
 				.map(stripAnsi)
 				.find((l) => l.includes("You:"))
 
 		it("renders a one-line usage-vs-quota summary above the hint", () => {
 			const { panel } = makePanel(treeNodes, { quota })
 			const line = summaryLine(panel)
-			expect(line).toContain("You: 4500m/16000m CPU · 6Gi/16Gi RAM · 3/10 workspaces")
-			expect(line).toContain("(org: 9000m/16000m CPU · 6Gi/16Gi RAM · 7/10 workspaces)")
+			expect(line).toContain("You: 4500m/16000m CPU · 6Gi/16Gi RAM · 20Gi/120Gi PVC · 3/10 workspaces")
+			expect(line).toContain("(org: 9000m/16000m CPU · 6Gi/16Gi RAM · 30Gi/400Gi PVC · 7/10 workspaces)")
 		})
 
 		it("renders current and max RAM in one shared unit, decimals on the current side when needed", () => {
@@ -402,6 +408,18 @@ describe("RemoteSessionsPanel", () => {
 			expect(line).toContain("You: 1/5 workspaces")
 			expect(line).not.toContain("CPU")
 			expect(line).not.toContain("RAM")
+			expect(line).not.toContain("PVC")
+		})
+
+		it("renders a PVC segment when only PVC fields are present", () => {
+			const { panel } = makePanel(treeNodes, {
+				quota: { userUsage: { currentPvcSizeBytes: 5368709120, maxPvcSizeBytes: 107374182400 } },
+			})
+			const line = summaryLine(panel)
+			expect(line).toContain("You: 5Gi/100Gi PVC")
+			expect(line).not.toContain("CPU")
+			expect(line).not.toContain("RAM")
+			expect(line).not.toContain("workspaces")
 		})
 
 		it("omits the summary line entirely when no quota was fetched, keeping the line count constant", () => {

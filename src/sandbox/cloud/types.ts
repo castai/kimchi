@@ -28,6 +28,10 @@ export interface ResourceUsage {
 	maxCpuMillicores?: number
 	currentRamBytes?: number
 	maxRamBytes?: number
+	/** Persistent-volume storage currently counted against the quota, in bytes. */
+	currentPvcSizeBytes?: number
+	/** Maximum persistent-volume storage allowed by the quota, in bytes. */
+	maxPvcSizeBytes?: number
 }
 
 /** Org/user quota usage returned by the control plane's `quotas:usage` endpoint. */

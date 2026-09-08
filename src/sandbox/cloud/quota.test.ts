@@ -27,6 +27,8 @@ function usageFixture(over: Partial<Record<string, unknown>> = {}) {
 		maxCpuMillicores: "16000",
 		currentRamBytes: "6442450944",
 		maxRamBytes: "17179869184",
+		currentPvcSizeBytes: "21474836480",
+		maxPvcSizeBytes: "128849018880",
 		...over,
 	}
 }
@@ -52,6 +54,8 @@ describe("getQuotaUsage", () => {
 			maxCpuMillicores: 16000,
 			currentRamBytes: 6442450944,
 			maxRamBytes: 17179869184,
+			currentPvcSizeBytes: 21474836480,
+			maxPvcSizeBytes: 128849018880,
 		})
 		expect(usage.orgUsage).toMatchObject({ currentSandboxes: 7, currentCpuMillicores: 9000 })
 	})

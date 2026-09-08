@@ -71,5 +71,7 @@ function parseResourceUsage(raw: unknown): ResourceUsage | undefined {
 		maxCpuMillicores: parseInt64(r.maxCpuMillicores),
 		currentRamBytes: parseInt64(r.currentRamBytes),
 		maxRamBytes: parseInt64(r.maxRamBytes),
+		currentPvcSizeBytes: parseInt64(r.currentPvcSizeBytes),
+		maxPvcSizeBytes: parseInt64(r.maxPvcSizeBytes),
 	}
 }

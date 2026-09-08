@@ -258,6 +258,9 @@ export class RemoteSessionsPanel implements Component {
 			if (u.currentRamBytes !== undefined && u.maxRamBytes !== undefined) {
 				parts.push(`${formatK8sBytesPair(u.currentRamBytes, u.maxRamBytes)} RAM`)
 			}
+			if (u.currentPvcSizeBytes !== undefined && u.maxPvcSizeBytes !== undefined) {
+				parts.push(`${formatK8sBytesPair(u.currentPvcSizeBytes, u.maxPvcSizeBytes)} PVC`)
+			}
 			if (u.currentSandboxes !== undefined && u.maxSandboxes !== undefined) {
 				parts.push(`${u.currentSandboxes}/${u.maxSandboxes} workspaces`)
 			}
