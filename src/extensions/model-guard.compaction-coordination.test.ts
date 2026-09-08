@@ -22,9 +22,10 @@
  * Scenario A fails against the pre-fix guard (double compaction_start, abort
  * error, uncompacted context for the next call).
  */
-import { mkdtempSync } from "node:fs"
+import { mkdtempSync, rmSync } from "node:fs"
 import os from "node:os"
 import path from "node:path"
+import { Agent, type AgentMessage } from "@earendil-works/pi-agent-core"
 import { type AssistantMessage, createAssistantMessageEventStream, type Model } from "@earendil-works/pi-ai"
 import {
 	AgentSession,
@@ -37,10 +38,6 @@ import {
 	SettingsManager,
 } from "@earendil-works/pi-coding-agent"
 import { beforeEach, describe, expect, it, type MockInstance, vi } from "vitest"
-import {
-	Agent,
-	type AgentMessage,
-} from "../../node_modules/.pnpm/node_modules/@earendil-works/pi-agent-core/dist/index.js"
 import { getCompactionEnabled } from "../settings-watcher.js"
 import { type InlineCompactOptions, installInlineCompactPatch } from "../upstream-inline-compact-patch.js"
 import modelGuardExtension from "./model-guard.js"
@@ -93,6 +90,30 @@ function makeAssistantMessage(extra: Partial<AssistantMessage>): AssistantMessag
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms))
 
+/** Wait (bounded) until the scenario's observed session state stops changing. */
+async function waitForQuiescence(result: ScenarioResult, session: AgentSession, timeoutMs = 5_000): Promise<void> {
+	const deadline = Date.now() + timeoutMs
+	let previous = ""
+	let stablePolls = 0
+	while (Date.now() < deadline) {
+		const snapshot = JSON.stringify({
+			entries: session.sessionManager.getBranch().filter((e) => e.type === "compaction").length,
+			calls: result.subsequentCallContexts.length,
+			starts: result.compactionStarts,
+			failures: result.compactionEndFailures.length,
+			errors: result.errorMessages.length,
+		})
+		if (snapshot === previous) {
+			stablePolls++
+			if (stablePolls >= 4) return
+		} else {
+			stablePolls = 0
+			previous = snapshot
+		}
+		await sleep(25)
+	}
+}
+
 interface ScenarioOptions {
 	/** Make the first summarizer call fail (inline compaction fails mid-run). */
 	failFirstSummarizer: boolean
@@ -114,6 +135,14 @@ interface ScenarioResult {
 
 async function runScenario(options: ScenarioOptions): Promise<ScenarioResult> {
 	const tmp = mkdtempSync(path.join(os.tmpdir(), "kimchi-compaction-coord-"))
+	try {
+		return await runScenarioIn(tmp, options)
+	} finally {
+		rmSync(tmp, { recursive: true, force: true })
+	}
+}
+
+async function runScenarioIn(tmp: string, options: ScenarioOptions): Promise<ScenarioResult> {
 	const model = makeModel()
 	const settingsManager = SettingsManager.create(tmp, tmp)
 	const loader = new DefaultResourceLoader({ cwd: tmp, agentDir: tmp, settingsManager })
@@ -133,10 +162,11 @@ async function runScenario(options: ScenarioOptions): Promise<ScenarioResult> {
 			summarizerCalls++
 			const call = summarizerCalls
 			queueMicrotask(async () => {
-				// Production-like summarization latency: long enough that the run's
-				// next LLM call completes before the compaction entry is appended
-				// (the exact interleaving that produced the incident).
-				await sleep(50)
+				// Production-like summarization latency (24s in the incident): long
+				// enough that the run's next LLM call completes well before the
+				// compaction entry is appended — the exact interleaving that produced
+				// the incident — with margin for slow CI runners.
+				await sleep(150)
 				if (call === 1 && options.failFirstSummarizer) {
 					stream.push({
 						type: "error",
@@ -319,8 +349,11 @@ async function runScenario(options: ScenarioOptions): Promise<ScenarioResult> {
 	})
 
 	try {
+		// prompt() resolves only after the post-run loop (including any threshold
+		// compaction) completes; the quiescence poll then waits out any trailing
+		// async work instead of using a blind sleep.
 		await session.prompt("start work")
-		await sleep(200)
+		await waitForQuiescence(result, session)
 
 		const branch = session.sessionManager.getBranch()
 		result.compactionEntries = branch.filter((e) => e.type === "compaction").length

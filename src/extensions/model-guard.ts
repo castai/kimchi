@@ -7,7 +7,7 @@ import {
 	estimateTokens as estimatePiMessageTokens,
 } from "@earendil-works/pi-coding-agent"
 import { getCompactionEnabled } from "../settings-watcher.js"
-import { COMPACTION_RESERVE_TOKENS } from "./compaction-thresholds.js"
+import { COMPACTION_RESERVE_TOKENS, isExpectedCompactionError } from "./compaction-thresholds.js"
 import { hasActiveFerment } from "./ferment/state.js"
 
 /** Messages that have a content array we can inspect for images. */
@@ -511,18 +511,14 @@ export default function createModelGuardExtension(_pi: ExtensionAPI) {
 				ctx.ui?.notify?.(`Context compacted (${(result.tokensBefore ?? 0).toLocaleString()} tokens → summary).`, "info")
 			} catch (error) {
 				// Routine non-failures (session too small, already compacted, cancelled,
-				// another compaction in flight) are skipped silently; keep this list in
-				// sync with ferment/auto-compaction.ts EXPECTED_COMPACTION_ERROR_MESSAGES.
-				const message = error instanceof Error ? error.message : String(error)
-				const expected = [
-					"too small",
-					"Already compacted",
-					"Compaction cancelled",
-					"Compaction already in progress",
-					"no summarizable messages",
-				]
-				if (!expected.some((fragment) => message.includes(fragment))) {
-					console.warn("[model-guard] mid-turn compaction failed:", message)
+				// another compaction in flight) are skipped silently; real failures are
+				// surfaced in the UI (console.warn alone is invisible to the user) and
+				// the log. Recovery is delegated: the guard re-arms on the next turn_end
+				// and the post-run _checkCompaction still covers an over-threshold end.
+				const compactionError = error instanceof Error ? error : new Error(String(error))
+				if (!isExpectedCompactionError(compactionError)) {
+					console.warn("[model-guard] mid-turn compaction failed:", compactionError.message)
+					ctx.ui?.notify?.(`Mid-turn compaction failed: ${compactionError.message}.`, "warning")
 				}
 			}
 			return

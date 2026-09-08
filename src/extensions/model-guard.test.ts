@@ -888,7 +888,8 @@ describe("turn_end compaction guard", () => {
 				expect.stringContaining("mid-turn compaction failed"),
 				expect.stringContaining("provider exploded"),
 			)
-			expect(notify).not.toHaveBeenCalled()
+			// Unexpected failures are surfaced to the user, not only to the log.
+			expect(notify).toHaveBeenCalledWith(expect.stringContaining("Mid-turn compaction failed"), "warning")
 		} finally {
 			warn.mockRestore()
 		}
