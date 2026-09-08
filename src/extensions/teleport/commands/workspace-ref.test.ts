@@ -1,15 +1,17 @@
 import type { ExtensionUIContext } from "@earendil-works/pi-coding-agent"
 import { beforeEach, describe, expect, it, vi } from "vitest"
 
-const { listWorkspacesMock, pickWorkspaceMock } = vi.hoisted(() => ({
+const { listWorkspacesMock, pickWorkspaceMock, getQuotaUsageMock } = vi.hoisted(() => ({
 	listWorkspacesMock: vi.fn(),
 	pickWorkspaceMock: vi.fn(),
+	getQuotaUsageMock: vi.fn(),
 }))
 
 vi.mock("../../../sandbox/cloud/workspaces.js", () => ({ listWorkspaces: listWorkspacesMock }))
+vi.mock("../../../sandbox/cloud/quota.js", () => ({ getQuotaUsage: getQuotaUsageMock }))
 vi.mock("../ui/workspaces-panel.js", () => ({ pickWorkspace: pickWorkspaceMock }))
 
-import type { Workspace } from "../../../sandbox/cloud/types.js"
+import type { QuotaUsage, Workspace } from "../../../sandbox/cloud/types.js"
 import type { TeleportContext } from "../types.js"
 import type { WorkspaceRow } from "../ui/workspaces-table.js"
 import { TeleportRefusal } from "./errors.js"
@@ -78,6 +80,7 @@ function ws(over: Partial<Workspace> = {}): Workspace {
 beforeEach(() => {
 	listWorkspacesMock.mockReset().mockResolvedValue([])
 	pickWorkspaceMock.mockReset()
+	getQuotaUsageMock.mockReset().mockResolvedValue(undefined)
 })
 
 describe("isUuid", () => {
@@ -294,5 +297,32 @@ describe("resolveWorkspaceRef", () => {
 		expect(row.cpuMillicores).toBeUndefined()
 		expect(row.ramBytes).toBeUndefined()
 		expect(row.pvcSizeBytes).toBeUndefined()
+	})
+
+	it("passes the fetched quota to the picker", async () => {
+		listWorkspacesMock.mockResolvedValue([ws({ id: UUID_A })])
+		const quota: QuotaUsage = { userUsage: { currentSandboxes: 1, maxSandboxes: 5 } }
+		getQuotaUsageMock.mockResolvedValueOnce(quota)
+		pickWorkspaceMock.mockResolvedValue({ action: "select", row: { id: UUID_A } })
+		const { ctx } = makeCtx()
+		await resolveWorkspaceRef(ctx, undefined, { onEmpty: { kind: "mint" } })
+		expect(pickWorkspaceMock.mock.calls[0][2]).toMatchObject({ quota })
+	})
+
+	it("opens the picker with quota undefined when the fetch fails (best-effort)", async () => {
+		listWorkspacesMock.mockResolvedValue([ws({ id: UUID_A })])
+		getQuotaUsageMock.mockRejectedValueOnce(new Error("boom"))
+		pickWorkspaceMock.mockResolvedValue({ action: "select", row: { id: UUID_A } })
+		const { ctx } = makeCtx()
+		const resolved = await resolveWorkspaceRef(ctx, undefined, { onEmpty: { kind: "mint" } })
+		expect(resolved.id).toBe(UUID_A)
+		expect(pickWorkspaceMock.mock.calls[0][2]).toMatchObject({ quota: undefined })
+	})
+
+	it("does not fetch quota when an explicit ref is given (picker cannot open)", async () => {
+		listWorkspacesMock.mockResolvedValue([ws({ id: UUID_A, name: "kimchi-dev" })])
+		const { ctx } = makeCtx()
+		await resolveWorkspaceRef(ctx, UUID_A, { onEmpty: { kind: "mint" } })
+		expect(getQuotaUsageMock).not.toHaveBeenCalled()
 	})
 })

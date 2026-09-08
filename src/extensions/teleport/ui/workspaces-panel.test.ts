@@ -1,5 +1,6 @@
 import { visibleWidth } from "@earendil-works/pi-tui"
 import { describe, expect, it, vi } from "vitest"
+import type { QuotaUsage } from "../../../sandbox/cloud/types.js"
 import { createWorkspacesPanel, WorkspacesPanel } from "./workspaces-panel.js"
 import type { WorkspaceRow } from "./workspaces-table.js"
 
@@ -33,6 +34,7 @@ function makePanel(
 		allowDelete?: boolean
 		allowRename?: boolean
 		hideSessions?: boolean
+		quota?: QuotaUsage
 	},
 ) {
 	const tui = {
@@ -45,6 +47,7 @@ function makePanel(
 		allowDelete: opts?.allowDelete ?? true,
 		allowRename: opts?.allowRename,
 		hideSessions: opts?.hideSessions,
+		quota: opts?.quota,
 	})
 	return { panel, tui, done }
 }
@@ -369,5 +372,54 @@ describe("WorkspacesPanel", () => {
 				}
 			})
 		}
+	})
+
+	describe("quota footer", () => {
+		const quota: QuotaUsage = {
+			userUsage: {
+				currentSandboxes: 3,
+				maxSandboxes: 10,
+				currentCpuMillicores: 4500,
+				maxCpuMillicores: 16000,
+				currentRamBytes: 6442450944,
+				maxRamBytes: 17179869184,
+				currentPvcSizeBytes: 21474836480,
+				maxPvcSizeBytes: 128849018880,
+			},
+			orgUsage: {
+				currentSandboxes: 7,
+				maxSandboxes: 10,
+				currentCpuMillicores: 9000,
+				maxCpuMillicores: 16000,
+				currentRamBytes: 6442450944,
+				maxRamBytes: 17179869184,
+				currentPvcSizeBytes: 32212254720,
+				maxPvcSizeBytes: 429496729600,
+			},
+		}
+
+		const footerLine = (panel: WorkspacesPanel, needle: string): string | undefined =>
+			panel
+				.render(120)
+				.map(stripAnsi)
+				.find((l) => l.includes(needle))
+
+		it("renders the user and org quota on two footer lines", () => {
+			const { panel } = makePanel(testRows, { quota })
+			expect(footerLine(panel, "You:")).toContain(
+				"You: 4500m/16000m CPU · 6Gi/16Gi RAM · 20Gi/120Gi PVC · 3/10 workspaces",
+			)
+			expect(footerLine(panel, "org:")).toContain(
+				"org: 9000m/16000m CPU · 6Gi/16Gi RAM · 30Gi/400Gi PVC · 7/10 workspaces",
+			)
+		})
+
+		it("omits quota lines (blank rows) when no quota was provided, keeping the line count constant", () => {
+			const withQuota = makePanel(testRows, { quota, termRows: 20 })
+			const without = makePanel(testRows, { termRows: 20 })
+			expect(without.panel.render(120).length).toBe(withQuota.panel.render(120).length)
+			expect(footerLine(without.panel, "You:")).toBeUndefined()
+			expect(footerLine(without.panel, "org:")).toBeUndefined()
+		})
 	})
 })

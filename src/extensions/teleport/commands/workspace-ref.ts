@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto"
+import { getQuotaUsage } from "../../../sandbox/cloud/quota.js"
 import type { Workspace } from "../../../sandbox/cloud/types.js"
 import { listWorkspaces } from "../../../sandbox/cloud/workspaces.js"
 import type { TeleportContext } from "../types.js"
@@ -56,6 +57,13 @@ export async function resolveWorkspaceRef(
 	ref: string | undefined,
 	opts: ResolveOpts,
 ): Promise<ResolvedWorkspace> {
+	// Quota summary for the picker footer — best-effort, fired alongside the
+	// workspace list so the picker doesn't wait for it; a failed fetch
+	// degrades to no summary. Only the no-ref path can open the picker, so
+	// the request is skipped entirely when an explicit ref is given.
+	const quotaPromise = ref
+		? undefined
+		: getQuotaUsage(ctx.apiKey, { endpoint: ctx.endpoint, signal: ctx.signal }).catch(() => undefined)
 	// Always list so we can return the workspace's current name to the caller —
 	// the UUID shortcut is gone because callers now use `resolved.name` to
 	// avoid clobbering the server-stored description on the next PUT.
@@ -107,7 +115,7 @@ export async function resolveWorkspaceRef(
 		ramBytes: w.ramBytes,
 		pvcSizeBytes: w.pvcSizeBytes,
 	}))
-	const choice = await pickWorkspace(ctx, rows, { allowNew, hideSessions: true })
+	const choice = await pickWorkspace(ctx, rows, { allowNew, hideSessions: true, quota: await quotaPromise })
 	if (!choice) {
 		throw new TeleportRefusal(opts.cancelledMessage ?? "cancelled")
 	}

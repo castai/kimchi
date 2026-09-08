@@ -1,10 +1,11 @@
 import type { Component } from "@earendil-works/pi-tui"
 import { matchesKey } from "@earendil-works/pi-tui"
 import { fg } from "../../../ansi.js"
-import type { QuotaUsage, ResourceUsage } from "../../../sandbox/cloud/types.js"
+import type { QuotaUsage } from "../../../sandbox/cloud/types.js"
 import { truncateLinesToWidth } from "../../../truncate-lines.js"
 import type { TeleportContext } from "../types.js"
-import { formatK8sBytes, formatK8sBytesPair, formatMillicores } from "./format-bytes.js"
+import { formatK8sBytes, formatMillicores } from "./format-bytes.js"
+import { quotaLines } from "./quota-footer.js"
 import type { CombinedStatus, SessionRow } from "./sessions-table.js"
 import { formatRelativeTime } from "./sessions-table.js"
 import type { WorkspaceRow } from "./workspaces-table.js"
@@ -244,36 +245,6 @@ export class RemoteSessionsPanel implements Component {
 		]
 	}
 
-	/**
-	 * Usage-vs-quota footer lines: the user scope on the first line, the org
-	 * scope on its own line below it — one line per scope keeps both fully
-	 * readable at common terminal widths instead of truncating the org tail.
-	 * Segments with missing fields are dropped; a scope with nothing to show
-	 * yields undefined, which the render loop replaces with an empty row so
-	 * the panel always emits the same line count.
-	 */
-	private quotaLines(): [string | undefined, string | undefined] {
-		const scope = (u: ResourceUsage): string | undefined => {
-			const parts: string[] = []
-			if (u.currentCpuMillicores !== undefined && u.maxCpuMillicores !== undefined) {
-				parts.push(`${formatMillicores(u.currentCpuMillicores)}/${formatMillicores(u.maxCpuMillicores)} CPU`)
-			}
-			if (u.currentRamBytes !== undefined && u.maxRamBytes !== undefined) {
-				parts.push(`${formatK8sBytesPair(u.currentRamBytes, u.maxRamBytes)} RAM`)
-			}
-			if (u.currentPvcSizeBytes !== undefined && u.maxPvcSizeBytes !== undefined) {
-				parts.push(`${formatK8sBytesPair(u.currentPvcSizeBytes, u.maxPvcSizeBytes)} PVC`)
-			}
-			if (u.currentSandboxes !== undefined && u.maxSandboxes !== undefined) {
-				parts.push(`${u.currentSandboxes}/${u.maxSandboxes} workspaces`)
-			}
-			return parts.length > 0 ? parts.join(" · ") : undefined
-		}
-		const user = this.quota?.userUsage ? scope(this.quota.userUsage) : undefined
-		const org = this.quota?.orgUsage ? scope(this.quota.orgUsage) : undefined
-		return [user ? `You: ${user}` : undefined, org ? `org: ${org}` : undefined]
-	}
-
 	render(width: number): string[] {
 		const { entries } = this
 		const b = (s: string) => fg("2", s)
@@ -429,7 +400,7 @@ export class RemoteSessionsPanel implements Component {
 		// Reserved footer lines: the quota summary (user line + org line) when
 		// available, otherwise empty rows — the panel always emits the same
 		// line count either way.
-		for (const line of this.quotaLines()) {
+		for (const line of quotaLines(this.quota)) {
 			if (line) {
 				const text = truncate(`  ${line}`, contentW)
 				lines.push(ansiRow(dim(text), text.length))

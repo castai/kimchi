@@ -1,10 +1,11 @@
 import type { Component } from "@earendil-works/pi-tui"
 import { matchesKey } from "@earendil-works/pi-tui"
 import { fg } from "../../../ansi.js"
-import type { WorkspaceStatus } from "../../../sandbox/cloud/types.js"
+import type { QuotaUsage, WorkspaceStatus } from "../../../sandbox/cloud/types.js"
 import { truncateLinesToWidth } from "../../../truncate-lines.js"
 import type { TeleportContext } from "../types.js"
 import { formatK8sBytes, formatMillicores } from "./format-bytes.js"
+import { quotaLines } from "./quota-footer.js"
 import { formatRelativeTime } from "./sessions-table.js"
 import type { WorkspaceRow } from "./workspaces-table.js"
 
@@ -17,8 +18,8 @@ const MAX_HEIGHT_PCT = 0.8
 // Lines outside the scrollable body:
 //   top border (1) + header (1) + divider (1)
 //   + top scroll indicator (1) + bottom scroll indicator (1)
-//   + empty row (1) + hint (1) + bottom border (1)
-const CHROME_LINES = 8
+//   + quota summary or empty rows (2) + hint (1) + bottom border (1)
+const CHROME_LINES = 9
 
 export type WorkspacePickerResult =
 	| { action: "select"; row: WorkspaceRow }
@@ -35,6 +36,8 @@ export interface WorkspacesPanelOptions {
 	allowRename?: boolean
 	/** Drop the SESSIONS column entirely (used when session counts aren't fetched). */
 	hideSessions?: boolean
+	/** Org/user quota usage for the two-line footer; undefined omits it. */
+	quota?: QuotaUsage
 }
 
 interface PickerTui {
@@ -113,6 +116,7 @@ export class WorkspacesPanel implements Component {
 	private readonly allowDelete: boolean
 	private readonly allowRename: boolean
 	private readonly hideSessions: boolean
+	private readonly quota: QuotaUsage | undefined
 
 	constructor(
 		private readonly rows: WorkspaceRow[],
@@ -124,6 +128,7 @@ export class WorkspacesPanel implements Component {
 		this.allowDelete = opts.allowDelete ?? false
 		this.allowRename = opts.allowRename ?? false
 		this.hideSessions = opts.hideSessions ?? false
+		this.quota = opts.quota
 		const rowEntries: Entry[] = rows.map((row) => ({ kind: "row", row }))
 		this.entries = this.allowNew ? [...rowEntries, { kind: "new" }] : rowEntries
 	}
@@ -352,7 +357,17 @@ export class WorkspacesPanel implements Component {
 			}
 		}
 
-		lines.push(emptyRow())
+		// Reserved footer lines: the quota summary (user line + org line) when
+		// available, otherwise empty rows — the panel always emits the same
+		// line count either way.
+		for (const line of quotaLines(this.quota)) {
+			if (line) {
+				const text = truncate(`  ${line}`, contentW)
+				lines.push(ansiRow(dim(text), text.length))
+			} else {
+				lines.push(emptyRow())
+			}
+		}
 		const hintParts = ["↑/↓ j/k: navigate", "enter: select"]
 		if (this.allowNew) hintParts.push("n: new")
 		if (this.allowRename) hintParts.push("r: rename")
