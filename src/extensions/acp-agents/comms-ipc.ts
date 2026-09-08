@@ -23,6 +23,8 @@ import { mkdtempSync, rmSync } from "node:fs"
 import { createServer, type Server, type Socket } from "node:net"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
+import type { BoardEntryKind } from "../agents/manager/board.js"
+import type { AgentMessageInput } from "../agents/messages.js"
 
 interface IpcRequest {
 	id: string
@@ -125,13 +127,21 @@ export class AgentCommsIpcServer {
 					return { ok: true, result: capability.listContacts() }
 				case "send_agent_message": {
 					// The shim's request id becomes the idempotency toolCallId.
-					const receipt = await capability.sendMessage(`mcp:${req.id}`, req.params as never)
+					const receipt = await capability.sendMessage(`mcp:${req.id}`, req.params as AgentMessageInput)
 					return { ok: true, result: receipt }
 				}
 				case "post_agent_note":
-					return { ok: true, result: capability.postBoardEntry(req.params as never) }
+					return {
+						ok: true,
+						result: capability.postBoardEntry(req.params as { kind: BoardEntryKind; title: string; body: string }),
+					}
 				case "read_agent_board":
-					return { ok: true, result: capability.readBoardEntries(req.params as never) }
+					return {
+						ok: true,
+						result: capability.readBoardEntries(
+							req.params as { sinceId?: string; kind?: BoardEntryKind; limit?: number },
+						),
+					}
 				default:
 					return { ok: false, error: `unknown method: ${req.method}` }
 			}

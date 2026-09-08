@@ -154,7 +154,7 @@ export class StdioAcpClient {
 			this._withTimeout(
 				this._connection.newSession({
 					cwd: this._options.cwd ?? process.cwd(),
-					mcpServers: (this._options.mcpServers ?? []) as never,
+					mcpServers: this._options.mcpServers ?? [],
 				}),
 				this._options.newSessionTimeoutMs ?? DEFAULT_NEW_SESSION_TIMEOUT_MS,
 				"newSession",
