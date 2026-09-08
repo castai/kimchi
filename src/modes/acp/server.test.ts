@@ -37,6 +37,10 @@ vi.mock("../../config.js", async (importOriginal) => {
 		...actual,
 		writeApiKey: vi.fn(),
 		clearApiKey: vi.fn(),
+		// Real implementation by default; individual tests use
+		// mockReturnValueOnce to simulate credential-store transitions
+		// (writeApiKey/clearApiKey are mocked, so they never touch disk).
+		loadConfig: vi.fn(actual.loadConfig),
 	}
 })
 // Mock the model cache refresh so tests don't hit the network.
@@ -59,7 +63,7 @@ const THEME_KEY_OLD = Symbol.for("@mariozechner/pi-coding-agent:theme")
 
 import { populateCliArgs } from "../../cli-args.js"
 import { authenticateViaBrowser } from "../../cli-auth/index.js"
-import { clearApiKey, writeApiKey } from "../../config.js"
+import { clearApiKey, loadConfig, writeApiKey } from "../../config.js"
 import { createMiniEventBus } from "../../extensions/__mocks__/mini-event-bus.js"
 import { PARENT_SESSION_ID_ENV_KEY } from "../../extensions/agents/manager/constants.js"
 import { setProcessOrchestratorRef } from "../../extensions/kimchi-process.js"
@@ -73,8 +77,10 @@ import {
 	unregisterSessionPermissionFlagController,
 } from "../../extensions/permissions/mode-controller-registry.js"
 import { updateModelsConfig } from "../../models.js"
+import { AVAILABLE_EXT_METHODS, CAPABILITIES_KEY } from "./capabilities.js"
 import { getAcpPrompter } from "./permission-prompter-registry.js"
 import {
+	ACP_REATTACH_MID_TURN_META_KEY,
 	type AcpSessionFactory,
 	type AcpSessionLister,
 	type AcpSessionLoader,
@@ -722,6 +728,143 @@ describe("KimchiAcpAgent turn lifecycle", () => {
 				await import("node:fs").then((fs) => fs.readFileSync(join(tempAgentDir, "auth.json"), "utf-8")),
 			)
 			expect(authJson["kimchi-dev"]).toBeUndefined()
+		})
+	})
+
+	describe("extMethod auth_status", () => {
+		const tempAgentDir = "/tmp/kimchi-acp-test-agent-dir-auth-status"
+
+		// Full KimchiConfig fixture (required fields) with the apiKey varying
+		// per credential-store state: empty string = unauthenticated.
+		function makeConfig(apiKey: string): ReturnType<typeof loadConfig> {
+			return {
+				apiKey,
+				agentConfigDir: tempAgentDir,
+				llmEndpoint: "https://llm.kimchi.dev/openai/v1",
+				customLlmEndpoint: undefined,
+				maxToolResultChars: 12000,
+				mcpSearchLimit: 10,
+				mcpSearch: {
+					strategy: "bm25",
+					bm25K1: 1.2,
+					bm25B: 0.75,
+					fieldWeights: { name: 6, description: 2, schemaKey: 1 },
+				},
+				onboarding: {},
+				deviceId: "test-device-id",
+			}
+		}
+
+		beforeEach(() => {
+			try {
+				rmSync(tempAgentDir, { recursive: true, force: true })
+			} catch {}
+			mkdirSync(tempAgentDir, { recursive: true })
+			vi.mocked(authenticateViaBrowser).mockReset()
+			vi.mocked(loadConfig).mockClear()
+		})
+
+		afterEach(() => {
+			try {
+				rmSync(tempAgentDir, { recursive: true, force: true })
+			} catch {}
+		})
+
+		it("advertises auth_status in the initialize capabilities _meta", async () => {
+			const testAgent = new KimchiAcpAgent(makeConn(), {
+				extensionFactories: [],
+				agentDir: tempAgentDir,
+				sessionFactory: async () => asSession(fake),
+			})
+
+			const response = await testAgent.initialize({ protocolVersion: 1 })
+			expect(response.agentCapabilities?._meta?.[CAPABILITIES_KEY]).toMatchObject({ auth_status: true })
+		})
+
+		it("reports unauthenticated when the credential store has no API key", async () => {
+			vi.mocked(loadConfig).mockReturnValueOnce(makeConfig(""))
+			const testAgent = new KimchiAcpAgent(makeConn(), {
+				extensionFactories: [],
+				agentDir: tempAgentDir,
+				sessionFactory: async () => asSession(fake),
+			})
+
+			await expect(testAgent.extMethod(AVAILABLE_EXT_METHODS.auth_status, {})).resolves.toEqual({
+				authenticated: false,
+			})
+		})
+
+		it("reports authenticated when the credential store has an API key", async () => {
+			vi.mocked(loadConfig).mockReturnValueOnce(makeConfig("castai_v1_token"))
+			const testAgent = new KimchiAcpAgent(makeConn(), {
+				extensionFactories: [],
+				agentDir: tempAgentDir,
+				sessionFactory: async () => asSession(fake),
+			})
+
+			await expect(testAgent.extMethod(AVAILABLE_EXT_METHODS.auth_status, {})).resolves.toEqual({
+				authenticated: true,
+			})
+		})
+
+		// Canonical OAuth credential shape ({ type, access, refresh, expires }) —
+		// the credential reader drops malformed entries, which would hide a
+		// broken logout behind a false unauthenticated result.
+		function oauthCredential() {
+			return { type: "oauth", access: "token", refresh: "refresh", expires: Date.now() + 3600_000 }
+		}
+
+		// Regression: the subscription OAuth login persists credentials to
+		// auth.json only (no config.json apiKey), so auth_status must consult
+		// both halves of the credential store.
+		it("reports authenticated when only auth.json holds OAuth credentials", async () => {
+			writeFileSync(join(tempAgentDir, "auth.json"), JSON.stringify({ "kimchi-dev": oauthCredential() }))
+			vi.mocked(loadConfig).mockReturnValueOnce(makeConfig(""))
+			const testAgent = new KimchiAcpAgent(makeConn(), {
+				extensionFactories: [],
+				agentDir: tempAgentDir,
+				sessionFactory: async () => asSession(fake),
+			})
+
+			await expect(testAgent.extMethod(AVAILABLE_EXT_METHODS.auth_status, {})).resolves.toEqual({
+				authenticated: true,
+			})
+		})
+
+		// The OAuth half is fully real here: auth.json is seeded on disk and
+		// unstable_logout() actually deletes the entry — no simulation. Only
+		// the config half is mocked (writeApiKey/clearApiKey never touch disk),
+		// so its transitions are simulated via mockReturnValueOnce.
+		it("reflects unstable_logout() and authenticate() on subsequent status calls", async () => {
+			vi.mocked(authenticateViaBrowser).mockResolvedValue({ token: "castai_v1_test-token" })
+			// OAuth credentials present, as after a subscription login.
+			writeFileSync(join(tempAgentDir, "auth.json"), JSON.stringify({ "kimchi-dev": oauthCredential() }))
+			const testAgent = new KimchiAcpAgent(makeConn(), {
+				extensionFactories: [],
+				agentDir: tempAgentDir,
+				sessionFactory: async () => asSession(fake),
+			})
+
+			vi.mocked(loadConfig).mockReturnValueOnce(makeConfig(""))
+			await expect(testAgent.extMethod(AVAILABLE_EXT_METHODS.auth_status, {})).resolves.toEqual({
+				authenticated: true,
+			})
+
+			await testAgent.unstable_logout({})
+
+			// After logout: the auth.json entry is gone from the real store.
+			vi.mocked(loadConfig).mockReturnValueOnce(makeConfig(""))
+			await expect(testAgent.extMethod(AVAILABLE_EXT_METHODS.auth_status, {})).resolves.toEqual({
+				authenticated: false,
+			})
+
+			await testAgent.authenticate({ methodId: "kimchi-agent" })
+
+			// After authenticate(): the config half holds the token.
+			vi.mocked(loadConfig).mockReturnValueOnce(makeConfig("castai_v1_test-token"))
+			await expect(testAgent.extMethod(AVAILABLE_EXT_METHODS.auth_status, {})).resolves.toEqual({
+				authenticated: true,
+			})
 		})
 	})
 
@@ -6004,6 +6147,67 @@ describe("KimchiAcpAgent loadSession", () => {
 			sessionUpdate: "user_message_chunk",
 			content: { type: "text", text: "already here" },
 		})
+	})
+
+	it("allows loadSession to attach while a turn is in progress (client takeover)", async () => {
+		// Reconnect-after-disconnect attaches mid-turn: replay history and let
+		// the in-flight turn keep streaming to the new client.
+		const live = new FakeAgentSession("live-turn")
+		live.branch = [userTextEntry("earlier", "u1", null)]
+		live.promptImpl = () => new Promise<void>(() => {}) // turn never settles
+		const { conn, updates } = makeRecordingConn()
+		const agent = new KimchiAcpAgent(conn, {
+			extensionFactories: [],
+			agentDir: "/tmp/fake-agent-dir",
+			sessionFactory: async () => asSession(live),
+			sessionLoader: async () => asSession(new FakeAgentSession("unused")),
+		})
+		await agent.newSession({ cwd: "/tmp", mcpServers: [] })
+		// Start a turn that never unwinds (mirrors the post-disconnect wedge).
+		void agent.prompt({
+			sessionId: "live-turn",
+			prompt: [{ type: "text", text: "go" }],
+		})
+		// entry.turn is assigned after an await (skill-command parse) inside
+		// prompt() — give it a macrotask so the turn is firmly in progress.
+		await new Promise((r) => setTimeout(r, 0))
+
+		// Previously this rejected with "has a turn in progress; cancel it first".
+		const res = await agent.loadSession({
+			sessionId: "live-turn",
+			cwd: "/tmp",
+			mcpServers: [],
+			_meta: { [ACP_REATTACH_MID_TURN_META_KEY]: true },
+		})
+
+		expect(res.models).toMatchObject({ currentModelId: "test/test-model" })
+		// History was replayed for the attaching client.
+		const replayUpdates = replayOnly(updates)
+		expect(replayUpdates.some((u) => u.update.sessionUpdate === "user_message_chunk")).toBe(true)
+	})
+
+	it("still rejects mid-turn loadSession without the reattach opt-in flag", async () => {
+		// The strict ACP guard stays the default: clients that don't declare
+		// a takeover get the original error and may cancel the turn first.
+		const live = new FakeAgentSession("guarded-turn")
+		live.promptImpl = () => new Promise<void>(() => {}) // turn never settles
+		const { conn } = makeRecordingConn()
+		const agent = new KimchiAcpAgent(conn, {
+			extensionFactories: [],
+			agentDir: "/tmp/fake-agent-dir",
+			sessionFactory: async () => asSession(live),
+			sessionLoader: async () => asSession(new FakeAgentSession("unused")),
+		})
+		await agent.newSession({ cwd: "/tmp", mcpServers: [] })
+		void agent.prompt({
+			sessionId: "guarded-turn",
+			prompt: [{ type: "text", text: "go" }],
+		})
+		await new Promise((r) => setTimeout(r, 0))
+
+		await expect(agent.loadSession({ sessionId: "guarded-turn", cwd: "/tmp", mcpServers: [] })).rejects.toThrow(
+			"has a turn in progress; cancel it first",
+		)
 	})
 
 	it("returns configOptions in loadSession response", async () => {

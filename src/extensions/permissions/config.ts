@@ -13,6 +13,7 @@ const configSchema = z
 		allow: z.array(z.string()).optional(),
 		deny: z.array(z.string()).optional(),
 		classifierTimeoutMs: z.number().int().positive().optional(),
+		classifierMaxTotalMs: z.number().int().positive().optional(),
 	})
 	.strict()
 
@@ -34,7 +35,12 @@ const USER_CONFIG_PATH = resolve(homedir(), ".config", "kimchi", "harness", "per
 const PROJECT_CONFIG_SUFFIX = join(".kimchi", "permissions.json")
 const LOCAL_CONFIG_SUFFIX = join(".kimchi", "permissions.local.json")
 
-function readConfigFile(path: string): { data: PermissionsConfig | null; error?: string } {
+function readConfigFile(path: string): {
+	data: PermissionsConfig | null
+	/** Preserve omission so a sparse higher-priority file does not erase an inherited budget. */
+	classifierMaxTotalMs?: number
+	error?: string
+} {
 	if (!existsSync(path)) return { data: null }
 	try {
 		const raw = readFileSync(path, "utf-8")
@@ -44,11 +50,13 @@ function readConfigFile(path: string): { data: PermissionsConfig | null; error?:
 			return { data: null, error: `${path}: ${validated.error.message}` }
 		}
 		return {
+			classifierMaxTotalMs: validated.data.classifierMaxTotalMs,
 			data: {
 				defaultMode: validated.data.defaultMode ?? DEFAULT_CONFIG.defaultMode,
 				allow: validated.data.allow ?? [],
 				deny: validated.data.deny ?? [],
 				classifierTimeoutMs: validated.data.classifierTimeoutMs ?? DEFAULT_CONFIG.classifierTimeoutMs,
+				classifierMaxTotalMs: validated.data.classifierMaxTotalMs ?? DEFAULT_CONFIG.classifierMaxTotalMs,
 			},
 		}
 	} catch (err) {
@@ -86,6 +94,8 @@ export function loadConfig(options: LoadConfigOptions): { loaded: LoadedConfig; 
 			allow: [...user.allow, ...(project?.allow ?? []), ...(local?.allow ?? [])],
 			deny: [...user.deny, ...(project?.deny ?? []), ...(local?.deny ?? [])],
 			classifierTimeoutMs: local?.classifierTimeoutMs ?? project?.classifierTimeoutMs ?? user.classifierTimeoutMs,
+			classifierMaxTotalMs:
+				localRead.classifierMaxTotalMs ?? projectRead.classifierMaxTotalMs ?? user.classifierMaxTotalMs,
 		}
 	}
 

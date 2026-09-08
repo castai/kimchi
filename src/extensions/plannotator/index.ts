@@ -34,7 +34,19 @@ const PLANNOTATOR_REQUEST_CHANNEL = "plannotator:request"
 const PLANNOTATOR_REVIEW_RESULT_CHANNEL = "plannotator:review-result"
 
 export default function plannotatorExtension(pi: ExtensionAPI): void {
+	let unsubscribeRequest: (() => void) | undefined
+	let unsubscribeResult: (() => void) | undefined
+	let activeReview: { reviewId?: string; source: PlanReviewRequestPayload["source"] } | undefined
+	function cleanup(): void {
+		unsubscribeRequest?.()
+		unsubscribeResult?.()
+		unsubscribeRequest = undefined
+		unsubscribeResult = undefined
+		activeReview = undefined
+	}
+	pi.on("session_shutdown", cleanup)
 	pi.on("session_start", async (_event, ctx) => {
+		cleanup()
 		// Skip subagent sessions — they don't run plan reviews
 		if (process.env[PARENT_SESSION_ID_ENV_KEY]) return
 
@@ -46,8 +58,10 @@ export default function plannotatorExtension(pi: ExtensionAPI): void {
 		if (!ctx.hasUI || pi.getFlag("ferment-oneshot") === true) return
 
 		// kimchi:plan-review-request → plannotator:request plan-review (browser UI)
-		onPlanReviewRequest(pi, (payload: PlanReviewRequestPayload) => {
+		unsubscribeRequest = onPlanReviewRequest(pi, (payload: PlanReviewRequestPayload) => {
 			const requestId = `kimchi-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
+			const review: NonNullable<typeof activeReview> = { source: payload.source }
+			activeReview = review
 
 			pi.events.emit(PLANNOTATOR_REQUEST_CHANNEL, {
 				requestId,
@@ -57,29 +71,29 @@ export default function plannotatorExtension(pi: ExtensionAPI): void {
 					planFilePath: payload.planFilePath,
 					origin: payload.source,
 				},
-				respond: () => {
-					// Fire-and-forget — we don't need the reviewId.
-					// The decision arrives asynchronously via review-result.
+				respond: (response: unknown) => {
+					if (activeReview !== review || !isRecord(response) || !isRecord(response.result)) return
+					if (response.status === "handled" && typeof response.result.reviewId === "string") {
+						review.reviewId = response.result.reviewId
+					}
 				},
 			})
 		})
 
 		// plannotator:review-result → kimchi:plan-review-decision
-		pi.events.on(PLANNOTATOR_REVIEW_RESULT_CHANNEL, (data: unknown) => {
-			const result = data as {
-				approved?: boolean
-				feedback?: string
-			}
-			if (typeof result?.approved !== "boolean") return
+		unsubscribeResult = pi.events.on(PLANNOTATOR_REVIEW_RESULT_CHANNEL, (result: unknown) => {
+			if (!isRecord(result) || typeof result.approved !== "boolean") return
+			if (!activeReview?.reviewId || result.reviewId !== activeReview.reviewId) return
 
 			// Determine which review surface this result belongs to
 			const planReviewSource = getActivePlanReviewSource()
-			if (!planReviewSource) return
+			if (!planReviewSource || planReviewSource !== activeReview.source) return
+			activeReview = undefined
 
 			// Deny with a comment maps to "feedback" (model revises with direction).
 			// Deny without one maps to "rework" — emitting "feedback" with empty
 			// text would trigger a directionless revision turn.
-			const feedback = result.feedback?.trim() || undefined
+			const feedback = typeof result.feedback === "string" ? result.feedback.trim() || undefined : undefined
 			emitPlanReviewDecision(pi, {
 				decision: result.approved ? "execute" : feedback ? "feedback" : "rework",
 				feedback,
@@ -88,4 +102,8 @@ export default function plannotatorExtension(pi: ExtensionAPI): void {
 			})
 		})
 	})
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+	return typeof value === "object" && value !== null
 }

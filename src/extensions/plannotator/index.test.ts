@@ -1,266 +1,121 @@
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
-import { beforeEach, describe, expect, it, vi } from "vitest"
-import { consumePlanReviewContext, emitPlanReviewRequest } from "../../shared/planning/plan-review-bus.js"
+import { afterEach, describe, expect, it, vi } from "vitest"
+import {
+	consumePlanReviewContext,
+	emitPlanReviewDecision,
+	emitPlanReviewRequest,
+} from "../../shared/planning/plan-review-bus.js"
+import { createContext } from "../__mocks__/context.js"
+import { createExtensionApi } from "../__mocks__/extension-api.js"
+import { createMiniEventBus } from "../__mocks__/mini-event-bus.js"
 import plannotatorExtension from "./index.js"
 
-interface MockCaptures {
-	emitCalls: Array<{ channel: string; data: unknown }>
-	requestHandler?: (data: unknown) => void
-	resultHandler?: (data: unknown) => void
-}
-
-function createMockPi(captures: MockCaptures, opts?: { hasUI?: boolean; oneshot?: boolean }): ExtensionAPI {
-	const emit = vi.fn((channel: string, data: unknown) => {
-		captures.emitCalls.push({ channel, data })
-		// If this is a plannotator:request, capture nothing — the adapter
-		// doesn't need a respond callback result.
+function setup() {
+	const harness = createExtensionApi()
+	const { events } = createMiniEventBus()
+	harness.api.events = events
+	harness.api.getFlag = vi.fn(() => false)
+	const ctx = createContext()
+	let sequence = 0
+	const responses: Array<(value: unknown) => void> = []
+	events.on("plannotator:request", (request: { respond(value: unknown): void }) => {
+		responses.push(request.respond)
+		request.respond({ status: "handled", result: { status: "pending", reviewId: `review-${++sequence}` } })
 	})
-
-	const on = vi.fn((channel: string, handler: (data: unknown) => void) => {
-		if (channel === "kimchi:plan-review-request") {
-			captures.requestHandler = handler
-		} else if (channel === "plannotator:review-result") {
-			captures.resultHandler = handler
-		}
-		return () => {}
-	})
-
-	const sessionStartHandlers: Array<(event: unknown, ctx: unknown) => Promise<void>> = []
-	const piOn = vi.fn((event: string, handler: (event: unknown, ctx: unknown) => Promise<void>) => {
-		if (event === "session_start") sessionStartHandlers.push(handler)
-	})
-
-	const getFlag = vi.fn((flag: string) => !!(flag === "ferment-oneshot" && opts?.oneshot))
-
+	plannotatorExtension(harness.api)
 	return {
-		events: { emit, on },
-		on: piOn,
-		getFlag,
-		_sessionStartHandlers: sessionStartHandlers,
-		_hasUI: opts?.hasUI ?? true,
-	} as unknown as ExtensionAPI
-}
-
-function setupExtension(opts?: { hasUI?: boolean; oneshot?: boolean }): { pi: ExtensionAPI; captures: MockCaptures } {
-	const captures: MockCaptures = { emitCalls: [] }
-	const pi = createMockPi(captures, opts)
-	plannotatorExtension(pi)
-	// Fire session_start to register listeners
-	const piWithHandlers = pi as unknown as {
-		_sessionStartHandlers: Array<(event: unknown, ctx: unknown) => Promise<void>>
-		_hasUI: boolean
+		...harness,
+		events,
+		ctx,
+		responses,
+		start: () => harness.getHandler("session_start")({}, ctx),
+		request(source: "adhoc" | "ferment" = "adhoc") {
+			emitPlanReviewRequest(
+				harness.api,
+				{ planContent: "# Plan", planFilePath: "/tmp/plan.md", source },
+				{ ctx, planText: "# Plan", planPath: "/tmp/plan.md" },
+			)
+		},
+		decisions: () => events.emit.mock.calls.filter(([channel]) => channel === "kimchi:plan-review-decision"),
 	}
-	const mockCtx = { hasUI: piWithHandlers._hasUI, mode: "tui" }
-	piWithHandlers._sessionStartHandlers.forEach((h) => void h({}, mockCtx))
-	return { pi, captures }
 }
 
-describe("plannotator adapter", () => {
-	beforeEach(() => {
+describe("Plannotator review adapter", () => {
+	afterEach(() => {
 		consumePlanReviewContext()
+		vi.unstubAllEnvs()
 	})
 
-	describe("kimchi:plan-review-request → plannotator:request", () => {
-		it("emits plannotator:request with plan-review action when a plan-review-request arrives", () => {
-			const { pi, captures } = setupExtension()
-
-			emitPlanReviewRequest(
-				pi,
-				{
-					planContent: "# My Plan",
-					planFilePath: "/plans/my-plan.md",
-					source: "adhoc",
-				},
-				{ ctx: {} as never, planText: "# My Plan", planPath: "/plans/my-plan.md" },
-			)
-
-			// The adapter's onPlanReviewRequest handler should have been called
-			expect(captures.requestHandler).toBeDefined()
-			captures.requestHandler?.({
-				planContent: "# My Plan",
-				planFilePath: "/plans/my-plan.md",
-				source: "adhoc",
-			})
-
-			const plannotatorEmit = captures.emitCalls.find((c) => c.channel === "plannotator:request")
-			expect(plannotatorEmit).toBeDefined()
-			expect(plannotatorEmit?.data).toMatchObject({
+	it.each([
+		[true, undefined, "execute"],
+		[false, "change the design", "feedback"],
+		[false, " ", "rework"],
+	] as const)("routes the matching browser decision: %s / %s", async (approved, feedback, decision) => {
+		const h = setup()
+		await h.start()
+		h.request()
+		expect(h.events.emit).toHaveBeenCalledWith(
+			"plannotator:request",
+			expect.objectContaining({
 				action: "plan-review",
-				payload: {
-					planContent: "# My Plan",
-					planFilePath: "/plans/my-plan.md",
-					origin: "adhoc",
-				},
-			})
-			expect((plannotatorEmit?.data as { requestId: string }).requestId).toBeTypeOf("string")
-		})
-
-		it("passes ferment source as origin", () => {
-			const { pi, captures } = setupExtension()
-
-			emitPlanReviewRequest(
-				pi,
-				{
-					planContent: "ferment plan",
-					source: "ferment",
-					fermentId: "f-1",
-				},
-				{ ctx: {} as never, planText: "ferment plan", fermentId: "f-1" },
-			)
-
-			captures.requestHandler?.({
-				planContent: "ferment plan",
-				source: "ferment",
-				fermentId: "f-1",
-			})
-
-			const plannotatorEmit = captures.emitCalls.find((c) => c.channel === "plannotator:request")
-			expect(plannotatorEmit?.data).toMatchObject({
-				payload: { origin: "ferment" },
-			})
-		})
+				payload: { planContent: "# Plan", planFilePath: "/tmp/plan.md", origin: "adhoc" },
+			}),
+		)
+		h.events.emit("plannotator:review-result", { reviewId: "review-1", approved, feedback })
+		expect(h.decisions()).toEqual([
+			[
+				"kimchi:plan-review-decision",
+				expect.objectContaining({ decision, source: "plannotator", planReviewSource: "adhoc" }),
+			],
+		])
 	})
 
-	describe("subscribe-side gating", () => {
-		it("does not subscribe when hasUI is false (headless/print mode)", () => {
-			const { pi, captures } = setupExtension({ hasUI: false })
-
-			emitPlanReviewRequest(pi, { planContent: "plan", source: "adhoc" }, { ctx: {} as never, planText: "plan" })
-
-			// No requestHandler should have been registered
-			expect(captures.requestHandler).toBeUndefined()
-
-			// Emitting a request should NOT produce a plannotator:request emit
-			const plannotatorEmit = captures.emitCalls.find((c) => c.channel === "plannotator:request")
-			expect(plannotatorEmit).toBeUndefined()
-		})
-
-		it("does not subscribe when ferment-oneshot flag is set", () => {
-			const { pi, captures } = setupExtension({ oneshot: true })
-
-			emitPlanReviewRequest(pi, { planContent: "plan", source: "adhoc" }, { ctx: {} as never, planText: "plan" })
-
-			expect(captures.requestHandler).toBeUndefined()
-			const plannotatorEmit = captures.emitCalls.find((c) => c.channel === "plannotator:request")
-			expect(plannotatorEmit).toBeUndefined()
-		})
+	it("does not approve a newer plan from an old browser tab or delayed request response", async () => {
+		const h = setup()
+		await h.start()
+		h.request()
+		h.request()
+		h.responses[0]({ status: "handled", result: { reviewId: "review-1" } })
+		h.events.emit("plannotator:review-result", { reviewId: "review-1", approved: true })
+		h.events.emit("plannotator:review-result", { approved: true })
+		expect(h.decisions()).toHaveLength(0)
+		h.events.emit("plannotator:review-result", { reviewId: "review-2", approved: true })
+		expect(h.decisions()).toHaveLength(1)
 	})
 
-	describe("plannotator:review-result → kimchi:plan-review-decision", () => {
-		it("emits plan-review-decision with execute when plannotator approves", () => {
-			const { pi, captures } = setupExtension()
-
-			// First, emit a request to set the active review source
-			emitPlanReviewRequest(pi, { planContent: "plan", source: "adhoc" }, { ctx: {} as never, planText: "plan" })
-			captures.requestHandler?.({ planContent: "plan", source: "adhoc" })
-
-			// Simulate plannotator review-result: approved
-			captures.resultHandler?.({ approved: true })
-
-			const decisionEmit = captures.emitCalls.find((c) => c.channel === "kimchi:plan-review-decision")
-			expect(decisionEmit).toBeDefined()
-			expect(decisionEmit?.data).toMatchObject({
-				decision: "execute",
-				source: "plannotator",
-				planReviewSource: "adhoc",
-			})
-		})
-
-		it("emits plan-review-decision with feedback when plannotator denies", () => {
-			const { pi, captures } = setupExtension()
-
-			emitPlanReviewRequest(pi, { planContent: "plan", source: "adhoc" }, { ctx: {} as never, planText: "plan" })
-			captures.requestHandler?.({ planContent: "plan", source: "adhoc" })
-
-			captures.resultHandler?.({
-				approved: false,
-				feedback: "Add more detail to chunk 2",
-			})
-
-			const decisionEmit = captures.emitCalls.find((c) => c.channel === "kimchi:plan-review-decision")
-			expect(decisionEmit?.data).toMatchObject({
-				decision: "feedback",
-				feedback: "Add more detail to chunk 2",
-				source: "plannotator",
-				planReviewSource: "adhoc",
-			})
-		})
-
-		it("emits plan-review-decision with rework when plannotator denies without feedback", () => {
-			const { pi, captures } = setupExtension()
-
-			emitPlanReviewRequest(pi, { planContent: "plan", source: "adhoc" }, { ctx: {} as never, planText: "plan" })
-			captures.requestHandler?.({ planContent: "plan", source: "adhoc" })
-
-			// Deny with blank feedback — must not become an empty feedback turn
-			captures.resultHandler?.({ approved: false, feedback: "  " })
-
-			const decisionEmit = captures.emitCalls.find((c) => c.channel === "kimchi:plan-review-decision")
-			expect(decisionEmit?.data).toMatchObject({
-				decision: "rework",
-				source: "plannotator",
-				planReviewSource: "adhoc",
-			})
-		})
-
-		it("ignores review-result when no review is active", () => {
-			const { captures } = setupExtension()
-
-			captures.resultHandler?.({ approved: true })
-
-			const decisionEmit = captures.emitCalls.find((c) => c.channel === "kimchi:plan-review-decision")
-			expect(decisionEmit).toBeUndefined()
-		})
-
-		it("ignores review-result with missing approved field", () => {
-			const { pi, captures } = setupExtension()
-
-			emitPlanReviewRequest(pi, { planContent: "plan", source: "adhoc" }, { ctx: {} as never, planText: "plan" })
-			captures.requestHandler?.({ planContent: "plan", source: "adhoc" })
-
-			captures.resultHandler?.({ feedback: "some text" })
-
-			const decisionEmit = captures.emitCalls.find((c) => c.channel === "kimchi:plan-review-decision")
-			expect(decisionEmit).toBeUndefined()
-		})
-
-		it("uses the correct planReviewSource for ferment reviews", () => {
-			const { pi, captures } = setupExtension()
-
-			emitPlanReviewRequest(
-				pi,
-				{ planContent: "plan", source: "ferment", fermentId: "f-1" },
-				{ ctx: {} as never, planText: "plan", fermentId: "f-1" },
-			)
-			captures.requestHandler?.({ planContent: "plan", source: "ferment", fermentId: "f-1" })
-
-			captures.resultHandler?.({ approved: true })
-
-			const decisionEmit = captures.emitCalls.find((c) => c.channel === "kimchi:plan-review-decision")
-			expect(decisionEmit?.data).toMatchObject({
-				planReviewSource: "ferment",
-			})
-		})
+	it("keeps one listener per session and removes listeners on shutdown", async () => {
+		const h = setup()
+		await h.start()
+		await h.start()
+		h.request("ferment")
+		expect(h.responses).toHaveLength(1)
+		h.events.emit("plannotator:review-result", { reviewId: "review-1", approved: true })
+		expect(h.decisions()[0]?.[1]).toMatchObject({ planReviewSource: "ferment" })
+		await h.getHandler("session_shutdown")({}, h.ctx)
+		h.request()
+		expect(h.responses).toHaveLength(1)
 	})
 
-	describe("first-decision-wins", () => {
-		it("second plannotator decision is ignored after first is consumed", () => {
-			const { pi, captures } = setupExtension()
+	it("honors a TUI decision first and ignores a late browser result", async () => {
+		const h = setup()
+		await h.start()
+		h.request()
+		emitPlanReviewDecision(h.api, { decision: "execute", source: "kimchi-tui", planReviewSource: "adhoc" })
+		h.events.emit("plannotator:review-result", { reviewId: "review-1", approved: false })
+		expect(h.decisions()).toHaveLength(1)
+	})
 
-			emitPlanReviewRequest(pi, { planContent: "plan", source: "adhoc" }, { ctx: {} as never, planText: "plan" })
-			captures.requestHandler?.({ planContent: "plan", source: "adhoc" })
-
-			// First decision
-			captures.resultHandler?.({ approved: true })
-
-			// Consume the context (simulating the decision handler acting)
-			consumePlanReviewContext()
-
-			// Second decision — should be ignored
-			captures.resultHandler?.({ approved: false, feedback: "too late" })
-
-			const decisionEmits = captures.emitCalls.filter((c) => c.channel === "kimchi:plan-review-decision")
-			expect(decisionEmits).toHaveLength(1)
-		})
+	it.each([
+		"headless",
+		"oneshot",
+		"worker",
+	])("skips %s sessions, including after an interactive session", async (mode) => {
+		const h = setup()
+		await h.start()
+		if (mode === "headless") h.ctx.hasUI = false
+		if (mode === "oneshot") h.api.getFlag = vi.fn(() => true)
+		if (mode === "worker") vi.stubEnv("KIMCHI_PARENT_SESSION_ID", "parent")
+		await h.start()
+		h.request()
+		expect(h.responses).toHaveLength(0)
 	})
 })

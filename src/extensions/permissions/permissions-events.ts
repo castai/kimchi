@@ -16,7 +16,7 @@
  * returning `{ block: true, reason }`.
  */
 
-import type { PermissionMode, PermissionModeState, RiskScore, RuleSource } from "./types.js"
+import type { ClassifierFailureCode, PermissionMode, PermissionModeState, RiskScore, RuleSource } from "./types.js"
 
 export const PERMISSION_EVENTS = {
 	MODE_CHANGED: "permissions:mode_changed",
@@ -24,7 +24,19 @@ export const PERMISSION_EVENTS = {
 	AFTER_DECISION: "permissions:after_decision",
 	CONFIG_LOADED: "permissions:config_loaded",
 	PLAN_APPROVED: "permissions:plan_approved",
+	CLASSIFIER_UNAVAILABLE: "permissions:classifier_unavailable",
+	CLASSIFIER_DEGRADED: "permissions:classifier_degraded",
 } as const
+
+export interface ClassifierUnavailablePayload {
+	failureCode: Exclude<ClassifierFailureCode, "aborted">
+	missingRefs: string[]
+}
+
+export interface ClassifierDegradedPayload {
+	usedModelId: string
+	missingRefs: string[]
+}
 
 export type PermissionEventChannel = (typeof PERMISSION_EVENTS)[keyof typeof PERMISSION_EVENTS]
 
