@@ -808,13 +808,14 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 				planMenuAbort.abort()
 			})
 
-			const EXECUTE = "Execute the plan"
+			const EXECUTE = "Execute the plan locally"
 			const DECLINE = "Rework the plan"
 			const START_AS_FERMENT = "Start as ferment"
-			const START_IN_CLOUD = "Start execution in cloud"
+			const START_IN_CLOUD = "Execute the plan in a remote workspace"
 
-			const options = [EXECUTE, DECLINE, START_AS_FERMENT]
+			const options = [EXECUTE]
 			if (isRemoteRunEnabled()) options.push(START_IN_CLOUD)
+			options.push(DECLINE, START_AS_FERMENT)
 
 			void withBlocked(pi.events, "Plan complete", () =>
 				withWorkingHidden(ctx, () =>
@@ -1061,7 +1062,7 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 				// no active plan and no visible error. Surface the error and
 				// restore plan mode so they can retry.
 				const message = err instanceof Error ? err.message : String(err)
-				ctx.ui?.notify?.(`Could not start the cloud agent: ${message}`, "error")
+				ctx.ui?.notify?.(`Could not start the remote agent: ${message}`, "error")
 				activePlanSlug = approvedSlug
 				changeMode(ctx, "auto", { mode: "plan", initiatedBy: "user", source: "runtime" }, "cloud_spawn_failed")
 			}
