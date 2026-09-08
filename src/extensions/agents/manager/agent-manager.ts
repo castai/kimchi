@@ -19,6 +19,7 @@ import type {
 	SubagentType,
 	ThinkingLevel,
 } from "../personas/types.js"
+import { isActiveStatus } from "../personas/types.js"
 import { FERMENT_WORKER_BUDGETS } from "../worker-budget-policy.js"
 import type { WorkerReportSubmission } from "../worker-report.js"
 import {
@@ -421,6 +422,11 @@ export class AgentManager {
 		const remoteSession = new RemoteAgentSession()
 		record.session = remoteSession as unknown as AgentSession
 
+		// Fire onSessionCreated so the activity tracker (in index.ts) can
+		// subscribe to session events — specifically activity_reset which
+		// fires on WS reattach to clear stale tools from the progress line.
+		options.onSessionCreated?.(remoteSession as unknown as AgentSession)
+
 		// Seed the transcript with the user prompt so ConversationViewer shows it
 		// immediately, before any assistant text arrives.
 		remoteSession.setUserPrompt(prompt)
@@ -433,8 +439,17 @@ export class AgentManager {
 			gitCredential,
 			localPath: ctx.cwd,
 			workspaceName: dirName,
+			outputFile: record.outputFile,
 			onReady: (acpClient, meta) => {
 				remoteSession.bindClient(acpClient, meta)
+			},
+			onReconnecting: (reconnecting) => {
+				remoteSession.setReconnecting(reconnecting)
+				if (reconnecting) {
+					record.status = "reconnecting"
+				} else {
+					record.status = "running"
+				}
 			},
 			callbacks: {
 				onTextDelta: (delta, fullText) => {
@@ -443,7 +458,7 @@ export class AgentManager {
 				},
 				onToolActivity: (activity) => {
 					if (activity.status === "in_progress") {
-						remoteSession.recordToolCallStart(activity.toolName, activity.toolCallId)
+						remoteSession.recordToolCallStart(activity.toolName, activity.toolCallId, activity.rawInput)
 					} else {
 						const isError = activity.status === "failed"
 						remoteSession.recordToolCallEnd(activity.toolName, activity.toolCallId, isError)
@@ -468,6 +483,9 @@ export class AgentManager {
 		})
 
 		record.remoteSession = result.remoteSession
+		if (result.recoveryNote) {
+			record.recoveryNote = result.recoveryNote
+		}
 
 		return {
 			responseText: result.responseText,
@@ -788,7 +806,7 @@ export class AgentManager {
 	private cleanup() {
 		const cutoff = Date.now() - 10 * 60_000
 		for (const [id, record] of this.agents) {
-			if (record.status === "running" || record.status === "queued") continue
+			if (isActiveStatus(record.status)) continue
 			if ((record.completedAt ?? 0) >= cutoff) continue
 			this.removeRecord(id, record)
 		}
@@ -796,19 +814,19 @@ export class AgentManager {
 
 	clearCompleted(): void {
 		for (const [id, record] of this.agents) {
-			if (record.status === "running" || record.status === "queued") continue
+			if (isActiveStatus(record.status)) continue
 			this.removeRecord(id, record)
 		}
 	}
 
 	hasRunning(): boolean {
-		return [...this.agents.values()].some((r) => r.status === "running" || r.status === "queued")
+		return [...this.agents.values()].some((r) => isActiveStatus(r.status))
 	}
 
 	getRunningCount(): number {
 		let count = 0
 		for (const r of this.agents.values()) {
-			if (r.status === "running" || r.status === "queued") count++
+			if (isActiveStatus(r.status)) count++
 		}
 		return count
 	}
@@ -825,7 +843,7 @@ export class AgentManager {
 		}
 		this.queue = []
 		for (const record of this.agents.values()) {
-			if (record.status === "running") {
+			if (isActiveStatus(record.status)) {
 				record.abortController?.abort()
 				record.status = "stopped"
 				record.completedAt = Date.now()
@@ -914,7 +932,7 @@ If the report is missing, call resume_subagent with purpose finalize_report befo
 
 export function buildAgentOutcome(record: AgentRecord): AgentOutcome {
 	const outcome = classifyAgentOutcome(record)
-	const reason = record.status === "error" ? "error" : record.abortReason
+	const reason = record.status === "error" || record.status === "reconnecting" ? "error" : record.abortReason
 	const durationMs = (record.completedAt ?? Date.now()) - record.startedAt
 	const text = record.result?.trim() || record.error?.trim()
 	const resumable =

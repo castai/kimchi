@@ -57,7 +57,16 @@ export interface AgentDetails {
 	tokens: string
 	tokenUsage?: { input: number; output: number; cacheRead: number; cacheWrite: number }
 	durationMs: number
-	status: "queued" | "running" | "completed" | "steered" | "aborted" | "stopped" | "error" | "background"
+	status:
+		| "queued"
+		| "running"
+		| "reconnecting"
+		| "completed"
+		| "steered"
+		| "aborted"
+		| "stopped"
+		| "error"
+		| "background"
 	visibility?: "user" | "system"
 	activity?: string
 	spinnerFrame?: number
@@ -121,19 +130,12 @@ function truncateLine(text: string, len = 60): string {
 
 export function describeActivity(activeTools: Map<string, string>, responseText?: string): string {
 	if (activeTools.size > 0) {
-		const groups = new Map<string, number>()
-		for (const toolName of activeTools.values()) {
-			const action = TOOL_DISPLAY[toolName] ?? toolName
-			groups.set(action, (groups.get(action) ?? 0) + 1)
-		}
-
 		const parts: string[] = []
-		for (const [action, count] of groups) {
-			if (count > 1) {
-				parts.push(`${action} ${count} ${action === "searching" ? "patterns" : "files"}`)
-			} else {
-				parts.push(action)
-			}
+		for (const title of activeTools.values()) {
+			// title is the actual command/description from ACP (e.g. "echo hello; cat file.ts")
+			// If it matches a known tool name, use the display label; otherwise show the title directly.
+			const action = TOOL_DISPLAY[title] ?? truncateLine(title)
+			parts.push(action)
 		}
 		return `${parts.join(", ")}…`
 	}
@@ -248,7 +250,7 @@ export class AgentWidget {
 
 	private renderWidget(theme: Theme, width: number): string[] {
 		const allAgents = this.manager.listAgents().filter((a) => a.visibility !== "system")
-		const running = allAgents.filter((a) => a.status === "running")
+		const running = allAgents.filter((a) => a.status === "running" || a.status === "reconnecting")
 		const queued = allAgents.filter((a) => a.status === "queued")
 		const finished = allAgents.filter(
 			(a) =>
@@ -290,7 +292,13 @@ export class AgentWidget {
 			parts.push(elapsed)
 			const statsText = parts.join(" · ")
 
-			const activity = bg ? describeActivity(bg.activeTools, bg.responseText) : "thinking…"
+			const activity =
+				a.status === "reconnecting"
+					? "reconnecting…"
+					: bg
+						? describeActivity(bg.activeTools, bg.responseText)
+						: "thinking…"
+			const reconnectingTag = a.status === "reconnecting" ? ` ${theme.fg("warning", "[reconnecting]")}` : ""
 
 			const modelTag = a.modelId ? ` ${theme.fg("dim", `[${a.modelId}]`)}` : ""
 			const bgTag = a.isBackground ? ` ${theme.fg("muted", "[background]")}` : ""
@@ -302,7 +310,7 @@ export class AgentWidget {
 			const descLine = truncateLine(a.description)
 			runningLines.push([
 				truncate(
-					`${theme.fg("dim", "├─")} ${theme.fg("accent", frame)} ${theme.bold(name)}${modelTag}${bgTag}  ${theme.fg("muted", descLine)} ${theme.fg("dim", "·")} ${theme.fg("dim", statsText)}`,
+					`${theme.fg("dim", "├─")} ${theme.fg("accent", frame)} ${theme.bold(name)}${modelTag}${bgTag}${reconnectingTag}  ${theme.fg("muted", descLine)} ${theme.fg("dim", "·")} ${theme.fg("dim", statsText)}`,
 				),
 				truncate(theme.fg("dim", "│  ") + theme.fg("dim", `  ⎿  ${activity}`) + bgHint + killHint),
 			])
@@ -383,7 +391,7 @@ export class AgentWidget {
 		let queuedCount = 0
 		let hasFinished = false
 		for (const a of allAgents) {
-			if (a.status === "running") {
+			if (a.status === "running" || a.status === "reconnecting") {
 				runningCount++
 			} else if (a.status === "queued") {
 				queuedCount++

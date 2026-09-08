@@ -1026,6 +1026,7 @@ describe("AgentManager remote git credential resolution", () => {
 				wsUrl: "wss://worker.example.com",
 				host: "worker.example.com",
 				cwd: "/home/sandbox/acp-test",
+				apiKey: "test-api-key",
 			},
 		})
 	})
@@ -1109,5 +1110,102 @@ describe("AgentManager remote git credential resolution", () => {
 				gitCredential: undefined,
 			}),
 		)
+	})
+})
+
+describe("AgentManager reconnecting lifecycle", () => {
+	let manager: AgentManager | undefined
+
+	afterEach(() => {
+		manager?.dispose()
+		manager = undefined
+		vi.clearAllMocks()
+	})
+
+	function fakeRemoteCtx(): ExtensionContext {
+		return {
+			cwd: "/work/myrepo",
+			mode: "tui",
+			ui: { custom: vi.fn() },
+		} as unknown as ExtensionContext
+	}
+
+	const remoteResult = {
+		responseText: "done",
+		stopReason: "end_turn",
+		remoteSession: {
+			workspaceId: "ws-1",
+			sessionName: "acp-test",
+			wsUrl: "wss://worker.example.com",
+			host: "worker.example.com",
+			cwd: "/home/sandbox/acp-test",
+			apiKey: "test-api-key",
+		},
+	} satisfies Awaited<ReturnType<typeof runRemoteAgent>>
+
+	/** Spawn a remote agent whose runner is parked until resolveRun fires; options captured for reconnecting signals. */
+	async function spawnParkedRemote() {
+		type RemoteOpts = Parameters<typeof runRemoteAgent>[2]
+		let opts: RemoteOpts | undefined
+		let resolveRun: (v: Awaited<ReturnType<typeof runRemoteAgent>>) => void = () => {}
+		mockResolveClonePlan.mockRejectedValue(new Error("no repo"))
+		mockRunRemoteAgent.mockImplementation(
+			(_workspaceId, _prompt, options) =>
+				new Promise((resolve) => {
+					opts = options
+					resolveRun = resolve
+				}),
+		)
+		manager = new AgentManager()
+		const done = manager.spawnAndWait(fakePi(), fakeRemoteCtx(), "Explore", "test", {
+			description: "test",
+			remote: true,
+		})
+		await vi.waitFor(() => expect(manager?.listAgents().length).toBe(1))
+		await vi.waitFor(() => expect(opts).toBeDefined())
+		return { opts: opts as RemoteOpts, resolveRun, done }
+	}
+
+	it("keeps a reconnecting agent counted and unpurged until the reattach resolves", async () => {
+		const { opts, resolveRun, done } = await spawnParkedRemote()
+		const record = manager?.listAgents()[0]
+		expect(record?.status).toBe("running")
+
+		opts.onReconnecting?.(true)
+		expect(record?.status).toBe("reconnecting")
+
+		// Status line: reconnecting agents are still live work, not "0 agents".
+		expect(manager?.getRunningCount()).toBe(1)
+		expect(manager?.hasRunning()).toBe(true)
+
+		// Regression: the 60s cleanup sweep deleted reconnecting records (and
+		// disposed their session) mid-reattach, making the agent vanish from the
+		// widget while the runner kept polling silently.
+		;(manager as unknown as { cleanup(): void }).cleanup()
+		expect(manager?.listAgents()).toContain(record)
+		manager?.clearCompleted()
+		expect(manager?.listAgents()).toContain(record)
+
+		opts.onReconnecting?.(false)
+		resolveRun(remoteResult)
+		expect((await done).status).toBe("completed")
+	})
+
+	it("abortAll stops reconnecting agents", async () => {
+		const { resolveRun, done } = await spawnParkedRemote()
+		const record = manager?.listAgents()[0]
+		if (!record?.abortController) throw new Error("record not spawned with abortController")
+		const abortSpy = vi.spyOn(record.abortController, "abort")
+
+		record.status = "reconnecting"
+		const aborted = manager?.abortAll()
+
+		expect(aborted).toBe(1)
+		expect(record?.status).toBe("stopped")
+		expect(abortSpy).toHaveBeenCalled()
+
+		// Let the parked runner settle so dispose doesn't see a mid-flight record.
+		resolveRun(remoteResult)
+		await done.catch(() => {})
 	})
 })

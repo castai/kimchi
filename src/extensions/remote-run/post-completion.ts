@@ -39,6 +39,8 @@ export interface HandleRemoteCompletionOpts {
 	 *  paused during cloud execution; on completion it is completed (sync) or
 	 *  resumed (review/custom/done) so the user can continue locally. */
 	fermentId?: string
+	/** Recovery note when the result was recovered after a network disconnect. */
+	recoveryNote?: string
 }
 
 /**
@@ -129,9 +131,10 @@ function injectRemoteResult(
 	const agentInfo = opts?.agentId
 		? `\nAgent ID: ${opts.agentId} (use get_subagent_result with this ID for structured access to the agent's output)`
 		: ""
+	const recoveryNote = opts?.recoveryNote ? `\n\n${opts.recoveryNote}` : ""
 	const actionSuffix = extra?.actionSuffix ?? ""
 
-	const steer = `The approved ${promptPrefix} was executed by a remote cloud agent on a Linux sandbox. The plan has ALREADY been executed — do not re-plan or re-execute it. The code changes made by the remote agent are NOT in your local working tree unless the user synced them. Here is the remote agent's result:\n\n---\n\n${result}${transcriptInfo}${agentInfo}${actionSuffix}`
+	const steer = `The approved ${promptPrefix} was executed by a remote cloud agent on a Linux sandbox. The plan has ALREADY been executed — do not re-plan or re-execute it. The code changes made by the remote agent are NOT in your local working tree unless the user synced them. Here is the remote agent's result:\n\n---\n\n${result}${transcriptInfo}${agentInfo}${recoveryNote}${actionSuffix}`
 
 	pi.sendMessage(
 		{

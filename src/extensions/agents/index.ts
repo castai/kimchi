@@ -14,6 +14,7 @@
 import { existsSync, mkdirSync, readFileSync, unlinkSync } from "node:fs"
 import { join } from "node:path"
 import {
+	type AgentSession,
 	defineTool,
 	type ExtensionAPI,
 	type ExtensionCommandContext,
@@ -261,26 +262,48 @@ function formatLifetimeTokens(o: { lifetimeUsage: LifetimeUsage }): string {
 	return t > 0 ? formatTokens(t) : ""
 }
 
-function createActivityTracker(maxTurns?: number, onStreamUpdate?: () => void) {
+export function createActivityTracker(maxTurns?: number, onStreamUpdate?: () => void, initialActivity?: string) {
 	const state: AgentActivity = {
 		activeTools: new Map(),
 		toolUses: 0,
 		turnCount: 1,
 		maxTurns,
-		responseText: "",
+		// Shown before any real activity arrives (e.g. "starting…" while a remote
+		// workspace is provisioned). Overwritten by the first text delta/tool call.
+		responseText: initialActivity ?? "",
 		session: undefined,
 		lifetimeUsage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
 	}
 
 	const callbacks = {
-		onToolActivity: (activity: { toolName: string; status?: "pending" | "in_progress" | "completed" | "failed" }) => {
+		onToolActivity: (activity: {
+			toolName: string
+			toolCallId?: string
+			status?: "pending" | "in_progress" | "completed" | "failed"
+			title?: string
+		}) => {
+			// pending = model is still streaming the args — nothing is executing
+			// yet, so it must neither register a tool nor count as a use.
+			if (activity.status === "pending") return
 			if (activity.status === "in_progress") {
-				state.activeTools.set(`${activity.toolName}_${Date.now()}`, activity.toolName)
+				// Key by the unique toolCallId so completion can remove exactly this
+				// entry. Value is the title (actual command/description) so
+				// describeActivity can show it in the progress line.
+				const key = activity.toolCallId ?? `${activity.toolName}_${Date.now()}`
+				state.activeTools.set(key, activity.title ?? activity.toolName)
 			} else {
-				for (const [key, name] of state.activeTools) {
-					if (name === activity.toolName) {
-						state.activeTools.delete(key)
-						break
+				// completed/failed. The ACP server's completion update carries NO
+				// title, so fuzzy title matching cannot be relied on — remove by
+				// toolCallId. The fuzzy path is a fallback for callers that don't
+				// supply ids (local agents).
+				if (activity.toolCallId) {
+					state.activeTools.delete(activity.toolCallId)
+				} else {
+					for (const [key, name] of state.activeTools) {
+						if (name === activity.toolName || name === activity.title) {
+							state.activeTools.delete(key)
+							break
+						}
 					}
 				}
 				state.toolUses++
@@ -297,6 +320,19 @@ function createActivityTracker(maxTurns?: number, onStreamUpdate?: () => void) {
 		},
 		onSessionCreated: (session: unknown) => {
 			state.session = session as AgentActivity["session"]
+			// For remote agents: listen for activity_reset (fires on WS reattach)
+			// and clear stale tools so the progress line doesn't accumulate
+			// ghost entries from before the disconnect.
+			const s = session as { subscribe?: (fn: (e: { type: string }) => void) => () => void }
+			if (typeof s?.subscribe === "function") {
+				s.subscribe((event) => {
+					if (event.type === "activity_reset") {
+						state.activeTools.clear()
+						state.responseText = ""
+						onStreamUpdate?.()
+					}
+				})
+			}
 		},
 		onAssistantUsage: (usage: LifetimeUsage) => {
 			addUsage(state.lifetimeUsage, usage)
@@ -994,15 +1030,22 @@ export default function (pi: ExtensionAPI) {
 					record.remoteOrigin ?? "plan",
 					buildRemoteExecutionStats(record),
 				)
-				// spawnCtx is captured at spawn time and is always valid for this
-				// agent — don't fall back to a stale global context.
+				// spawnCtx is captured at spawn time — don't fall back to a stale
+				// global context.
 				const completionCtx = record.spawnCtx
-				if (completionCtx) {
+				if (isError) {
+					// Errored runs have no result to review/sync — surface a plain
+					// error notification instead of the completion dropdown.
+					if (completionCtx) {
+						completionCtx.ui.notify(`Cloud agent failed: ${record.error ?? "unknown error"}`, "error")
+					}
+				} else if (completionCtx) {
 					void handleRemoteCompletion(pi, completionCtx, record.result ?? "", record.remoteOrigin ?? "plan", {
 						transcriptPath: record.outputFile,
 						agentId: record.id,
 						remoteSession: record.remoteSession,
 						fermentId: record.fermentId,
+						recoveryNote: record.recoveryNote,
 					}).catch((err) => {
 						currentUi?.notify(
 							`Remote completion failed: ${err instanceof Error ? err.message : String(err)}`,
@@ -1071,7 +1114,7 @@ export default function (pi: ExtensionAPI) {
 
 	spawnRemoteAgentFn = async (pi, ctx, promptText, desc, opts) => {
 		widget.setUICtx(ctx.ui as UICtx)
-		const { state: bgState, callbacks: bgCallbacks } = createActivityTracker(1)
+		const { state: bgState, callbacks: bgCallbacks } = createActivityTracker(1, undefined, "starting…")
 		const parentSessionDir = ctx.sessionManager.getSessionDir()
 
 		// Build transcript-writing callbacks BEFORE spawn so they're captured
@@ -1080,6 +1123,7 @@ export default function (pi: ExtensionAPI) {
 			callbacks: transcriptCallbacks,
 			setOutputPath,
 			flushRemaining,
+			resetForReattach,
 		} = streamRemoteToOutputFile(bgCallbacks, ctx.cwd)
 
 		const spawnOpts = {
@@ -1088,6 +1132,21 @@ export default function (pi: ExtensionAPI) {
 			remote: true,
 			maxTurns: 1,
 			...transcriptCallbacks,
+			// The streamer wrapper only forwards AcpSessionCallbacks, so the
+			// activity tracker's onSessionCreated is wired here too. _runRemote
+			// fires this with the RemoteAgentSession; activity_reset fires exactly
+			// on WS reattach — reset the streamer's text-slice offsets so
+			// post-reattach deltas aren't sliced against stale pre-disconnect
+			// lengths (cast: activity_reset is not in the AgentSessionEvent union).
+			onSessionCreated: (session: AgentSession) => {
+				bgCallbacks.onSessionCreated?.(session)
+				const s = session as unknown as {
+					subscribe: (fn: (e: { type: string }) => void) => () => void
+				}
+				s.subscribe((ev) => {
+					if (ev.type === "activity_reset") resetForReattach()
+				})
+			},
 		}
 		const id = manager.spawn(pi, ctx, "Remote-Runner", promptText, spawnOpts)
 

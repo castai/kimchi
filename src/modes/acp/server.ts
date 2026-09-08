@@ -92,6 +92,7 @@ import type { PermissionMode, PermissionModeState } from "../../extensions/permi
 import { configureHttpIdleTimeout } from "../../http/proxy.js"
 import { updateModelsConfig } from "../../models.js"
 import { resolveHeadlessProjectTrust } from "../../project-trust.js"
+import { ACP_REATTACH_MID_TURN_META_KEY, buildToolCallId } from "../../sandbox/worker/acp-protocol.js"
 import { getVersion } from "../../utils.js"
 import { createAcpPermissionPrompter } from "./acp-prompter.js"
 import { createAcpUIContext } from "./acp-ui-context.js"
@@ -118,9 +119,6 @@ import { asString, extractImages, truncate } from "./utils.js"
 /** Auth method ID for Agent Auth (browser-based OAuth). Used in both
  * initialize() declaration and authenticate() validation to avoid typo drift. */
 const KIMCHI_AGENT_AUTH_METHOD_ID = "kimchi-agent"
-
-/** `_meta` key opting `session/load` into mid-turn attach; strict guard stays default. */
-export const ACP_REATTACH_MID_TURN_META_KEY = "kimchi/reattachMidTurn"
 
 /** Resolve --plan/--auto/--yolo CLI flags into a PermissionMode. */
 function resolveCliPermissionMode(): PermissionMode | undefined {
@@ -1573,7 +1571,7 @@ export class KimchiAcpAgent implements Agent {
 	private getOrAllocateAcpToolCallId(record: SessionRecord, piToolCallId: string, toolName: string): string {
 		let acpId = record.toolCallIdMap.get(piToolCallId)
 		if (acpId === undefined) {
-			acpId = `kt.${toolName}.${record.nextToolCallId++}`
+			acpId = buildToolCallId(toolName, record.nextToolCallId++)
 			record.toolCallIdMap.set(piToolCallId, acpId)
 		}
 		return acpId

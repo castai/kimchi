@@ -190,6 +190,7 @@ describe("handleRemoteCompletion", () => {
 			wsUrl: "wss://worker.example.com",
 			host: "worker.example.com",
 			cwd: "/home/sandbox/kimchi-acp-a1b2c3d4",
+			apiKey: "test-api-key",
 		}
 
 		beforeEach(() => {
@@ -291,7 +292,14 @@ describe("handleRemoteCompletion", () => {
 
 			await handleRemoteCompletion(pi, ctx, "remote result", "ferment plan", {
 				fermentId,
-				remoteSession: { workspaceId: "ws-1", sessionName: "s1", wsUrl: "wss://w", host: "w", cwd: "/home/sandbox/s1" },
+				remoteSession: {
+					workspaceId: "ws-1",
+					sessionName: "s1",
+					wsUrl: "wss://w",
+					host: "w",
+					cwd: "/home/sandbox/s1",
+					apiKey: "test-api-key",
+				},
 			})
 
 			// completeFerment resumes, skips non-terminal phases, then completes
