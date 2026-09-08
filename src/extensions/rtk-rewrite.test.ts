@@ -122,9 +122,26 @@ const mockExecFile = execFile as unknown as MockInstance
 const mockExecFileSync = execFileSync as unknown as MockInstance
 
 describe("detectRtk", () => {
+	let tmpSettingsDir: string | undefined
+	let previousAgentDir: string | undefined
+
 	beforeEach(() => {
 		_resetRtkState()
 		mockExecFile.mockReset()
+		// Isolate the resource-settings path: detectRtk gates on
+		// isResourceEnabled("hooks.rtk-rewrite"), which otherwise reads the
+		// developer's real settings (where rtk may be disabled) instead of
+		// falling back to the definition default (enabled). Same isolation the
+		// rewriteWithRtk describe below applies.
+		previousAgentDir = process.env.KIMCHI_CODING_AGENT_DIR
+		tmpSettingsDir = mkdtempSync(join(tmpdir(), "kimchi-rtk-detect-test-"))
+		process.env.KIMCHI_CODING_AGENT_DIR = tmpSettingsDir
+	})
+
+	afterEach(() => {
+		if (tmpSettingsDir) rmSync(tmpSettingsDir, { recursive: true, force: true })
+		if (previousAgentDir === undefined) delete process.env.KIMCHI_CODING_AGENT_DIR
+		else process.env.KIMCHI_CODING_AGENT_DIR = previousAgentDir
 	})
 
 	it("returns true when rtk --version succeeds", async () => {
