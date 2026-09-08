@@ -363,17 +363,22 @@ describe("RemoteSessionsPanel", () => {
 
 		const summaryLine = (panel: RemoteSessionsPanel): string | undefined =>
 			panel
-				// Wide enough for the full two-scope summary; truncation at narrower
-				// widths is covered by the narrow-terminal render tests.
-				.render(200)
+				.render(120)
 				.map(stripAnsi)
 				.find((l) => l.includes("You:"))
 
-		it("renders a one-line usage-vs-quota summary above the hint", () => {
+		const orgLine = (panel: RemoteSessionsPanel): string | undefined =>
+			panel
+				.render(120)
+				.map(stripAnsi)
+				.find((l) => l.includes("org:"))
+
+		it("renders the usage-vs-quota summary as two lines: user first, org below", () => {
 			const { panel } = makePanel(treeNodes, { quota })
 			const line = summaryLine(panel)
 			expect(line).toContain("You: 4500m/16000m CPU · 6Gi/16Gi RAM · 20Gi/120Gi PVC · 3/10 workspaces")
-			expect(line).toContain("(org: 9000m/16000m CPU · 6Gi/16Gi RAM · 30Gi/400Gi PVC · 7/10 workspaces)")
+			expect(line).not.toContain("org:")
+			expect(orgLine(panel)).toContain("org: 9000m/16000m CPU · 6Gi/16Gi RAM · 30Gi/400Gi PVC · 7/10 workspaces")
 		})
 
 		it("renders current and max RAM in one shared unit, decimals on the current side when needed", () => {
@@ -398,6 +403,7 @@ describe("RemoteSessionsPanel", () => {
 			const line = summaryLine(panel)
 			expect(line).toContain("You: 4500m/16000m CPU")
 			expect(line).not.toContain("org:")
+			expect(orgLine(panel)).toBeUndefined()
 		})
 
 		it("drops segments whose fields are missing", () => {

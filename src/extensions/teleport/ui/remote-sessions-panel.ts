@@ -18,8 +18,8 @@ const MAX_HEIGHT_PCT = 0.8
 // Lines outside the scrollable body:
 //   top border (1) + header (1) + divider (1)
 //   + top scroll indicator (1) + bottom scroll indicator (1)
-//   + quota summary or empty row (1) + hint (1) + bottom border (1)
-const CHROME_LINES = 8
+//   + quota summary or empty rows (2) + hint (1) + bottom border (1)
+const CHROME_LINES = 9
 
 /** A session nested under a workspace. Structurally identical to SessionRow. */
 export type RemoteSessionNode = SessionRow
@@ -245,11 +245,14 @@ export class RemoteSessionsPanel implements Component {
 	}
 
 	/**
-	 * One-line usage-vs-quota summary for the reserved footer row: user scope
-	 * first, org in parentheses; segments with missing fields are dropped.
-	 * Undefined when there is nothing to show (no quota data at all).
+	 * Usage-vs-quota footer lines: the user scope on the first line, the org
+	 * scope on its own line below it — one line per scope keeps both fully
+	 * readable at common terminal widths instead of truncating the org tail.
+	 * Segments with missing fields are dropped; a scope with nothing to show
+	 * yields undefined, which the render loop replaces with an empty row so
+	 * the panel always emits the same line count.
 	 */
-	private quotaSummary(): string | undefined {
+	private quotaLines(): [string | undefined, string | undefined] {
 		const scope = (u: ResourceUsage): string | undefined => {
 			const parts: string[] = []
 			if (u.currentCpuMillicores !== undefined && u.maxCpuMillicores !== undefined) {
@@ -268,10 +271,7 @@ export class RemoteSessionsPanel implements Component {
 		}
 		const user = this.quota?.userUsage ? scope(this.quota.userUsage) : undefined
 		const org = this.quota?.orgUsage ? scope(this.quota.orgUsage) : undefined
-		const parts: string[] = []
-		if (user) parts.push(`You: ${user}`)
-		if (org) parts.push(`(org: ${org})`)
-		return parts.length > 0 ? parts.join("  ") : undefined
+		return [user ? `You: ${user}` : undefined, org ? `org: ${org}` : undefined]
 	}
 
 	render(width: number): string[] {
@@ -426,14 +426,16 @@ export class RemoteSessionsPanel implements Component {
 			}
 		}
 
-		// Reserved footer line: the quota summary when available, otherwise an
-		// empty row — the panel always emits the same line count either way.
-		const summary = this.quotaSummary()
-		if (summary) {
-			const text = truncate(`  ${summary}`, contentW)
-			lines.push(ansiRow(dim(text), text.length))
-		} else {
-			lines.push(emptyRow())
+		// Reserved footer lines: the quota summary (user line + org line) when
+		// available, otherwise empty rows — the panel always emits the same
+		// line count either way.
+		for (const line of this.quotaLines()) {
+			if (line) {
+				const text = truncate(`  ${line}`, contentW)
+				lines.push(ansiRow(dim(text), text.length))
+			} else {
+				lines.push(emptyRow())
+			}
 		}
 		const hint = this.showDetails
 			? "i: back  esc/q/x: close details"
