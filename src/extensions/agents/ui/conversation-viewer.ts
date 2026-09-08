@@ -12,7 +12,7 @@ import {
 	wrapTextWithAnsi,
 } from "@earendil-works/pi-tui"
 import { getLifetimeTotal, getSessionContextPercent } from "../manager/usage.js"
-import { type AgentRecord, isActiveStatus } from "../personas/types.js"
+import type { AgentRecord } from "../personas/types.js"
 import { extractText } from "../prompt/context.js"
 import type { Theme } from "./agent-widget.js"
 import {
@@ -28,19 +28,6 @@ import {
 // tabs (common in grep output) overflow the layout box and crash the renderer.
 function expandTabs(s: string): string {
 	return s.replace(/\t/g, "        ")
-}
-
-/** Compact one-line summary of a tool_call's arguments for the transcript view.
- *  Shows the most salient arg (command, path, url, pattern); falls back to
- *  compact JSON for unfamiliar shapes; empty string when there is nothing
- *  worth showing. */
-export function formatToolArgs(args: unknown): string {
-	if (!args || typeof args !== "object" || Array.isArray(args)) return ""
-	const a = args as Record<string, unknown>
-	const primary = a.command ?? a.file_path ?? a.url ?? a.pattern ?? a.path
-	if (typeof primary === "string") return primary
-	const json = JSON.stringify(args)
-	return json === "{}" ? "" : json
 }
 
 const CHROME_LINES = 6
@@ -119,13 +106,14 @@ export class ConversationViewer implements Component {
 
 		lines.push(hrTop)
 		const name = getDisplayName(this.record.type)
-		const statusIcon = isActiveStatus(this.record.status)
-			? th.fg("accent", "●")
-			: this.record.status === "completed"
-				? th.fg("success", "✓")
-				: this.record.status === "error"
-					? th.fg("error", "✗")
-					: th.fg("dim", "○")
+		const statusIcon =
+			this.record.status === "running" || this.record.status === "reconnecting"
+				? th.fg("accent", "●")
+				: this.record.status === "completed"
+					? th.fg("success", "✓")
+					: this.record.status === "error"
+						? th.fg("error", "✗")
+						: th.fg("dim", "○")
 		const duration = formatDuration(this.record.startedAt, this.record.completedAt)
 
 		const headerParts: string[] = [duration]
@@ -220,10 +208,11 @@ export class ConversationViewer implements Component {
 				for (const c of msg.content) {
 					if (c.type === "text" && c.text) textParts.push(c.text)
 					else if (c.type === "toolCall") {
-						const part = c as unknown as { name?: string; toolName?: string; arguments?: unknown }
-						const name = part.name ?? part.toolName ?? "unknown"
-						const argsSummary = formatToolArgs(part.arguments)
-						toolCalls.push(argsSummary ? `${name} ${argsSummary}` : name)
+						toolCalls.push(
+							(c as unknown as { name?: string; toolName?: string }).name ??
+								(c as unknown as { name?: string; toolName?: string }).toolName ??
+								"unknown",
+						)
 					}
 				}
 				if (needsSeparator) lines.push(th.fg("dim", "───"))
@@ -261,7 +250,7 @@ export class ConversationViewer implements Component {
 			needsSeparator = true
 		}
 
-		if (isActiveStatus(this.record.status) && this.activity) {
+		if ((this.record.status === "running" || this.record.status === "reconnecting") && this.activity) {
 			const act = describeActivity(this.activity.activeTools, this.activity.responseText)
 			lines.push("")
 			lines.push(truncateToWidth(th.fg("accent", "▍ ") + th.fg("dim", act), width))

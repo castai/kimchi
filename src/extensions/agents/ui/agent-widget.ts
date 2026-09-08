@@ -130,12 +130,19 @@ function truncateLine(text: string, len = 60): string {
 
 export function describeActivity(activeTools: Map<string, string>, responseText?: string): string {
 	if (activeTools.size > 0) {
+		const groups = new Map<string, number>()
+		for (const toolName of activeTools.values()) {
+			const action = TOOL_DISPLAY[toolName] ?? toolName
+			groups.set(action, (groups.get(action) ?? 0) + 1)
+		}
+
 		const parts: string[] = []
-		for (const title of activeTools.values()) {
-			// title is the actual command/description from ACP (e.g. "echo hello; cat file.ts")
-			// If it matches a known tool name, use the display label; otherwise show the title directly.
-			const action = TOOL_DISPLAY[title] ?? truncateLine(title)
-			parts.push(action)
+		for (const [action, count] of groups) {
+			if (count > 1) {
+				parts.push(`${action} ${count} ${action === "searching" ? "patterns" : "files"}`)
+			} else {
+				parts.push(action)
+			}
 		}
 		return `${parts.join(", ")}…`
 	}
