@@ -3,10 +3,11 @@ import {
 	FERMENT_V2_COMMAND_COMPLETIONS,
 	formatFermentV2Accounting,
 	formatFermentV2Duration,
+	formatFermentV2Status,
 	formatFermentV2Summary,
 	parseFermentV2Command,
 } from "./command.js"
-import type { FermentV2Status, SessionFermentV2 } from "./types.js"
+import { FERMENT_V2_STATUSES, type FermentV2Status, type SessionFermentV2 } from "./types.js"
 
 describe("Ferment V2 command", () => {
 	it("parses management commands and inline objectives", () => {
@@ -55,6 +56,54 @@ describe("Ferment V2 command", () => {
 		}
 	})
 
+	it("uses a neutral summary for an automatic approved plan while preserving manual branding", () => {
+		const manual = formatFermentV2Summary(fermentV2("active"))
+		const automatic = formatFermentV2Summary({
+			...fermentV2("active"),
+			presentation: { kind: "approved-plan", title: "Cache Layer", planPath: "/tmp/cache-layer.md" },
+		})
+
+		expect(manual.startsWith("Ferment V2: ship it\n")).toBe(true)
+		expect(automatic).toContain("Plan execution: Cache Layer")
+		expect(automatic).toContain("Commands: /ferment-v2 edit, /ferment-v2 pause, /ferment-v2 clear")
+	})
+
+	describe.each(FERMENT_V2_STATUSES)("approved plan summary while %s", (status) => {
+		it.each([
+			"/tmp/cache-layer.md",
+			undefined,
+		])("shows only the saved reference (%s), preserving the snapshot", (planPath) => {
+			const run = {
+				...fermentV2(status),
+				objective: "Internal approved objective with exact requirements.",
+				presentation: {
+					kind: "approved-plan",
+					title: "Cache Layer",
+					planPath,
+					planText: "# Full approved Markdown\nDo not repeat this in a summary.",
+				},
+			} satisfies SessionFermentV2
+			const before = structuredClone(run)
+			const summary = formatFermentV2Summary(run)
+			expect(summary).toContain(`Plan: ${planPath ?? "no saved file"}`)
+			expect(summary).toContain(`Status: ${status}`)
+			expect(summary).not.toContain("Objective:")
+			expect(summary).not.toContain(run.objective)
+			expect(summary).not.toContain(run.presentation.planText)
+			expect(run).toEqual(before)
+		})
+	})
+
+	it("shows the run state and resume hint without adding a prompt decoration", () => {
+		expect(formatFermentV2Status(undefined)).toBeUndefined()
+		expect(formatFermentV2Status(fermentV2("active"))).toBe("◈ Ferment V2: running · ship it")
+		expect(formatFermentV2Status(fermentV2("active"), true)).toBe("◈ Ferment V2: checking · ship it")
+		expect(formatFermentV2Status(fermentV2("paused"), true)).toBe("◈ Ferment V2: paused · ship it · /ferment-v2 resume")
+		expect(formatFermentV2Status(fermentV2("blocked"))).toBe("◈ Ferment V2: blocked · ship it · /ferment-v2 resume")
+		expect(formatFermentV2Status(fermentV2("complete"))).toBe("◈ Ferment V2: complete · ship it")
+		expect(formatFermentV2Status(fermentV2("budget_limited"))).toBe("◈ Ferment V2: budget limited · ship it")
+	})
+
 	it("shows evaluation details only in the full command summary", () => {
 		const evaluated = {
 			...fermentV2("active"),
@@ -70,6 +119,16 @@ describe("Ferment V2 command", () => {
 			"Evaluations: 2\nLast evaluation: continue — missing smoke test",
 		)
 		expect(formatFermentV2Accounting(evaluated)).toBe("<1m · 1.5k tokens")
+	})
+
+	it("shows a bounded name in the footer and the complete objective in the summary", () => {
+		const objective =
+			"Implement a streaming parser with incremental input and preserve every existing API and test case"
+		const run = { ...fermentV2("active"), objective }
+		const status = formatFermentV2Status(run)
+		expect(status).toBe("◈ Ferment V2: running · Implement a streaming parser with")
+		expect(formatFermentV2Summary(run)).toContain(`Objective: ${objective}`)
+		expect(formatFermentV2Status({ ...run, name: "Streaming parser" })).toBe("◈ Ferment V2: running · Streaming parser")
 	})
 
 	it("shows the persisted blocked reason", () => {

@@ -23,7 +23,6 @@ import bashDefaultTimeoutExtension, { createSubagentBashClampExtension } from ".
 import dapExtension from "../../dap.js"
 import { FERMENT_TOOL_NAMES } from "../../ferment/tool-names.js"
 import infrastructureBreakerExtension from "../../infrastructure-breaker.js"
-import omitKimchiMaxTokensExtension from "../../omit-kimchi-max-tokens.js"
 import { buildPhaseGuidelinesSection } from "../../orchestration/model-registry/guidelines/guidelines-resolver.js"
 import { ModelRegistry } from "../../orchestration/model-registry/index.js"
 import type { Phase } from "../../orchestration/model-registry/types.js"
@@ -512,7 +511,6 @@ ${skillLines}`
 		...autoExtensionFactories,
 		bashExtension,
 		infrastructureBreakerExtension,
-		omitKimchiMaxTokensExtension,
 	]
 	// Personas that request DAP debugger tools (e.g. Debugger) need the dap
 	// extension registered in the child session: repo-native extensions wired

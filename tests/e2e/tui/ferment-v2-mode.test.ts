@@ -9,6 +9,160 @@ test.use(TUI_TEST_CONFIG)
 
 const COMPACTION_SUMMARY_MARKER = "FERMENT_V2_COMPACTION_SUMMARY"
 
+test("stopping a run preserves a paused goal that can be edited, resumed and cleared", async ({ terminal }) => {
+	const objective = "Build a complete OAuth login and account linking migration with rollout safeguards"
+	await runKimchiSession(
+		terminal,
+		{
+			artifactName: "ferment-v2-stop-edit-resume",
+			seedHome: enableFermentV2Mode,
+			responses: [
+				{ stream: Array.from({ length: 40 }, () => "Still working. "), textDelayMs: 500 },
+				{
+					stream: ["The new setup requires a credential."],
+					toolCalls: [
+						{
+							id: "new-goal-blocked",
+							function: {
+								name: "update_ferment_v2",
+								arguments: JSON.stringify({ status: "blocked", reason: "Missing setup credential." }),
+							},
+						},
+					],
+				},
+			],
+		},
+		async (fixture, trace) => {
+			terminal.submit(`/ferment-v2 ${objective}`)
+			expect(fermentV2Snapshot(await waitForChatRequest(fixture.fake.requests, 1))).toMatchObject({ objective })
+			await waitForText(terminal, "◈ Ferment V2: running · Build a complete OAuth login and", { timeoutMs: 5_000 })
+			terminal.keyCtrlC()
+			await waitForText(terminal, "◈ Ferment V2: paused · Build a complete OAuth login and", { timeoutMs: 5_000 })
+			trace.step("the short name survives pausing while the model receives the complete objective")
+			terminal.submit("/ferment-v2 edit finish authenticated setup")
+			await waitForText(terminal, "◈ Ferment V2: paused · finish authenticated setup", { timeoutMs: 5_000 })
+			expect(chatRequests(fixture.fake.requests)).toHaveLength(1)
+			trace.step("editing while paused did not start work")
+			terminal.submit("/ferment-v2 resume")
+			const request = await waitForChatRequest(fixture.fake.requests, 2)
+			expect(fermentV2Snapshot(request)).toMatchObject({
+				objective: "finish authenticated setup",
+				status: "active",
+			})
+			await waitForText(terminal, "◈ Ferment V2: blocked · finish authenticated setup", { timeoutMs: 5_000 })
+			trace.step("resume used the new objective and surfaced its blockage")
+			terminal.submit("/ferment-v2 clear")
+			await waitForText(terminal, "Ferment V2 cleared.", { timeoutMs: 5_000 })
+			expect(viewText(terminal).split("\n").slice(-4).join("\n")).not.toContain("◈")
+		},
+	)
+})
+
+test("experimental Ferment V2 leaves Plan mode, writes, and completes", async ({ terminal }) => {
+	const outputFile = "plan-mode-ferment.txt"
+	const acceptedFinal = "PLAN_MODE_FERMENT_COMPLETE"
+	await runKimchiSession(
+		terminal,
+		{
+			artifactName: "ferment-v2-from-plan-mode",
+			seedHome: enableFermentV2Mode,
+			extraArgs: ["--plan=true"],
+			// The classifier resolves the kimchi-dev ladder provider-exactly, so the
+			// classifier model needs the dated slug under provider kimchi-dev (with
+			// ai-enabler metadata, catalog refresh preserves that provider).
+			providerId: "kimchi-dev",
+			models: [
+				{
+					slug: "basic",
+					displayName: "Fake Basic",
+					provider: "ai-enabler",
+					contextWindow: 200_000,
+					maxTokens: 8192,
+				},
+				{
+					slug: "deepseek-v4-flash-0731",
+					displayName: "DeepSeek V4 Flash",
+					provider: "ai-enabler",
+					contextWindow: 200_000,
+					maxTokens: 8192,
+				},
+			],
+			responses: [
+				{
+					match: isFermentV2EvaluatorRequest,
+					stream: [
+						'{"verdict":"met","checks":[{"requirement":"Create and verify plan-mode-ferment.txt","met":true,"failureMode":"the file could contain different data; l1 records the verified write","evidence":["l1"],"todoIds":[1]}],"reason":"The completed Todo records the verified file write."}',
+					],
+				},
+				{
+					stream: ["Creating the requested file."],
+					toolCalls: [
+						{
+							id: "create-plan-mode-todo",
+							index: 0,
+							function: {
+								name: "create_todos",
+								arguments: JSON.stringify({
+									todos: [{ content: "Create and verify plan-mode-ferment.txt", status: "in_progress" }],
+								}),
+							},
+						},
+						{
+							id: "write-plan-mode-file",
+							index: 1,
+							function: {
+								name: "write",
+								arguments: JSON.stringify({ path: outputFile, content: "done" }),
+							},
+						},
+					],
+				},
+				{
+					stream: ['{"verdict":"safe","reason":"Writes the requested test artifact","riskScore":"low"}'],
+				},
+				{
+					stream: ["Verifying the file."],
+					toolCalls: [
+						{
+							id: "read-plan-mode-file",
+							index: 0,
+							function: { name: "read", arguments: JSON.stringify({ path: outputFile }) },
+						},
+						{
+							id: "finish-plan-mode-todo",
+							index: 1,
+							function: {
+								name: "mark_todo",
+								arguments: JSON.stringify({
+									id: 1,
+									status: "completed",
+									note: "Evidence: wrote and read plan-mode-ferment.txt with exact content done",
+								}),
+							},
+						},
+					],
+				},
+				{ stream: ["The requested file is verified."] },
+				{ stream: [acceptedFinal] },
+			],
+		},
+		async (fixture, trace) => {
+			await waitForText(terminal, /plan(?: → shift\+tab)? · basic\b/, { timeoutMs: STARTUP_TIMEOUT_MS })
+			terminal.submit(`/ferment-v2 create ${outputFile} containing exactly done and verify it`)
+			await waitForText(terminal, "Ferment V2 created.", { timeoutMs: 5_000 })
+			await waitForText(terminal, /auto(?: → shift\+tab)? · basic\b/, { timeoutMs: 5_000 })
+			await waitForText(terminal, acceptedFinal, { timeoutMs: 15_000 })
+			await waitForText(terminal, "Ferment V2 complete.", { timeoutMs: 5_000 })
+			expect(readFileSync(join(fixture.workDir, outputFile), "utf-8")).toBe("done")
+			expect(fullText(terminal)).not.toContain(
+				"Ferment V2 requires the Ferment V2 and Todo tools to be enabled before it can run.",
+			)
+			expect(fullText(terminal)).not.toContain("Plan mode: tool write is not available")
+			trace.step("manual Ferment V2 left Plan mode, wrote the exact file, and completed")
+		},
+	)
+})
+
 test("experimental Ferment V2 continues after automatic compaction and then completes", async ({ terminal }) => {
 	const planningResponse: FakeResponseScript = {
 		stream: ["Creating a tactical plan."],
@@ -256,6 +410,7 @@ test("experimental Ferment V2 edit fences stale output and Todos without cancell
 				{
 					stream: ["Working on revised objective."],
 				},
+				{ stream: ["Revised objective instructions received after settlement."] },
 			],
 		},
 		async (fixture, trace) => {
@@ -282,18 +437,26 @@ test("experimental Ferment V2 edit fences stale output and Todos without cancell
 				objective: "revised objective",
 				status: "active",
 			})
-			expect(JSON.stringify(revisedRequest.body)).toContain("The new objective supersedes the previous objective")
+			// The native tool loop sees the new context before the retractable edit control is dispatched at settlement.
+			expect(JSON.stringify(revisedRequest.body)).not.toContain("The new objective supersedes the previous objective")
 			const currentTodos = collectStrings(revisedRequest.body).find((value) => value.includes("## Current Todos"))
 			expect(currentTodos).toContain(retainedTodo)
 			expect(currentTodos).not.toContain(staleTodo)
 			await waitForText(terminal, "Working on revised objective.", { timeoutMs: 5_000 })
+			const editRequest = await waitForChatRequest(fixture.fake.requests, 3)
+			expect(fermentV2Snapshot(editRequest)).toMatchObject({ objective: "revised objective", status: "active" })
+			expect(JSON.stringify(editRequest.body)).toContain("The new objective supersedes the previous objective")
+			expect(chatRequests(fixture.fake.requests).slice(0, 3).some(isFermentV2EvaluatorRequest)).toBe(false)
+			await waitForText(terminal, "Revised objective instructions received after settlement.", { timeoutMs: 5_000 })
 			expect(fullText(terminal)).not.toContain(finishedRevisionOne)
 			expect(
 				fixture.fake.requests.find((request) => request.url.startsWith("/openai/v1/chat/completions"))?.aborted,
 			).toBe(false)
 			expect(fullText(terminal)).not.toContain("Operation aborted")
 			expect(fullText(terminal)).not.toContain("Ferment V2 paused because the agent turn was cancelled.")
-			trace.step("edit kept revision 1 running but fenced its stale output and Todo mutation from revision 2")
+			trace.step(
+				"edit fenced stale output and Todos, refreshed native context, then delivered its control after settlement",
+			)
 		},
 	)
 })
@@ -322,6 +485,7 @@ test("experimental Ferment V2 edit updates the revision while a tool is still ru
 					],
 				},
 				{ stream: ["Working from revision two."] },
+				{ stream: ["Revision two instructions received after settlement."] },
 			],
 		},
 		async (fixture, trace) => {
@@ -341,13 +505,18 @@ test("experimental Ferment V2 edit updates the revision while a tool is still ru
 				objective: "revised objective",
 				status: "active",
 			})
-			expect(JSON.stringify(revisedRequest.body)).toContain("The new objective supersedes the previous objective")
+			expect(JSON.stringify(revisedRequest.body)).not.toContain("The new objective supersedes the previous objective")
 			expect(chatRequests(fixture.fake.requests).slice(0, 2).some(isFermentV2EvaluatorRequest)).toBe(false)
 			await waitForText(terminal, "Working from revision two.", { timeoutMs: 5_000 })
+			const editRequest = await waitForChatRequest(fixture.fake.requests, 3)
+			expect(fermentV2Snapshot(editRequest)).toMatchObject({ objective: "revised objective", status: "active" })
+			expect(JSON.stringify(editRequest.body)).toContain("The new objective supersedes the previous objective")
+			expect(chatRequests(fixture.fake.requests).slice(0, 3).some(isFermentV2EvaluatorRequest)).toBe(false)
+			await waitForText(terminal, "Revision two instructions received after settlement.", { timeoutMs: 5_000 })
 			expect(fullText(terminal)).not.toContain("Operation aborted")
 			expect(fullText(terminal)).not.toContain("Ferment V2 paused because the agent turn was cancelled.")
 			trace.step(
-				"revision edit landed during a running tool; the tool finished and the next model turn used revision 2",
+				"tool finished without cancellation, its next request used revision 2, and the edit control arrived after settlement",
 			)
 		},
 	)

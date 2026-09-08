@@ -37,6 +37,10 @@ vi.mock("../../config.js", async (importOriginal) => {
 		...actual,
 		writeApiKey: vi.fn(),
 		clearApiKey: vi.fn(),
+		// Real implementation by default; individual tests use
+		// mockReturnValueOnce to simulate credential-store transitions
+		// (writeApiKey/clearApiKey are mocked, so they never touch disk).
+		loadConfig: vi.fn(actual.loadConfig),
 	}
 })
 // Mock the model cache refresh so tests don't hit the network.
@@ -59,7 +63,7 @@ const THEME_KEY_OLD = Symbol.for("@mariozechner/pi-coding-agent:theme")
 
 import { populateCliArgs } from "../../cli-args.js"
 import { authenticateViaBrowser } from "../../cli-auth/index.js"
-import { clearApiKey, writeApiKey } from "../../config.js"
+import { clearApiKey, loadConfig, writeApiKey } from "../../config.js"
 import { createMiniEventBus } from "../../extensions/__mocks__/mini-event-bus.js"
 import { PARENT_SESSION_ID_ENV_KEY } from "../../extensions/agents/manager/constants.js"
 import { setProcessOrchestratorRef } from "../../extensions/kimchi-process.js"
@@ -73,9 +77,10 @@ import {
 	unregisterSessionPermissionFlagController,
 } from "../../extensions/permissions/mode-controller-registry.js"
 import { updateModelsConfig } from "../../models.js"
-import { ACP_REATTACH_MID_TURN_META_KEY } from "../../sandbox/worker/acp-protocol.js"
+import { AVAILABLE_EXT_METHODS, CAPABILITIES_KEY } from "./capabilities.js"
 import { getAcpPrompter } from "./permission-prompter-registry.js"
 import {
+	ACP_REATTACH_MID_TURN_META_KEY,
 	type AcpSessionFactory,
 	type AcpSessionLister,
 	type AcpSessionLoader,
@@ -723,6 +728,143 @@ describe("KimchiAcpAgent turn lifecycle", () => {
 				await import("node:fs").then((fs) => fs.readFileSync(join(tempAgentDir, "auth.json"), "utf-8")),
 			)
 			expect(authJson["kimchi-dev"]).toBeUndefined()
+		})
+	})
+
+	describe("extMethod auth_status", () => {
+		const tempAgentDir = "/tmp/kimchi-acp-test-agent-dir-auth-status"
+
+		// Full KimchiConfig fixture (required fields) with the apiKey varying
+		// per credential-store state: empty string = unauthenticated.
+		function makeConfig(apiKey: string): ReturnType<typeof loadConfig> {
+			return {
+				apiKey,
+				agentConfigDir: tempAgentDir,
+				llmEndpoint: "https://llm.kimchi.dev/openai/v1",
+				customLlmEndpoint: undefined,
+				maxToolResultChars: 12000,
+				mcpSearchLimit: 10,
+				mcpSearch: {
+					strategy: "bm25",
+					bm25K1: 1.2,
+					bm25B: 0.75,
+					fieldWeights: { name: 6, description: 2, schemaKey: 1 },
+				},
+				onboarding: {},
+				deviceId: "test-device-id",
+			}
+		}
+
+		beforeEach(() => {
+			try {
+				rmSync(tempAgentDir, { recursive: true, force: true })
+			} catch {}
+			mkdirSync(tempAgentDir, { recursive: true })
+			vi.mocked(authenticateViaBrowser).mockReset()
+			vi.mocked(loadConfig).mockClear()
+		})
+
+		afterEach(() => {
+			try {
+				rmSync(tempAgentDir, { recursive: true, force: true })
+			} catch {}
+		})
+
+		it("advertises auth_status in the initialize capabilities _meta", async () => {
+			const testAgent = new KimchiAcpAgent(makeConn(), {
+				extensionFactories: [],
+				agentDir: tempAgentDir,
+				sessionFactory: async () => asSession(fake),
+			})
+
+			const response = await testAgent.initialize({ protocolVersion: 1 })
+			expect(response.agentCapabilities?._meta?.[CAPABILITIES_KEY]).toMatchObject({ auth_status: true })
+		})
+
+		it("reports unauthenticated when the credential store has no API key", async () => {
+			vi.mocked(loadConfig).mockReturnValueOnce(makeConfig(""))
+			const testAgent = new KimchiAcpAgent(makeConn(), {
+				extensionFactories: [],
+				agentDir: tempAgentDir,
+				sessionFactory: async () => asSession(fake),
+			})
+
+			await expect(testAgent.extMethod(AVAILABLE_EXT_METHODS.auth_status, {})).resolves.toEqual({
+				authenticated: false,
+			})
+		})
+
+		it("reports authenticated when the credential store has an API key", async () => {
+			vi.mocked(loadConfig).mockReturnValueOnce(makeConfig("castai_v1_token"))
+			const testAgent = new KimchiAcpAgent(makeConn(), {
+				extensionFactories: [],
+				agentDir: tempAgentDir,
+				sessionFactory: async () => asSession(fake),
+			})
+
+			await expect(testAgent.extMethod(AVAILABLE_EXT_METHODS.auth_status, {})).resolves.toEqual({
+				authenticated: true,
+			})
+		})
+
+		// Canonical OAuth credential shape ({ type, access, refresh, expires }) —
+		// the credential reader drops malformed entries, which would hide a
+		// broken logout behind a false unauthenticated result.
+		function oauthCredential() {
+			return { type: "oauth", access: "token", refresh: "refresh", expires: Date.now() + 3600_000 }
+		}
+
+		// Regression: the subscription OAuth login persists credentials to
+		// auth.json only (no config.json apiKey), so auth_status must consult
+		// both halves of the credential store.
+		it("reports authenticated when only auth.json holds OAuth credentials", async () => {
+			writeFileSync(join(tempAgentDir, "auth.json"), JSON.stringify({ "kimchi-dev": oauthCredential() }))
+			vi.mocked(loadConfig).mockReturnValueOnce(makeConfig(""))
+			const testAgent = new KimchiAcpAgent(makeConn(), {
+				extensionFactories: [],
+				agentDir: tempAgentDir,
+				sessionFactory: async () => asSession(fake),
+			})
+
+			await expect(testAgent.extMethod(AVAILABLE_EXT_METHODS.auth_status, {})).resolves.toEqual({
+				authenticated: true,
+			})
+		})
+
+		// The OAuth half is fully real here: auth.json is seeded on disk and
+		// unstable_logout() actually deletes the entry — no simulation. Only
+		// the config half is mocked (writeApiKey/clearApiKey never touch disk),
+		// so its transitions are simulated via mockReturnValueOnce.
+		it("reflects unstable_logout() and authenticate() on subsequent status calls", async () => {
+			vi.mocked(authenticateViaBrowser).mockResolvedValue({ token: "castai_v1_test-token" })
+			// OAuth credentials present, as after a subscription login.
+			writeFileSync(join(tempAgentDir, "auth.json"), JSON.stringify({ "kimchi-dev": oauthCredential() }))
+			const testAgent = new KimchiAcpAgent(makeConn(), {
+				extensionFactories: [],
+				agentDir: tempAgentDir,
+				sessionFactory: async () => asSession(fake),
+			})
+
+			vi.mocked(loadConfig).mockReturnValueOnce(makeConfig(""))
+			await expect(testAgent.extMethod(AVAILABLE_EXT_METHODS.auth_status, {})).resolves.toEqual({
+				authenticated: true,
+			})
+
+			await testAgent.unstable_logout({})
+
+			// After logout: the auth.json entry is gone from the real store.
+			vi.mocked(loadConfig).mockReturnValueOnce(makeConfig(""))
+			await expect(testAgent.extMethod(AVAILABLE_EXT_METHODS.auth_status, {})).resolves.toEqual({
+				authenticated: false,
+			})
+
+			await testAgent.authenticate({ methodId: "kimchi-agent" })
+
+			// After authenticate(): the config half holds the token.
+			vi.mocked(loadConfig).mockReturnValueOnce(makeConfig("castai_v1_test-token"))
+			await expect(testAgent.extMethod(AVAILABLE_EXT_METHODS.auth_status, {})).resolves.toEqual({
+				authenticated: true,
+			})
 		})
 	})
 

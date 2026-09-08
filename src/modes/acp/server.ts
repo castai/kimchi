@@ -98,6 +98,7 @@ import { createAcpPermissionPrompter } from "./acp-prompter.js"
 import { createAcpUIContext } from "./acp-ui-context.js"
 import { ADVERTISED_CAPABILITIES, AVAILABLE_EXT_METHODS, CAPABILITIES_KEY } from "./capabilities.js"
 import { AVAILABLE_COMMANDS } from "./commands.js"
+import { handleAuthStatus } from "./ext-methods/auth-status.js"
 import { handleProbeMcpServer } from "./ext-methods/mcp.js"
 import { handleSetSessionTitle } from "./ext-methods/set-session-title.js"
 import { handleSteering } from "./ext-methods/steering.js"
@@ -986,6 +987,14 @@ export class KimchiAcpAgent implements Agent {
 				const result = await handleProbeMcpServer(this.mcpServerManager, params)
 				return result as Record<keyof ProbeResult, unknown>
 			}
+			case AVAILABLE_EXT_METHODS.auth_status:
+				// Read the shared credential store per call so authenticate(),
+				// unstable_logout(), and logins from other Kimchi surfaces are
+				// reflected without a reconnect.
+				return handleAuthStatus({
+					authPath: join(this.agentDir, "auth.json"),
+					modelsPath: join(this.agentDir, "models.json"),
+				})
 			case AVAILABLE_EXT_METHODS.set_session_title:
 				return handleSetSessionTitle((sessionId) => this.sessions.get(sessionId)?.session, params)
 			case AVAILABLE_EXT_METHODS.steering:
