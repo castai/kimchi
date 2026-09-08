@@ -292,7 +292,7 @@ try {
 		installAutoModelAdapters()
 		// Publish the print-mode gate the
 		// same way so interactive-only (questionnaire) and ferment-mode-only
-		// (set_phase, list_ferments, ferment suite) tools stay out of headless
+		// (list_ferments, ferment suite) tools stay out of headless
 		// --print sessions. The ferment-oneshot argv scan is the load-bearing
 		// composition: a headless one-shot planner still needs the suite.
 		setPrintGate(hasPrintFlag(originalArgs), hasFermentOneshotArg(originalArgs))

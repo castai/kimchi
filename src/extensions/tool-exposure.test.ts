@@ -299,7 +299,6 @@ const EXPECTED_SESSION_START_VISIBLE = new Set<string>([
 	"steer_subagent",
 	// tags / skills (the mcp gateway is config-gated — Chunk 5: it registers
 	// only when >=1 MCP server is configured; see the gate-on test below)
-	"set_phase",
 	"Skill",
 	// dap — always-visible set (deferred session tools below)
 	...DAP_ALWAYS_VISIBLE_TOOL_NAMES,
@@ -383,13 +382,13 @@ describe("tool exposure at session start", () => {
 		workerState.isWorker = false
 	})
 
-	it("advertises exactly the documented 26-tool surface and hides the 17 deferred tools", async () => {
+	it("advertises exactly the documented 25-tool surface and hides the 17 deferred tools", async () => {
 		const harness = createExposureHarness()
 		await instantiateAllExtensions(harness)
 
 		const visible = new Set(harness.active)
 		expect(visible).toEqual(EXPECTED_SESSION_START_VISIBLE)
-		expect(visible.size).toBe(26)
+		expect(visible.size).toBe(25)
 
 		// Deferred tools are still REGISTERED (availability preserved)…
 		for (const name of EXPECTED_DEFERRED_BY_DESIGN) {
@@ -400,7 +399,7 @@ describe("tool exposure at session start", () => {
 		expect(deferredInActive).toEqual([])
 	})
 
-	it("print mode drops questionnaire + set_phase at registration (Chunk 7)", async () => {
+	it("print mode drops questionnaire at registration and never registers set_phase", async () => {
 		await withPrintGate({ print: true }, async () => {
 			const harness = createExposureHarness()
 			await instantiateAllExtensions(harness)
@@ -410,11 +409,9 @@ describe("tool exposure at session start", () => {
 			expect(harness.registered.has("questionnaire"), "questionnaire must not register in --print").toBe(false)
 			expect(harness.registered.has("set_phase"), "set_phase must not register in --print").toBe(false)
 
-			// The remaining visible surface is the interactive spec minus the two
-			// gate-outs; deferred spec is unchanged.
-			const expectedVisible = new Set(
-				[...EXPECTED_SESSION_START_VISIBLE].filter((n) => n !== "questionnaire" && n !== "set_phase"),
-			)
+			// The remaining visible surface is the interactive spec minus questionnaire;
+			// deferred spec is unchanged.
+			const expectedVisible = new Set([...EXPECTED_SESSION_START_VISIBLE].filter((n) => n !== "questionnaire"))
 			const visible = new Set(harness.active)
 			expect(visible).toEqual(expectedVisible)
 			expect(visible.size).toBe(24)
@@ -424,16 +421,14 @@ describe("tool exposure at session start", () => {
 		})
 	})
 
-	it("print mode keeps set_phase registered when the session is multi-model", async () => {
+	it("multi-model print mode never registers set_phase", async () => {
 		vi.mocked(resolveMultiModelEnabled).mockReturnValue({ value: true, source: "cli" })
 		try {
 			await withPrintGate({ print: true }, async () => {
 				const harness = createExposureHarness()
 				await instantiateAllExtensions(harness)
 
-				// The orchestrator prompt instructs set_phase calls; the tool must
-				// exist even though the print gate would otherwise skip it.
-				expect(harness.registered.has("set_phase"), "set_phase must register in multi-model --print").toBe(true)
+				expect(harness.registered.has("set_phase"), "set_phase was removed in every mode").toBe(false)
 				expect(harness.registered.has("questionnaire"), "questionnaire stays print-gated").toBe(false)
 			})
 		} finally {

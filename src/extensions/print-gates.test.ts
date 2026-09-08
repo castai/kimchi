@@ -61,11 +61,11 @@ describe("questionnaire print gate (Chunk 7)", () => {
 	})
 })
 
-describe("set_phase ferment-mode gate (Chunk 7)", () => {
-	it("interactive run: registers set_phase", () => {
+describe("removed phase tool", () => {
+	it("interactive run: does not register set_phase", () => {
 		const { pi, tools } = makePi()
 		tagsExtension(pi)
-		expect(tools.map((t) => t.name)).toContain("set_phase")
+		expect(tools.map((t) => t.name)).not.toContain("set_phase")
 	})
 
 	it("plain print run: does not register set_phase", () => {
@@ -76,21 +76,21 @@ describe("set_phase ferment-mode gate (Chunk 7)", () => {
 		})
 	})
 
-	it("print + ferment-oneshot run: keeps set_phase (Chunk 7 composition)", () => {
+	it("print + ferment-oneshot run: does not register set_phase", () => {
 		return withPrintGate({ print: true, fermentOneshot: true }, async () => {
 			const { pi, tools } = makePi()
 			tagsExtension(pi)
-			expect(tools.map((t) => t.name)).toContain("set_phase")
+			expect(tools.map((t) => t.name)).not.toContain("set_phase")
 		})
 	})
 
-	it("multi-model print run: keeps set_phase registered (orchestrator prompt needs it)", () => {
+	it("multi-model print run: does not register set_phase", () => {
 		vi.mocked(resolveMultiModelEnabled).mockReturnValue({ value: true, source: "cli" })
 		try {
 			return withPrintGate({ print: true }, async () => {
 				const { pi, tools } = makePi()
 				tagsExtension(pi)
-				expect(tools.map((t) => t.name)).toContain("set_phase")
+				expect(tools.map((t) => t.name)).not.toContain("set_phase")
 			})
 		} finally {
 			vi.mocked(resolveMultiModelEnabled).mockReturnValue({ value: false, source: "cli" })
