@@ -16,6 +16,7 @@ import {
 	buildModelAbbrev,
 	buildPhaseCompact,
 	buildScriptPayload,
+	buildStatusLineSegments,
 	renderFittedLine,
 	SHORTCUT_TAIL,
 	StatusLine,
@@ -123,6 +124,26 @@ function createMockStatusLineData(opts?: {
 }
 
 describe("buildScriptPayload", () => {
+	it("shows a V2 run in both the default footer and custom-script controls", () => {
+		const data = createMockStatusLineData()
+		vi.mocked(data.getExtensionStatuses).mockReturnValue(
+			new Map([["ferment-v2", "◈ paused · Cache layer · /ferment-v2 resume"]]),
+		)
+		const context = { ctx: createMockContext(), theme: createMockTheme(), statusLineData: data }
+		const standard = buildStatusLineSegments(context, new Set())
+		expect(stripAnsi(standard.find((segment) => segment.id === "ferment")?.text ?? "")).toBe(
+			"◈ paused · Cache layer · /ferment-v2 resume",
+		)
+		expect(buildControlsLineSegments(context).some((segment) => segment.id === "ferment")).toBe(true)
+		vi.mocked(data.getExtensionStatuses).mockReturnValue(
+			new Map([["ferment-v2", `◈ paused · ${"long objective ".repeat(4)} · /ferment-v2 resume`]]),
+		)
+		for (const segments of [buildStatusLineSegments(context, new Set()), buildControlsLineSegments(context)]) {
+			const line = renderFittedLine(segments, 80, context.theme)
+			expect(stripAnsi(line)).toContain("◈ paused")
+			expect(visibleWidth(line)).toBeLessThanOrEqual(80)
+		}
+	})
 	afterEach(() => setBillingStatusForTest(undefined))
 
 	it("passes credits and budget to custom status-line scripts", () => {
@@ -1291,5 +1312,40 @@ describe("StatusLineScript", () => {
 		const sls = new StatusLineScript(() => null)
 		sls.setLines(["one"])
 		expect(sls.render(80)).toEqual(["one"])
+	})
+})
+
+describe("StatusLine narrow-terminal width invariant", () => {
+	// The status line renders on the main screen, where pi-tui's doRender
+	// hard-crashes on any line wider than the terminal. Sweep widths 1-12
+	// with every segment family active — permissions/model/context, usage,
+	// agents, billing, router — and assert the invariant.
+	afterEach(() => {
+		vi.restoreAllMocks()
+		setBillingStatusForTest(undefined)
+	})
+
+	it("never emits a line wider than the requested width at widths 1-12", () => {
+		const theme = createMockTheme()
+		withPinned(["agents", "credits", "budget"], () => {
+			vi.spyOn(AGENTS, "getActiveAgentCount").mockReturnValue(3)
+			setTestBilling()
+			setAutoRoutingState("test-session", { status: "resolved", model: concreteModel("kimi-k2.6") })
+			const ctx = createMockContext({
+				percent: 87,
+				modelId: "auto",
+				assistantMessages: [
+					{ input: 1200, output: 340 },
+					{ input: 800, output: 200 },
+				],
+			})
+			const sl = new StatusLine(ctx, theme, createMockStatusLineData())
+			for (let width = 1; width <= 12; width++) {
+				const lines = sl.render(width)
+				for (const line of lines) {
+					expect(visibleWidth(line)).toBeLessThanOrEqual(width)
+				}
+			}
+		})
 	})
 })

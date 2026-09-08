@@ -119,6 +119,9 @@ import { asString, extractImages, truncate } from "./utils.js"
  * initialize() declaration and authenticate() validation to avoid typo drift. */
 const KIMCHI_AGENT_AUTH_METHOD_ID = "kimchi-agent"
 
+/** `_meta` key opting `session/load` into mid-turn attach; strict guard stays default. */
+export const ACP_REATTACH_MID_TURN_META_KEY = "kimchi/reattachMidTurn"
+
 /** Resolve --plan/--auto/--yolo CLI flags into a PermissionMode. */
 function resolveCliPermissionMode(): PermissionMode | undefined {
 	const { options } = getParsedCliArgs()
@@ -728,7 +731,10 @@ export class KimchiAcpAgent implements Agent {
 		const sessionId = params.sessionId
 		const existing = this.sessions.get(sessionId)
 		if (existing) {
-			if (existing.turn) {
+			// Mid-turn attach is opt-in; clients passing the flag declared the
+			// previous connection dead, so attach and replay instead of rejecting.
+			// Everyone else keeps the strict guard.
+			if (existing.turn && params._meta?.[ACP_REATTACH_MID_TURN_META_KEY] !== true) {
 				throw RequestError.invalidRequest(undefined, `session ${sessionId} has a turn in progress; cancel it first`)
 			}
 			this.replayTranscript(existing.session)

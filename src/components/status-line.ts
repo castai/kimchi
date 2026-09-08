@@ -49,6 +49,7 @@ type SegmentRaw =
 	| { kind: "phase"; phase: string }
 	| { kind: "budget"; percentage: string }
 	| { kind: "ferment"; prefix: string; prefixWidth: number }
+	| { kind: "ferment-v2"; state: string }
 
 /** A single piece of the status line. */
 export interface Segment {
@@ -312,6 +313,14 @@ const STEPS: CompactionStep[] = [
 	{
 		name: "drop-ferment-prefix",
 		apply: (segs) => dropFermentPrefix(segs),
+	},
+	{
+		name: "compact-ferment-v2",
+		apply: (segs, ctx) =>
+			recompactSegment(segs, "ferment", "ferment-v2", (raw) => {
+				const text = ctx.accent(raw.state)
+				return { id: "ferment", text, width: visibleWidth(text) }
+			}),
 	},
 ]
 
@@ -619,7 +628,21 @@ function buildAgentsSegment(theme: Theme, pinned: boolean): Segment | null {
 	return { id: "agents", text, width: visibleWidth(text) }
 }
 
-function buildFermentSegment(theme: Theme, pinned: boolean): Segment | null {
+function buildFermentSegment(
+	theme: Theme,
+	pinned: boolean,
+	statusLineData: ReadonlyFooterDataProvider,
+): Segment | null {
+	const runStatus = statusLineData.getExtensionStatuses().get("ferment-v2")
+	if (runStatus) {
+		const text = accentText(theme, runStatus)
+		return {
+			id: "ferment",
+			text,
+			width: visibleWidth(text),
+			raw: { kind: "ferment-v2", state: runStatus.split(" · ")[0] },
+		}
+	}
 	const display = formatFermentStatusLineDisplay(getActiveFerment(), getFermentContinuationPolicy(), {
 		dim: (s) => dimText(theme, s),
 		accent: (s) => accentText(theme, s),
@@ -668,7 +691,7 @@ export function buildStatusLineSegments(
 		buildPermissionsSegment(theme, statusLineData, pinned.has("permissions")),
 		buildModelSegment(ctx, theme),
 		buildThinkingSegment(ctx, theme, pinned.has("thinking")),
-		buildFermentSegment(theme, pinned.has("ferment")),
+		buildFermentSegment(theme, pinned.has("ferment"), statusLineData),
 		buildCreditsSegment(theme, pinned.has("credits")),
 		buildBudgetSegment(theme, pinned.has("budget")),
 		buildAgentsSegment(theme, pinned.has("agents")),

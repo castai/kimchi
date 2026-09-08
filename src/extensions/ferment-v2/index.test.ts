@@ -1,4 +1,16 @@
 import { randomUUID } from "node:crypto"
+import {
+	existsSync,
+	mkdirSync,
+	mkdtempSync,
+	readdirSync,
+	readFileSync,
+	realpathSync,
+	rmSync,
+	writeFileSync,
+} from "node:fs"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
 import type {
 	ContextEvent,
 	ExtensionAPI,
@@ -7,6 +19,11 @@ import type {
 	SessionEntry,
 } from "@earendil-works/pi-coding-agent"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+import { getToolsForProfile } from "../../shared/planning/tool-catalog.js"
+import { createMiniEventBus } from "../__mocks__/mini-event-bus.js"
+import { clearPermissionModeEnv, getPermissionMode, setPermissionMode } from "../permissions/mode-controller.js"
+import { unregisterSessionPermissionFlagController } from "../permissions/mode-controller-registry.js"
+import { PERMISSION_EVENTS } from "../permissions/permissions-events.js"
 import { markHarnessSteer } from "../steer-marker.js"
 import { registerTodosCommand } from "../todos/command.js"
 import { TODO_CUSTOM_ENTRY_TYPE } from "../todos/constants.js"
@@ -24,6 +41,8 @@ import {
 import { FERMENT_V2_EVENTS } from "./domain-events.js"
 import { evaluateFermentV2 } from "./evaluator.js"
 import fermentV2Extension from "./index.js"
+import { objectiveFilePath, saveObjectiveFile } from "./objective-file.js"
+import { buildApprovedPlanObjective, getFermentV2PlanExecutor } from "./plan-executor.js"
 import { DEFAULT_FERMENT_V2_SETTINGS, getFermentV2Settings } from "./settings.js"
 import type { FermentV2JournalEntry, SessionFermentV2 } from "./types.js"
 
@@ -35,6 +54,7 @@ vi.mock("./settings.js", async (importOriginal) => {
 
 const evaluateFermentV2Mock = vi.mocked(evaluateFermentV2)
 const fermentV2SettingsMock = vi.mocked(getFermentV2Settings)
+const TEST_SESSION_ID = "session-a"
 const EVALUATOR_USAGE = {
 	input: 10,
 	output: 5,
@@ -76,6 +96,7 @@ type ToolConfig = {
 
 describe("Ferment V2 extension", () => {
 	let harness: ReturnType<typeof createHarness>
+	let cwd: string
 
 	beforeEach(async () => {
 		__resetTodoStore()
@@ -87,14 +108,18 @@ describe("Ferment V2 extension", () => {
 			diagnostics: EVALUATOR_DIAGNOSTICS,
 		})
 		fermentV2SettingsMock.mockReturnValue({ ...DEFAULT_FERMENT_V2_SETTINGS })
-		harness = createHarness()
+		cwd = realpathSync(mkdtempSync(join(tmpdir(), "kimchi-v2-edit-")))
+		harness = createHarness({ cwd })
 		await harness.fire("session_start", { type: "session_start", reason: "new" })
 	})
 
 	afterEach(async () => {
 		await harness.fire("session_shutdown", { type: "session_shutdown" })
+		clearPermissionModeEnv(TEST_SESSION_ID)
+		unregisterSessionPermissionFlagController(TEST_SESSION_ID)
 		__resetTodoStore()
 		vi.restoreAllMocks()
+		rmSync(cwd, { recursive: true, force: true })
 	})
 
 	it("registers the commands, completions, tools, and empty-state behavior", async () => {
@@ -236,6 +261,347 @@ describe("Ferment V2 extension", () => {
 			"Ferment V2 requires the Ferment V2 and Todo tools to be enabled before it can run.",
 			"warning",
 		)
+	})
+
+	it("leaves Plan mode before starting from the planning-adhoc tool profile", async () => {
+		const planTools = getToolsForProfile("planning-adhoc").map((tool) => tool.name)
+		harness.setActiveTools(planTools)
+		setPermissionMode(TEST_SESSION_ID, { mode: "plan", initiatedBy: "user", source: "runtime" })
+
+		await harness.command("ship feature A")
+
+		expect(harness.ui.notify).not.toHaveBeenCalledWith(
+			"Ferment V2 requires the Ferment V2 and Todo tools to be enabled before it can run.",
+			"warning",
+		)
+		expect(getPermissionMode(TEST_SESSION_ID)).toEqual({ mode: "auto", initiatedBy: "user", source: "runtime" })
+		expect(harness.currentFermentV2()).toMatchObject({ objective: "ship feature A", status: "active" })
+		expect(harness.sendMessage).toHaveBeenCalled()
+	})
+
+	it("pauses an active run when Plan mode becomes active", async () => {
+		await harness.command("ship feature A")
+		harness.sendMessage.mockClear()
+		setPermissionMode(TEST_SESSION_ID, { mode: "plan", initiatedBy: "user", source: "runtime" })
+		harness.events.emit(PERMISSION_EVENTS.MODE_CHANGED, {
+			from: { mode: "default", initiatedBy: "user", source: "runtime" },
+			to: { mode: "plan", initiatedBy: "user", source: "runtime" },
+			reason: "user_shift_tab",
+		})
+
+		expect(harness.currentFermentV2()).toMatchObject({ objective: "ship feature A", status: "paused" })
+		expect(harness.events.emit).toHaveBeenCalledWith(
+			FERMENT_V2_EVENTS.PAUSED,
+			expect.objectContaining({ status: "paused", reason: "user" }),
+		)
+		expect(harness.ui.notify).toHaveBeenLastCalledWith(
+			"Ferment V2 paused because Plan mode is read-only. Resume it to continue in Auto mode.",
+			"info",
+		)
+		expect(harness.sendMessage).not.toHaveBeenCalled()
+	})
+
+	it("registers an approved-plan executor that starts through the Ferment V2 mutation path", async () => {
+		const executor = getFermentV2PlanExecutor(harness.pi)
+		if (!executor) throw new Error("expected approved-plan executor")
+
+		const result = await executor(
+			{
+				objective: 'Read the approved plan at "/tmp/plan.md" before continuing.',
+				title: "Cache plan",
+				planText: "# Cache plan\n\n## Goal\nShip it.",
+				planPath: "/tmp/plan.md",
+			},
+			harness.ctx,
+		)
+
+		expect(result).toBe("started")
+		expect(harness.currentFermentV2()).toMatchObject({
+			objective: 'Read the approved plan at "/tmp/plan.md" before continuing.',
+			presentation: { kind: "approved-plan", title: "Cache plan", planPath: "/tmp/plan.md" },
+			status: "active",
+		})
+		expect(harness.sendMessage.mock.lastCall?.[0]).toMatchObject({
+			customType: FERMENT_V2_CONTROL_MESSAGE_TYPE,
+			details: expect.objectContaining({ source: "approved_plan" }),
+		})
+		expect(harness.ui.notify).toHaveBeenLastCalledWith("Plan execution started.", "info")
+		expect(JSON.stringify(harness.ui.notify.mock.calls)).not.toMatch(/ferment[- ]v2/i)
+		expect(JSON.stringify(harness.ui.confirm.mock.calls)).not.toMatch(/ferment[- ]v2/i)
+		expect(harness.ui.setStatus).toHaveBeenLastCalledWith("ferment-v2", "◈ Plan execution: running · Cache plan")
+	})
+
+	it("fails an automatic approved-plan start silently when its required tools are unavailable", async () => {
+		const executor = getFermentV2PlanExecutor(harness.pi)
+		if (!executor) throw new Error("expected approved-plan executor")
+		harness.setActiveTools([])
+
+		await expect(
+			executor(
+				{
+					objective: 'Read the approved plan at "/tmp/plan.md" before continuing.',
+					title: "Cache plan",
+					planText: "# Cache plan",
+					planPath: "/tmp/plan.md",
+				},
+				harness.ctx,
+			),
+		).rejects.toThrow()
+		expect(harness.currentFermentV2()).toBeUndefined()
+		expect(harness.ui.notify).not.toHaveBeenCalled()
+	})
+
+	it("restores and clears the run status across state and session-tree changes", async () => {
+		const executor = getFermentV2PlanExecutor(harness.pi)
+		if (!executor) throw new Error("expected approved-plan executor")
+		await executor(
+			{
+				objective: 'Read the approved plan at "/tmp/plan.md" before continuing.',
+				title: "Cache plan",
+				planText: "# Cache plan",
+				planPath: "/tmp/plan.md",
+			},
+			harness.ctx,
+		)
+
+		harness.ui.setStatus.mockClear()
+		await harness.fire("session_tree", { type: "session_tree" })
+		expect(harness.ui.setStatus).toHaveBeenLastCalledWith("ferment-v2", "◈ Plan execution: running · Cache plan")
+
+		harness.setBranch([])
+		await harness.fire("session_tree", { type: "session_tree" })
+		expect(harness.ui.setStatus).toHaveBeenLastCalledWith("ferment-v2", undefined)
+
+		await harness.fire("session_shutdown", { type: "session_shutdown" })
+		expect(harness.ui.setStatus).toHaveBeenLastCalledWith("ferment-v2", undefined)
+	})
+
+	it("keeps the existing Ferment V2 when approved-plan replacement is declined", async () => {
+		await harness.command("original")
+		const first = harness.currentFermentV2()
+		harness.sendMessage.mockClear()
+		harness.ui.confirm.mockResolvedValueOnce(false)
+		const executor = getFermentV2PlanExecutor(harness.pi)
+		if (!executor) throw new Error("expected approved-plan executor")
+
+		const result = await executor(
+			{
+				objective: "replacement",
+				title: "Replacement plan",
+				planText: "# Replacement plan",
+			},
+			harness.ctx,
+		)
+
+		expect(result).toBe("kept-existing")
+		expect(harness.currentFermentV2()?.id).toBe(first?.id)
+		expect(harness.sendMessage).not.toHaveBeenCalled()
+		expect(harness.ui.confirm).toHaveBeenLastCalledWith(
+			"Replace current run?",
+			"Replace current run revision 1? This starts the approved plan.",
+		)
+		expect(harness.ui.notify).toHaveBeenLastCalledWith("Current run kept.", "info")
+		expect(JSON.stringify(harness.ui.notify.mock.calls.slice(1))).not.toMatch(/ferment[- ]v2/i)
+		expect(JSON.stringify(harness.ui.confirm.mock.calls)).not.toMatch(/ferment[- ]v2/i)
+
+		harness.ui.confirm.mockResolvedValueOnce(true)
+		await executor({ objective: "replacement", title: "Replacement plan", planText: "# Replacement plan" }, harness.ctx)
+		expect(harness.ui.notify).toHaveBeenLastCalledWith("Plan execution replaced.", "info")
+	})
+
+	it.each([true, false])("lets an explicit edit replace the approved plan objective (saved=%s)", async (saved) => {
+		const executor = getFermentV2PlanExecutor(harness.pi)
+		if (!executor) throw new Error("expected approved-plan executor")
+		await executor(
+			{
+				objective: "Execute every requirement in the original plan",
+				title: "Original plan",
+				planText: "# Original plan",
+				...(saved ? { planPath: "/tmp/plan.md" } : {}),
+			},
+			harness.ctx,
+		)
+		await harness.command("pause")
+		await harness.command("edit Only verify the new requirement.")
+		expect(harness.currentFermentV2()).toMatchObject({
+			objective: expect.stringMatching(/^Read the Kimchi objective file at /),
+			status: "paused",
+			revision: 2,
+		})
+		const reference = harness.currentFermentV2()?.objective ?? ""
+		const path = JSON.parse(reference.slice("Read the Kimchi objective file at ".length, -" before continuing.".length))
+		expect(readFileSync(path, "utf8")).toBe("Only verify the new requirement.")
+		expect(harness.currentFermentV2()).not.toHaveProperty("presentation")
+		expect(harness.ui.setStatus).toHaveBeenLastCalledWith(
+			"ferment-v2",
+			"◈ Ferment V2: paused · Only verify the new requirement. · /ferment-v2 resume",
+		)
+		const before = harness.sendMessage.mock.calls.length
+		await harness.fire("session_tree", { type: "session_tree" })
+		expect(harness.sendMessage).toHaveBeenCalledTimes(before)
+		await harness.command("resume")
+		expect(harness.currentFermentV2()).toMatchObject({
+			status: "active",
+			objective: reference,
+		})
+	})
+
+	it("re-edits managed content into a new file without changing the approved snapshot or prior file", async () => {
+		const original = buildApprovedPlanObjective(join(cwd, "original.md"), "# Approved snapshot\nOriginal requirement.")
+		const executor = getFermentV2PlanExecutor(harness.pi)
+		if (!executor) throw new Error("expected approved-plan executor")
+		await executor({ objective: original, title: "Approved snapshot", planText: "unused saved metadata" }, harness.ctx)
+		await harness.command("pause")
+		const editedText = `${original}\n\n# Revised requirement\n${"Detail. ".repeat(700)}`
+		harness.ui.editor.mockImplementationOnce(async (_title, value) => {
+			expect(value).toBe(original)
+			return editedText
+		})
+		await harness.command("edit")
+		const revisionTwo = harness.currentFermentV2()
+		expect(revisionTwo?.objective).toMatch(/^Read the Kimchi objective file at /)
+		expect(revisionTwo?.objective.length).toBeLessThan(500)
+		expect(revisionTwo).not.toHaveProperty("presentation")
+		const filesBefore = readdirSync(join(cwd, ".kimchi/plans"))
+		expect(filesBefore).toHaveLength(1)
+		expect(readFileSync(join(cwd, ".kimchi/plans", filesBefore[0]), "utf8")).toBe(editedText)
+		await harness.fire("session_tree", { type: "session_tree" })
+		harness.ui.editor.mockImplementationOnce(async (_title, value) => {
+			expect(value).toBe(editedText)
+			return "# Replacement requirement\nOnly do the new task."
+		})
+		await harness.command("edit")
+		expect(harness.currentFermentV2()).toMatchObject({ revision: 3, name: "Replacement requirement", status: "paused" })
+		expect(harness.currentFermentV2()?.objective).not.toBe(revisionTwo?.objective)
+		expect(readdirSync(join(cwd, ".kimchi/plans"))).toHaveLength(2)
+		expect(readFileSync(join(cwd, ".kimchi/plans", filesBefore[0]), "utf8")).toBe(editedText)
+		expect(
+			harness.branch.some(
+				(entry) => entry.type === "custom" && JSON.stringify(entry.data).includes(JSON.stringify(original)),
+			),
+		).toBe(true)
+	})
+
+	it("materializes an already-edited approved snapshot only on a new explicit edit", async () => {
+		const snapshot = `${buildApprovedPlanObjective(undefined, "# Original plan\nDo original work.")}\n\nAdded requirement.`
+		await harness.command("original manual objective")
+		harness.ui.editor.mockResolvedValueOnce(snapshot)
+		await harness.command("edit")
+		await harness.command("pause")
+		expect(harness.currentFermentV2()?.revision).toBe(2)
+		expect(harness.currentFermentV2()).not.toHaveProperty("presentation")
+		await harness.fire("session_tree", { type: "session_tree" })
+		expect(harness.currentFermentV2()?.objective).toBe(snapshot)
+		expect(existsSync(join(cwd, ".kimchi/plans"))).toBe(false)
+		harness.ui.editor.mockResolvedValueOnce("# Changed plan\nNew requirement.")
+		await harness.command("edit")
+		expect(harness.currentFermentV2()?.objective).toMatch(/^Read the Kimchi objective file at /)
+		expect(harness.currentFermentV2()?.revision).toBe(3)
+		expect(harness.currentFermentV2()?.name).toBe("Changed plan")
+	})
+
+	it.each([
+		"# Manual plan\n<approved_plan>\nDo work.\n</approved_plan>",
+		"Read the approved plan at /tmp/manual.md",
+	])("keeps an ordinary manual objective inline when edited: %s", async (objective) => {
+		await harness.command(objective)
+		harness.ui.editor.mockResolvedValueOnce("# Manual replacement\nNew requirement.")
+		await harness.command("edit")
+		expect(harness.currentFermentV2()?.objective).toBe("# Manual replacement\nNew requirement.")
+		expect(existsSync(join(cwd, ".kimchi/plans"))).toBe(false)
+	})
+
+	it("keeps the current state and sends no work when saving an edited snapshot fails", async () => {
+		await harness.command(buildApprovedPlanObjective(undefined, "# Initial plan"))
+		await harness.command("pause")
+		const before = harness.currentFermentV2()
+		mkdirSync(join(cwd, ".kimchi"))
+		writeFileSync(join(cwd, ".kimchi/plans"), "not a directory")
+		harness.sendMessage.mockClear()
+		await harness.command("edit replacement")
+		expect(harness.currentFermentV2()).toEqual(before)
+		expect(harness.sendMessage).not.toHaveBeenCalled()
+		expect(harness.ui.notify).toHaveBeenLastCalledWith(expect.stringMatching(/objective file/i), "warning")
+	})
+
+	it.each([undefined, " \n\t"])("does not create a file for cancelled or blank snapshot edits", async (answer) => {
+		await harness.command(buildApprovedPlanObjective(undefined, "# Initial plan"))
+		const before = harness.currentFermentV2()
+		harness.ui.editor.mockResolvedValueOnce(answer)
+		harness.sendMessage.mockClear()
+		await harness.command("edit")
+		expect(harness.currentFermentV2()).toEqual(before)
+		expect(existsSync(join(cwd, ".kimchi/plans"))).toBe(false)
+		expect(harness.sendMessage).not.toHaveBeenCalled()
+	})
+
+	it("does not save a stale editor draft after another edit creates a managed revision", async () => {
+		await harness.command(buildApprovedPlanObjective(undefined, "# Initial plan"))
+		await harness.command("pause")
+		harness.ui.editor.mockImplementationOnce(async () => {
+			await harness.command("edit concurrent replacement")
+			return "stale editor text"
+		})
+		await harness.command("edit")
+		expect(harness.currentFermentV2()?.revision).toBe(2)
+		const files = readdirSync(join(cwd, ".kimchi/plans"))
+		expect(files).toHaveLength(1)
+		expect(readFileSync(join(cwd, ".kimchi/plans", files[0]), "utf8")).toBe("concurrent replacement")
+		expect(harness.ui.notify).toHaveBeenLastCalledWith(
+			expect.stringContaining("changed while the editor was open"),
+			"warning",
+		)
+	})
+
+	it("rejects an unreadable managed edit without reopening the short reference as plain text", async () => {
+		const reference = saveObjectiveFile("full objective", cwd)
+		await harness.command(reference)
+		await harness.command("pause")
+		const path = objectiveFilePath(reference, cwd)
+		if (!path) throw new Error("expected managed path")
+		rmSync(path)
+		const before = harness.currentFermentV2()
+		harness.ui.editor.mockClear()
+		await harness.command("edit")
+		expect(harness.ui.editor).not.toHaveBeenCalled()
+		expect(harness.currentFermentV2()).toEqual(before)
+		expect(harness.ui.notify).toHaveBeenLastCalledWith(
+			expect.stringMatching(/Could not read Kimchi objective file/),
+			"warning",
+		)
+	})
+
+	it("retains a successfully saved objective when journal persistence rejects the edit", async () => {
+		await harness.command(buildApprovedPlanObjective(undefined, "# Initial plan"))
+		await harness.command("pause")
+		const before = harness.currentFermentV2()
+		harness.sendMessage.mockClear()
+		harness.appendEntry.mockImplementationOnce(() => {
+			throw new Error("journal failed")
+		})
+		await harness.command("edit replacement requiring a retained file")
+		expect(harness.currentFermentV2()).toEqual(before)
+		expect(harness.sendMessage).not.toHaveBeenCalled()
+		const files = readdirSync(join(cwd, ".kimchi/plans"))
+		expect(files).toHaveLength(1)
+		expect(readFileSync(join(cwd, ".kimchi/plans", files[0]), "utf8")).toBe("replacement requiring a retained file")
+		expect(harness.ui.notify).toHaveBeenLastCalledWith("journal failed", "warning")
+	})
+
+	it("reopens an edited completed goal as paused and permits explicit resume", async () => {
+		await harness.command("old objective")
+		const completed = { ...harness.currentFermentV2(), status: "complete" as const }
+		harness.setBranch([
+			customEntry(FERMENT_V2_CUSTOM_ENTRY_TYPE, { schemaVersion: 1, op: "put", fermentV2: completed }),
+		])
+		await harness.fire("session_tree", { type: "session_tree" })
+		harness.sendMessage.mockClear()
+		await harness.command("edit new objective")
+		expect(harness.currentFermentV2()).toMatchObject({ status: "paused", revision: 2, objective: "new objective" })
+		expect(harness.sendMessage).not.toHaveBeenCalled()
+		await harness.command("resume")
+		expect(harness.currentFermentV2()?.status).toBe("active")
+		expect(harness.sendMessage).toHaveBeenCalledOnce()
 	})
 
 	it("rejects Ferment V2 replacement before asking when required tools are unavailable", async () => {
@@ -1694,10 +2060,13 @@ describe("Ferment V2 extension", () => {
 		expect(harness.abort).not.toHaveBeenCalled()
 		expect(harness.waitForIdle).not.toHaveBeenCalled()
 		expect(harness.currentFermentV2()).toMatchObject({ objective: "revised", revision: 2, status: "active" })
-		expect(harness.sendMessage).toHaveBeenCalledOnce()
-		expect(harness.sendMessage.mock.lastCall?.[0]?.details).toMatchObject({ source: "edit", revision: 2 })
+		expect(harness.sendMessage).not.toHaveBeenCalled()
 
 		await harness.fire("turn_end", terminalTurn("stop"))
+		harness.setIdle(true)
+		await harness.fire("agent_settled", { type: "agent_settled" })
+		expect(harness.sendMessage).toHaveBeenCalledOnce()
+		expect(harness.sendMessage.mock.lastCall?.[0]?.details).toMatchObject({ source: "edit", revision: 2 })
 
 		expect(harness.currentFermentV2()).toMatchObject({ objective: "revised", revision: 2, status: "active" })
 		expect(harness.ui.notify).not.toHaveBeenCalledWith(
@@ -1980,13 +2349,10 @@ describe("Ferment V2 extension", () => {
 		await harness.command("pause")
 		expect(harness.currentFermentV2()?.status).toBe("paused")
 		expect(harness.sendMessage).toHaveBeenCalledOnce()
-		expect(harness.sendMessage).toHaveBeenCalledWith(
-			expect.objectContaining({
-				customType: FERMENT_V2_CONTROL_MESSAGE_TYPE,
-				details: expect.objectContaining({ source: "pause" }),
-			}),
-			expect.objectContaining({ deliverAs: "steer", triggerTurn: true }),
-		)
+		expect(harness.sendMessage.mock.lastCall?.[0]).toMatchObject({
+			content: expect.stringContaining("Finish the operation already running, then stop"),
+			details: expect.objectContaining({ source: "pause" }),
+		})
 		expect(harness.events.emit).toHaveBeenLastCalledWith(
 			FERMENT_V2_EVENTS.PAUSED,
 			expect.objectContaining({ reason: "user", status: "paused" }),
@@ -1994,6 +2360,7 @@ describe("Ferment V2 extension", () => {
 		const sentAfterPause = harness.sendMessage.mock.calls.length
 		await harness.fire("turn_end", terminalTurn())
 		expect(harness.sendMessage).toHaveBeenCalledTimes(sentAfterPause)
+		harness.setIdle(true)
 
 		await harness.command("resume")
 		expect(harness.currentFermentV2()?.status).toBe("active")
@@ -2004,14 +2371,7 @@ describe("Ferment V2 extension", () => {
 		harness.sendMessage.mockClear()
 		await harness.command("clear")
 		expect(harness.currentFermentV2()).toBeUndefined()
-		expect(harness.sendMessage).toHaveBeenCalledOnce()
-		expect(harness.sendMessage).toHaveBeenCalledWith(
-			expect.objectContaining({
-				customType: FERMENT_V2_CONTROL_MESSAGE_TYPE,
-				details: expect.objectContaining({ source: "clear" }),
-			}),
-			expect.objectContaining({ deliverAs: "steer", triggerTurn: true }),
-		)
+		expect(harness.sendMessage).not.toHaveBeenCalled()
 		expect(harness.latestJournal()).toMatchObject({ op: "clear" })
 
 		await harness.fire("session_start", { type: "session_start", reason: "resume" })
@@ -2425,6 +2785,30 @@ describe("Ferment V2 extension", () => {
 		await command
 	})
 
+	it.each(["continue", "met"] as const)("queues resumed headless %s before agent_end returns", async (verdict) => {
+		await harness.command("ship it")
+		const headless = createHarness({ hasUI: false })
+		headless.setSession("session-a", [...harness.branch])
+		await headless.fire("session_start", { type: "session_start", reason: "resume" })
+		headless.setIdle(false)
+		await headless.fire("turn_start", { type: "turn_start", turnIndex: 1, timestamp: Date.now() })
+		evaluateFermentV2Mock.mockResolvedValueOnce({
+			verdict,
+			reason: verdict === "met" ? "All requirements are evidenced." : "More work is required.",
+			model: "test/evaluator",
+			usage: EVALUATOR_USAGE,
+			diagnostics: EVALUATOR_DIAGNOSTICS,
+		})
+
+		await headless.fire("agent_end", { type: "agent_end", messages: [] })
+
+		expect(headless.sendMessage).toHaveBeenCalledOnce()
+		expect(headless.sendMessage.mock.lastCall?.[0].details?.source).toBe(
+			verdict === "met" ? "evaluation_accepted" : "evaluation",
+		)
+		expect(headless.sendMessage.mock.lastCall?.[1]).toMatchObject({ triggerTurn: true, deliverAs: "followUp" })
+	})
+
 	it("bounds repeated completion checks when the visible Todo list stays empty", async () => {
 		await harness.command("ship it")
 		harness.sendMessage.mockClear()
@@ -2598,6 +2982,133 @@ describe("Ferment V2 extension", () => {
 		await settleFermentV2(headless, "unavailable")
 		await Promise.all([create, edit])
 		expect(editResolved).toBe(true)
+	})
+
+	it.each(["pause", "clear"])("does not hand a busy edit to Pi before %s invalidates it", async (action) => {
+		await harness.command("first objective")
+		await harness.fire("turn_start", { type: "turn_start", turnIndex: 1, timestamp: Date.now() })
+		harness.setIdle(false)
+		harness.sendMessage.mockClear()
+		await harness.command("edit second objective")
+		expect(harness.sendMessage).not.toHaveBeenCalled()
+		await harness.command(action)
+		expect(harness.sendMessage).toHaveBeenCalledOnce()
+		expect(harness.sendMessage.mock.lastCall?.[0]).toMatchObject({
+			content: expect.stringContaining("Finish the operation already running, then stop"),
+			details: expect.objectContaining({ source: action }),
+		})
+		harness.setIdle(true)
+		await harness.fire("agent_settled", { type: "agent_settled" })
+		expect(harness.sendMessage).toHaveBeenCalledOnce()
+		expect(evaluateFermentV2Mock).not.toHaveBeenCalled()
+	})
+
+	it("dispatches only the latest busy edit after settlement and preserves pending user input", async () => {
+		await harness.command("first objective")
+		await harness.fire("turn_start", { type: "turn_start", turnIndex: 1, timestamp: Date.now() })
+		harness.setIdle(false)
+		harness.sendMessage.mockClear()
+		await harness.command("edit second objective")
+		await harness.command("edit third objective")
+		expect(harness.sendMessage).not.toHaveBeenCalled()
+		harness.setIdle(true)
+		harness.setPending(true)
+		await harness.fire("agent_settled", { type: "agent_settled" })
+		expect(harness.sendMessage).not.toHaveBeenCalled()
+		expect(harness.ctx.hasPendingMessages()).toBe(true)
+		harness.setPending(false)
+		await harness.fire("agent_settled", { type: "agent_settled" })
+		expect(harness.sendMessage).toHaveBeenCalledOnce()
+		expect(harness.sendMessage.mock.lastCall?.[0]).toMatchObject({
+			content: expect.stringContaining("third objective"),
+			details: { source: "edit", revision: 3 },
+		})
+	})
+
+	it("rechecks required tools before dispatching a deferred edit", async () => {
+		await harness.command("first objective")
+		await harness.fire("turn_start", { type: "turn_start", turnIndex: 1, timestamp: Date.now() })
+		harness.setIdle(false)
+		harness.sendMessage.mockClear()
+		await harness.command("edit second objective")
+		harness.setActiveTools([...TODO_TOOL_NAMES])
+		harness.setIdle(true)
+		await harness.fire("agent_settled", { type: "agent_settled" })
+		expect(harness.sendMessage).not.toHaveBeenCalled()
+		expect(evaluateFermentV2Mock).not.toHaveBeenCalled()
+	})
+
+	it.each(["pause", "clear"])("drops the old deferred edit after %s and a new start", async (action) => {
+		await harness.command("first objective")
+		await harness.fire("turn_start", { type: "turn_start", turnIndex: 1, timestamp: Date.now() })
+		harness.setIdle(false)
+		harness.sendMessage.mockClear()
+		await harness.command("edit obsolete queued edit")
+		const editedId = harness.currentFermentV2()?.id
+		await harness.command(action)
+		await harness.command(action === "pause" ? "resume" : "replacement objective")
+		expect(harness.sendMessage).toHaveBeenCalledOnce()
+		expect(harness.sendMessage.mock.lastCall?.[0].details.source).toBe(action)
+		harness.setIdle(true)
+		await harness.fire("agent_settled", { type: "agent_settled" })
+		expect(harness.sendMessage).toHaveBeenCalledTimes(2)
+		expect(harness.sendMessage.mock.lastCall?.[0].details).toMatchObject({
+			source: action === "pause" ? "resume" : "command",
+		})
+		expect(harness.sendMessage.mock.lastCall?.[0].content).not.toContain("obsolete queued edit")
+		if (action === "clear") expect(harness.currentFermentV2()?.id).not.toBe(editedId)
+		expect(harness.abort).not.toHaveBeenCalled()
+	})
+
+	it.each([
+		"pause",
+		"clear",
+		"edit replacement objective",
+	])("removes stale V2 controls from context after %s without removing user or background messages", async (action) => {
+		await harness.command("first objective")
+		const control = { ...harness.sendMessage.mock.lastCall?.[0], role: "custom", timestamp: Date.now() }
+		const user = { role: "user", content: "Keep my pending request", timestamp: Date.now() }
+		const background = {
+			role: "custom",
+			customType: "bash-background-exit",
+			content: "An unrelated process exited",
+			timestamp: Date.now(),
+		}
+		await harness.command(action)
+		const result = (await harness.fire("context", {
+			type: "context",
+			messages: [control, user, background],
+		})) as ContextEvent
+		expect(result.messages).not.toContain(control)
+		expect(result.messages).toContain(user)
+		expect(result.messages).toContain(background)
+	})
+
+	it.each([
+		"pause",
+		"clear",
+		"edit replacement objective",
+	])("discards a delayed met verdict after %s", async (action) => {
+		await harness.command("first objective")
+		await harness.fire("turn_start", { type: "turn_start", turnIndex: 1, timestamp: Date.now() })
+		harness.sendMessage.mockClear()
+		const { release, settled, signal } = await holdEvaluation(harness)
+		const mutation = harness.command(action)
+		await vi.waitFor(() => expect(signal?.aborted).toBe(true))
+		release({
+			verdict: "met",
+			reason: "late success",
+			model: "test/evaluator",
+			usage: EVALUATOR_USAGE,
+			diagnostics: EVALUATOR_DIAGNOSTICS,
+			acceptedFinalAnswer: "STALE_FINAL_MUST_NOT_APPEAR",
+		})
+		await Promise.all([mutation, settled])
+		expect(harness.currentFermentV2()?.evaluationCount).toBeUndefined()
+		expect(harness.sendMessage.mock.calls.some(([message]) => message.details.source === "evaluation_accepted")).toBe(
+			false,
+		)
+		expect(harness.events.emit.mock.calls.some(([name]) => name === FERMENT_V2_EVENTS.COMPLETED)).toBe(false)
 	})
 
 	it("does not start a coding-agent turn when paused while only the evaluator is deciding", async () => {
@@ -3864,7 +4375,7 @@ describe("Ferment V2 extension", () => {
 	})
 })
 
-function createHarness(options: { hasUI?: boolean } = {}) {
+function createHarness(options: { hasUI?: boolean; cwd?: string } = {}) {
 	const handlers = new Map<string, ExtensionHandler[]>()
 	const commands = new Map<string, CommandConfig>()
 	const tools = new Map<string, ToolConfig>()
@@ -3879,7 +4390,7 @@ function createHarness(options: { hasUI?: boolean } = {}) {
 	const ui = {
 		notify: vi.fn(),
 		confirm: vi.fn(async () => true),
-		editor: vi.fn(async (_title: string, value: string) => value),
+		editor: vi.fn(async (_title: string, value: string): Promise<string | undefined> => value),
 		setStatus: vi.fn(),
 		setWorkingVisible: vi.fn(),
 		setWidget: vi.fn(),
@@ -3890,7 +4401,7 @@ function createHarness(options: { hasUI?: boolean } = {}) {
 	const sendMessage = vi.fn()
 	const abort = vi.fn()
 	const waitForIdle = vi.fn(async (): Promise<void> => undefined)
-	const events = { emit: vi.fn() }
+	const { events } = createMiniEventBus()
 	const pi = {
 		on: vi.fn((event: string, handler: ExtensionHandler) => {
 			const list = handlers.get(event) ?? []
@@ -3906,6 +4417,7 @@ function createHarness(options: { hasUI?: boolean } = {}) {
 		getActiveTools: vi.fn(() => activeTools),
 	} as unknown as ExtensionAPI
 	const ctx = {
+		cwd: options.cwd ?? process.cwd(),
 		hasUI: options.hasUI ?? true,
 		mode: "tui",
 		ui,
@@ -3941,6 +4453,7 @@ function createHarness(options: { hasUI?: boolean } = {}) {
 		commands,
 		tools,
 		ui,
+		ctx,
 		appendEntry,
 		sendMessage,
 		abort,
