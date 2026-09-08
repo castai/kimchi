@@ -331,6 +331,73 @@ describe("Ferment V2 extension", () => {
 		expect(harness.ui.setStatus).toHaveBeenLastCalledWith("ferment-v2", "◈ Plan execution: running · Cache plan")
 	})
 
+	it.each(["pause", "replace"] as const)("retains a cancelled invocation after Plan mode %s", async (action) => {
+		await harness.command("original private objective")
+		await harness.fire("turn_start", { type: "turn_start", turnIndex: 1, timestamp: Date.now() })
+		const original = harness.currentFermentV2()
+		const { release, settled, signal } = await holdEvaluation(harness)
+		harness.events.emit.mockClear()
+		if (action === "pause") {
+			setPermissionMode(TEST_SESSION_ID, { mode: "plan", initiatedBy: "user", source: "runtime" })
+			harness.events.emit(PERMISSION_EVENTS.MODE_CHANGED, { to: { mode: "plan" } })
+		} else {
+			const executor = getFermentV2PlanExecutor(harness.pi)
+			if (!executor) throw new Error("expected approved-plan executor")
+			await executor(
+				{
+					objective: "private replacement objective",
+					title: "Private plan title",
+					planText: "Private plan contents",
+					planPath: "/tmp/private-plan.md",
+				},
+				harness.ctx,
+			)
+		}
+		expect(signal?.aborted).toBe(true)
+		release({
+			verdict: "met",
+			reason: "private evaluator explanation",
+			model: "test/evaluator",
+			usage: EVALUATOR_USAGE,
+			diagnostics: EVALUATOR_DIAGNOSTICS,
+		})
+		await settled
+		const events = harness.events.emit.mock.calls.filter(([name]) => name.startsWith("ferment-v2:"))
+		const lifecycle = events.filter(([name]) => name !== FERMENT_V2_EVENTS.CONTEXT_CHANGED)
+		expect(lifecycle.map(([name]) => name)).toEqual(
+			action === "pause"
+				? [FERMENT_V2_EVENTS.PAUSED, FERMENT_V2_EVENTS.EVALUATED]
+				: [FERMENT_V2_EVENTS.REPLACED, FERMENT_V2_EVENTS.STARTED, FERMENT_V2_EVENTS.EVALUATED],
+		)
+		expect(lifecycle.at(-1)?.[1]).toMatchObject({
+			sessionId: TEST_SESSION_ID,
+			fermentV2Id: original?.id,
+			revision: original?.revision,
+			status: "active",
+			verdict: "unavailable",
+			failureType: "cancelled",
+			count: 1,
+			usage: EVALUATOR_USAGE,
+		})
+		const current = harness.currentFermentV2()
+		expect(current?.evaluationCount).toBeUndefined()
+		expect(current?.status).toBe(action === "pause" ? "paused" : "active")
+		expect(events.filter(([name]) => name === FERMENT_V2_EVENTS.CONTEXT_CHANGED).at(-1)?.[1]).toEqual({
+			fermentV2Id: current?.id,
+			revision: current?.revision,
+			status: current?.status,
+		})
+		if (action === "replace") {
+			expect(current?.id).not.toBe(original?.id)
+			expect(lifecycle[0]?.[1]).toMatchObject({
+				fermentV2Id: original?.id,
+				replacementFermentV2Id: current?.id,
+			})
+			expect(lifecycle[1]?.[1]).toMatchObject({ fermentV2Id: current?.id })
+		}
+		expect(JSON.stringify(events)).not.toMatch(/private|Private/)
+	})
+
 	it("fails an automatic approved-plan start silently when its required tools are unavailable", async () => {
 		const executor = getFermentV2PlanExecutor(harness.pi)
 		if (!executor) throw new Error("expected approved-plan executor")
