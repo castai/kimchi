@@ -33,10 +33,29 @@ interface IpcRequest {
 	params?: unknown
 }
 
-interface IpcResponse {
+export interface IpcResponse {
 	id: string
 	result?: unknown
 	error?: string
+}
+
+/** Line-delimited JSON framing shared by the IPC server and the MCP shim:
+ *  feed string chunks, parsed messages come out; malformed lines are ignored. */
+export function createJsonLineReader(onMessage: (message: unknown) => void): (chunk: string) => void {
+	let buffer = ""
+	return (chunk) => {
+		const lines = (buffer + chunk).split("\n")
+		buffer = lines.pop() ?? ""
+		for (const raw of lines) {
+			const line = raw.trim()
+			if (!line) continue
+			try {
+				onMessage(JSON.parse(line))
+			} catch {
+				// Malformed line — ignore; the peer's request eventually times out.
+			}
+		}
+	}
 }
 
 export type AgentCommsIpcOutcome = { ok: true; result: unknown } | { ok: false; error: string }
@@ -78,20 +97,10 @@ export class AgentCommsIpcServer {
 
 	private handleConnection(socket: Socket): void {
 		socket.setEncoding("utf8")
-		let buffer = ""
-		socket.on("data", (chunk) => {
-			buffer += chunk
-			const lines = buffer.split("\n")
-			buffer = lines.pop() ?? ""
-			for (const raw of lines) {
-				const line = raw.trim()
-				if (!line) continue
-				let req: IpcRequest
-				try {
-					req = JSON.parse(line) as IpcRequest
-				} catch {
-					continue // malformed line — shim times out; never crash the host
-				}
+		socket.on(
+			"data",
+			createJsonLineReader((message) => {
+				const req = message as IpcRequest
 				this.dispatch(req)
 					.then((outcome) => {
 						const res: IpcResponse = outcome.ok
@@ -106,8 +115,8 @@ export class AgentCommsIpcServer {
 						}
 						socket.write(`${JSON.stringify(res)}\n`)
 					})
-			}
-		})
+			}),
+		)
 		socket.on("error", () => socket.destroy())
 	}
 

@@ -30,6 +30,7 @@ import {
 	SEND_AGENT_MESSAGE_TOOL_NAME,
 } from "../agents/message-tool.js"
 import { AgentMessageInputSchema } from "../agents/messages.js"
+import { createJsonLineReader, type IpcResponse } from "./comms-ipc.js"
 
 /** Serialize a TypeBox schema to plain JSON Schema (drops symbol modifiers). */
 function toJsonSchema(schema: object): Record<string, unknown> {
@@ -72,12 +73,6 @@ export function agentCommsMcpTools(): AgentCommsMcpTool[] {
 	]
 }
 
-interface IpcResponse {
-	id: string
-	result?: unknown
-	error?: string
-}
-
 /**
  * Run the MCP shim until stdin closes or the host socket dies.
  * Resolves on stdin end; rejects when the host socket errors or closes early.
@@ -90,28 +85,18 @@ export function runAgentCommsMcp(
 	return new Promise<void>((resolve, reject) => {
 		const sock: Socket = connect(socketPath)
 
-		let buffer = ""
 		let nextIpcId = 1
 		const pendingIpc = new Map<string, (outcome: { result?: unknown; error?: string }) => void>()
 
 		sock.setEncoding("utf8")
-		sock.on("data", (chunk) => {
-			buffer += chunk
-			const lines = buffer.split("\n")
-			buffer = lines.pop() ?? ""
-			for (const raw of lines) {
-				const line = raw.trim()
-				if (!line) continue
-				let res: IpcResponse
-				try {
-					res = JSON.parse(line) as IpcResponse
-				} catch {
-					continue
-				}
+		sock.on(
+			"data",
+			createJsonLineReader((message) => {
+				const res = message as IpcResponse
 				pendingIpc.get(res.id)?.({ result: res.result, error: res.error })
 				pendingIpc.delete(res.id)
-			}
-		})
+			}),
+		)
 		sock.on("error", (err) => {
 			for (const settle of pendingIpc.values()) settle({ error: err.message })
 			pendingIpc.clear()

@@ -14,6 +14,9 @@ function setup() {
 	const { events } = createMiniEventBus()
 	harness.api.events = events
 	harness.api.getFlag = vi.fn(() => false)
+	// The adapter skips subscribing in subagent sessions — clear any leaked
+	// KIMCHI_PARENT_SESSION_ID from earlier test files sharing this worker.
+	delete process.env.KIMCHI_PARENT_SESSION_ID
 	const ctx = createContext()
 	let sequence = 0
 	const responses: Array<(value: unknown) => void> = []

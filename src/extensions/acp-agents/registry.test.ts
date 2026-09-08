@@ -4,7 +4,7 @@ import { join } from "node:path"
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
 import { getAvailableTypes, registerAgents, resolveType, setAcpAgents } from "../agents/personas/agent-types.js"
 import { withExperimentalFeatures } from "../experimental.js"
-import { refreshAcpAgents } from "./registry.js"
+import { planAcpSpawn, refreshAcpAgents } from "./registry.js"
 
 describe("ACP registry hot-reload", () => {
 	let projectDir: string
@@ -77,5 +77,50 @@ describe("ACP registry hot-reload", () => {
 		// The registry was not touched by the off-state refresh.
 		registerAgents(new Map())
 		expect(getAvailableTypes().some((t) => t.startsWith("acp:"))).toBe(false)
+	})
+})
+
+describe("planAcpSpawn", () => {
+	it("returns the external server for a resolved acp-source type", () => {
+		expect(planAcpSpawn({ rawType: "acp:coder", resolvedType: "acp:coder", configSource: "acp" })).toEqual({
+			server: "coder",
+		})
+	})
+
+	it("returns undefined for non-ACP spawns", () => {
+		expect(planAcpSpawn({ rawType: "general-purpose", resolvedType: "general-purpose" })).toBeUndefined()
+		// Resolved type with source "acp" but a raw type that is not an acp: type
+		// (aliasing an acp agent) still spawns externally.
+		expect(planAcpSpawn({ rawType: "builder", resolvedType: "acp:coder", configSource: "acp" })).toEqual({
+			server: "coder",
+		})
+	})
+
+	it("errors on an acp: raw type with no configured server", () => {
+		const plan = planAcpSpawn({ rawType: "acp:missing" })
+		expect(plan).toEqual({
+			error: 'No ACP agent server "missing" is configured. Check .kimchi/acp-agents.json or run /acp.',
+		})
+	})
+
+	it("errors on acp-unsupported spawn options, in fixed order", () => {
+		const plan = planAcpSpawn({
+			rawType: "acp:coder",
+			resolvedType: "acp:coder",
+			configSource: "acp",
+			inheritContext: true,
+			taskRef: true,
+			isolated: true,
+		})
+		expect(plan).toEqual({ error: "ACP agents do not support: inherit_context, task_ref, isolated." })
+	})
+
+	it("rejects each unsupported option individually with the same wording", () => {
+		const base = { rawType: "acp:coder", resolvedType: "acp:coder", configSource: "acp" }
+		expect(planAcpSpawn({ ...base, inheritContext: true })).toEqual({
+			error: "ACP agents do not support: inherit_context.",
+		})
+		expect(planAcpSpawn({ ...base, taskRef: true })).toEqual({ error: "ACP agents do not support: task_ref." })
+		expect(planAcpSpawn({ ...base, isolated: true })).toEqual({ error: "ACP agents do not support: isolated." })
 	})
 })

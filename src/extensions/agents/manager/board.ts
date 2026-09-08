@@ -97,8 +97,8 @@ function createDedupeKey(authorAgentId: string, kind: BoardEntryKind, title: str
 export class BoardStore {
 	/** Flat map of "rootSessionId:groupId" → BoardEntry[] (preserves insertion order). */
 	private boards = new Map<string, BoardEntry[]>()
-	/** Dedupe map: key → postedAt. Own namespace. */
-	private dedupeKeys = new Map<string, number>()
+	/** Dedupe map: key → { postedAt, entry } (entry returned on dedupe hit). Own namespace. */
+	private dedupeKeys = new Map<string, { postedAt: number; entry: BoardEntry }>()
 	private totalEntries = 0
 
 	private boardKey(rootSessionId: string, groupId: string): string {
@@ -154,25 +154,15 @@ export class BoardStore {
 		const cutoff = now - BOARD_DEDUPE_WINDOW_MS
 
 		// Sweep expired dedupe keys (postedAt older than the dedupe window).
-		for (const [k, postedAt] of this.dedupeKeys) {
+		for (const [k, { postedAt }] of this.dedupeKeys) {
 			if (postedAt < cutoff) this.dedupeKeys.delete(k)
 		}
 
+		// Map hit is authoritative: evictions delete their dedupe keys, so the
+		// stored entry is still on a board — return it without re-scanning.
 		const existing = this.dedupeKeys.get(dedupeKey)
-		if (existing !== undefined && existing >= cutoff) {
-			const key = this.boardKey(rootSessionId, groupId)
-			const board = this.getOrCreateBoard(key)
-			const found = board.find(
-				(e) =>
-					e.authorAgentId === authorAgentId &&
-					e.kind === kind &&
-					e.title === effectiveTitle &&
-					e.body === effectiveBody &&
-					e.postedAt >= cutoff,
-			)
-			if (found) {
-				return { entry: found, truncated: [], deduped: true }
-			}
+		if (existing !== undefined && existing.postedAt >= cutoff) {
+			return { entry: existing.entry, truncated: [], deduped: true }
 		}
 
 		const entry: BoardEntry = {
@@ -190,7 +180,7 @@ export class BoardStore {
 		const board = this.getOrCreateBoard(key)
 		board.push(entry)
 		this.totalEntries++
-		this.dedupeKeys.set(dedupeKey, now)
+		this.dedupeKeys.set(dedupeKey, { postedAt: now, entry })
 
 		let evicted: BoardEntry | undefined
 
@@ -198,6 +188,7 @@ export class BoardStore {
 		if (board.length > PER_BOARD_CAP) {
 			const removed = board.shift()
 			if (removed) {
+				this.removeDedupeKey(removed)
 				evicted = removed
 				this.totalEntries--
 			}
@@ -212,6 +203,7 @@ export class BoardStore {
 				const idx = oldBoard.indexOf(oldest)
 				if (idx >= 0) {
 					oldBoard.splice(idx, 1)
+					this.removeDedupeKey(oldest)
 					this.totalEntries--
 					if (!evicted) evicted = oldest
 				}
@@ -232,17 +224,15 @@ export class BoardStore {
 		opts?: { sinceId?: string; kind?: BoardEntryKind; limit?: number },
 	): BoardEntry[] {
 		const key = this.boardKey(rootSessionId, groupId)
-		const board = this.getOrCreateBoard(key)
+		const board = this.boards.get(key) ?? []
 		const sinceId = opts?.sinceId
 		const kindFilter = opts?.kind
 		const limit = Math.min(opts?.limit ?? 50, 200)
 
 		let cursor: number | undefined
 		if (sinceId) {
-			const candidate = board.find((e) => e.id === sinceId)
-			if (candidate) {
-				cursor = board.indexOf(candidate)
-			}
+			const idx = board.findIndex((e) => e.id === sinceId)
+			if (idx >= 0) cursor = idx
 		}
 
 		let results = cursor !== undefined ? board.slice(cursor + 1) : [...board]
@@ -259,20 +249,10 @@ export class BoardStore {
 	 */
 	getSummary(rootSessionId: string, groupId: string): BoardSummary {
 		const key = this.boardKey(rootSessionId, groupId)
-		const board = this.getOrCreateBoard(key)
-		const latest = board
-			.slice(-3)
-			.reverse()
-			.map((e) => ({
-				id: e.id,
-				authorAgentId: e.authorAgentId,
-				kind: e.kind,
-				title: e.title,
-				postedAt: e.postedAt,
-			}))
+		const board = this.boards.get(key) ?? []
 		return {
 			total: board.length,
-			latest,
+			latest: this.latestOf(board),
 		}
 	}
 
@@ -288,17 +268,7 @@ export class BoardStore {
 			if (!key.startsWith(prefix)) continue
 			if (board.length === 0) continue
 			const groupId = key.slice(prefix.length)
-			const latest = board
-				.slice(-3)
-				.reverse()
-				.map((e) => ({
-					id: e.id,
-					authorAgentId: e.authorAgentId,
-					kind: e.kind,
-					title: e.title,
-					postedAt: e.postedAt,
-				}))
-			results.push({ groupId, total: board.length, latest })
+			results.push({ groupId, total: board.length, latest: this.latestOf(board) })
 		}
 		return results
 	}
@@ -320,6 +290,30 @@ export class BoardStore {
 				this.boards.delete(key)
 			}
 		}
+	}
+
+	/** Latest-3 summaries of a board, newest first. */
+	private latestOf(board: BoardEntry[]): BoardEntrySummary[] {
+		return board
+			.slice(-3)
+			.reverse()
+			.map((e) => ({
+				id: e.id,
+				authorAgentId: e.authorAgentId,
+				kind: e.kind,
+				title: e.title,
+				postedAt: e.postedAt,
+			}))
+	}
+
+	/**
+	 * Delete an evicted entry's dedupe key so map hits can't return evicted
+	 * entries. Skipped when a newer re-post (after window expiry) already
+	 * owns the key.
+	 */
+	private removeDedupeKey(entry: BoardEntry): void {
+		const key = createDedupeKey(entry.authorAgentId, entry.kind, entry.title, entry.body)
+		if (this.dedupeKeys.get(key)?.entry === entry) this.dedupeKeys.delete(key)
 	}
 
 	private findGloballyOldest(): BoardEntry | undefined {

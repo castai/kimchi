@@ -18,6 +18,7 @@ import {
 	type AgentMessageReservation,
 	type AgentMessageThread,
 	createAgentMessage,
+	createAgentMessageThread,
 	createChildIdempotencyKey,
 	createDuplicateMessageKey,
 	createParentReplyIdempotencyKey,
@@ -989,7 +990,7 @@ export class AgentManager {
 
 		const rootSessionId = record.communicationScope?.rootSessionId
 		const groupId = record.groupId
-		if (!rootSessionId || !groupId) return { ok: false, reason: "not_authorized_for_board" }
+		if (!rootSessionId) return { ok: false, reason: "not_authorized_for_board" }
 		const result = this.boardStore.post(
 			rootSessionId,
 			groupId,
@@ -1048,7 +1049,7 @@ export class AgentManager {
 
 		const rootSessionId = record.communicationScope?.rootSessionId
 		const groupId = record.groupId
-		if (!rootSessionId || !groupId) return { ok: false, reason: "not_authorized_for_board" }
+		if (!rootSessionId) return { ok: false, reason: "not_authorized_for_board" }
 
 		const entries = this.boardStore.read(rootSessionId, groupId, opts)
 		return { ok: true, entries, total: this.boardStore.getSummary(rootSessionId, groupId).total }
@@ -1334,10 +1335,6 @@ export class AgentManager {
 		)
 	}
 
-	isAuthorizedCommunicationPeer(sourceAgentId: string, targetAgentId: string): boolean {
-		return this.listCommunicationPeers(sourceAgentId).some((record) => record.id === targetAgentId)
-	}
-
 	/**
 	 * Atomically reserves a child tool-call key before starting the operation.
 	 * Callers receive the same in-flight receipt for repeated executions.
@@ -1368,24 +1365,12 @@ export class AgentManager {
 			})
 		}
 
-		const attempts = this.messageAttemptCounts.get(agentId) ?? new Map<number, number>()
-		if ((attempts.get(sourceAttemptId) ?? 0) >= AGENT_MESSAGE_LIMITS.maxMessagesPerAttempt) {
-			return Promise.resolve({
-				status: "saturated",
-				reason: `Agent attempt reached the ${AGENT_MESSAGE_LIMITS.maxMessagesPerAttempt}-message limit.`,
-				escapeHatch: "Continue safe work or submit a final report.",
-			})
-		}
-		if (!this.canStoreReceipt(agentId)) {
-			return Promise.resolve({
-				status: "saturated",
-				reason: "Message receipt storage is full.",
-				escapeHatch: "Continue safe work or submit a final report.",
-			})
-		}
-
-		attempts.set(sourceAttemptId, (attempts.get(sourceAttemptId) ?? 0) + 1)
-		this.messageAttemptCounts.set(agentId, attempts)
+		const saturated = this.tryConsumeMessageSlot(
+			agentId,
+			sourceAttemptId,
+			"Continue safe work or submit a final report.",
+		)
+		if (saturated) return Promise.resolve(saturated)
 		return this.reserveReceipt(
 			agentId,
 			idempotencyKey,
@@ -1610,24 +1595,12 @@ export class AgentManager {
 			return Promise.resolve({ status: "saturated", reason: "Message thread reached its message limit." })
 		}
 
-		const attempts = this.messageAttemptCounts.get(responderAgentId) ?? new Map<number, number>()
-		if ((attempts.get(sourceAttemptId) ?? 0) >= AGENT_MESSAGE_LIMITS.maxMessagesPerAttempt) {
-			return Promise.resolve({
-				status: "saturated",
-				reason: `Agent attempt reached the ${AGENT_MESSAGE_LIMITS.maxMessagesPerAttempt}-message limit.`,
-				escapeHatch: "Send the question to the parent or submit a final report.",
-			})
-		}
-		if (!this.canStoreReceipt(responderAgentId)) {
-			return Promise.resolve({
-				status: "saturated",
-				reason: "Message receipt storage is full.",
-				escapeHatch: "Send the question to the parent or submit a final report.",
-			})
-		}
-
-		attempts.set(sourceAttemptId, (attempts.get(sourceAttemptId) ?? 0) + 1)
-		this.messageAttemptCounts.set(responderAgentId, attempts)
+		const saturated = this.tryConsumeMessageSlot(
+			responderAgentId,
+			sourceAttemptId,
+			"Send the question to the parent or submit a final report.",
+		)
+		if (saturated) return Promise.resolve(saturated)
 		return this.reserveReceipt(
 			responderAgentId,
 			idempotencyKey,
@@ -1678,34 +1651,21 @@ export class AgentManager {
 		if (message.threadId !== message.id || this.messageThreads.has(message.threadId)) {
 			return { accepted: false, reason: "Initial messages require a new unique thread ID." }
 		}
-		const thread: AgentMessageThread =
-			message.payload.kind === "question"
-				? {
-						id: message.threadId,
-						rootSessionId: message.rootSessionId,
-						questionMessageId: message.id,
-						sourceAgentId: message.sourceAgentId,
-						sourceTaskId: message.sourceTaskId,
-						recipient: message.recipient,
-						expectedResponder: message.recipient.type === "agent" ? "agent" : "parent",
-						state: "open",
-						messageCount: 1,
-						createdAt: message.createdAt,
-					}
-				: {
-						id: message.threadId,
-						rootSessionId: message.rootSessionId,
-						questionMessageId: message.id,
-						sourceAgentId: message.sourceAgentId,
-						sourceTaskId: message.sourceTaskId,
-						recipient: message.recipient,
-						expectedResponder: message.recipient.type === "agent" ? "agent" : "parent",
-						state: "closed",
-						messageCount: 1,
-						createdAt: message.createdAt,
-						closedAt: message.createdAt,
-						closeReason: "single_message",
-					}
+		const createdThread = createAgentMessageThread(message)
+		const thread: AgentMessageThread = createdThread ?? {
+			id: message.threadId,
+			rootSessionId: message.rootSessionId,
+			questionMessageId: message.id,
+			sourceAgentId: message.sourceAgentId,
+			sourceTaskId: message.sourceTaskId,
+			recipient: message.recipient,
+			expectedResponder: message.recipient.type === "agent" ? "agent" : "parent",
+			state: "closed",
+			messageCount: 1,
+			createdAt: message.createdAt,
+			closedAt: message.createdAt,
+			closeReason: "single_message",
+		}
 		if (
 			thread.state === "open" &&
 			this.countOpenThreads(message.sourceAgentId) >= AGENT_MESSAGE_LIMITS.maxOpenQuestionsPerAgent
@@ -1735,12 +1695,6 @@ export class AgentManager {
 		thread.closedAt = Date.now()
 		thread.closeReason = reason
 		return { closed: true, thread: { ...thread } }
-	}
-
-	/** Capacity-only reservation for future body-free thread records. */
-	tryReserveThreadMessage(questionMessageId: string): boolean {
-		const thread = this.messageThreads.get(questionMessageId)
-		return thread?.state === "open" && this.reserveThreadMessage(thread)
 	}
 
 	getMessageThread(questionMessageId: string): AgentMessageThread | undefined {
@@ -2043,6 +1997,28 @@ export class AgentManager {
 			(receiptKeys?.size ?? 0) < AGENT_MESSAGE_LIMITS.maxReceiptsPerAgent &&
 			this.metadataRecordCount() < AGENT_MESSAGE_LIMITS.maxMetadataRecords
 		)
+	}
+
+	/** Consumes one message slot for an agent attempt, or returns the saturated receipt. */
+	private tryConsumeMessageSlot(
+		agentId: string,
+		sourceAttemptId: number,
+		escapeHatch: string,
+	): AgentMessageReceipt | undefined {
+		const attempts = this.messageAttemptCounts.get(agentId) ?? new Map<number, number>()
+		if ((attempts.get(sourceAttemptId) ?? 0) >= AGENT_MESSAGE_LIMITS.maxMessagesPerAttempt) {
+			return {
+				status: "saturated",
+				reason: `Agent attempt reached the ${AGENT_MESSAGE_LIMITS.maxMessagesPerAttempt}-message limit.`,
+				escapeHatch,
+			}
+		}
+		if (!this.canStoreReceipt(agentId)) {
+			return { status: "saturated", reason: "Message receipt storage is full.", escapeHatch }
+		}
+		attempts.set(sourceAttemptId, (attempts.get(sourceAttemptId) ?? 0) + 1)
+		this.messageAttemptCounts.set(agentId, attempts)
+		return undefined
 	}
 
 	private canStoreThread(agentId: string): boolean {

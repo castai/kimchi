@@ -108,7 +108,7 @@ describe("promptForCompoundApproval", () => {
 	const commands = [{ command: "git status" }, { command: "ls -la" }]
 
 	it("returns deny when ctx.hasUI is false", async () => {
-		const ctx = { hasUI: false } as any
+		const ctx = { hasUI: false } as unknown as Parameters<typeof promptForCompoundApproval>[0]["ctx"]
 		const result = await promptForCompoundApproval({ toolName: "bash", commands, ctx })
 		expect(result).toEqual({ kind: "deny" })
 	})

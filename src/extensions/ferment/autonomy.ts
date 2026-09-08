@@ -11,23 +11,19 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
 import type { FermentRuntime } from "./runtime.js"
 
-/** Narrow runtime surface the autonomy check needs. The full runtime
- *  satisfies it; tests may pass a two-method literal. */
-export type AutonomyRuntime = Pick<FermentRuntime, "getContinuationPolicy">
-
-/** Runtime surface the judge-route resolver needs. */
-export type JudgeRouteRuntime = Pick<FermentRuntime, "getContinuationPolicy" | "getActiveId">
-
 /** True when the current PI session is the one-shot planner — no human is
  *  attached, so any question must route to the judge. */
-export function isOneShotSession(pi: ExtensionAPI): boolean {
+function isOneShotSession(pi: ExtensionAPI): boolean {
 	return pi.getFlag?.("ferment-oneshot") === true
 }
 
 /** True when no human should be interrupted mid-run: the one-shot flag is
  *  set, or the ferment runs under an automated continuation policy. Questions
  *  route to the judge in both cases. */
-export function isAutonomousSession(pi: ExtensionAPI, runtime?: AutonomyRuntime): boolean {
+export function isAutonomousSession(
+	pi: ExtensionAPI,
+	runtime?: Pick<FermentRuntime, "getContinuationPolicy">,
+): boolean {
 	return isOneShotSession(pi) || runtime?.getContinuationPolicy() === "automated"
 }
 
@@ -36,7 +32,7 @@ export function isAutonomousSession(pi: ExtensionAPI, runtime?: AutonomyRuntime)
  *  context. Undefined means fall through to the next audience route. */
 export function resolveAutonomousJudgeRoute(
 	pi: ExtensionAPI,
-	runtime?: JudgeRouteRuntime,
+	runtime?: Pick<FermentRuntime, "getContinuationPolicy" | "getActiveId">,
 ): { fermentId: string } | undefined {
 	if (!runtime || !isAutonomousSession(pi, runtime)) return undefined
 	const fermentId = runtime.getActiveId()

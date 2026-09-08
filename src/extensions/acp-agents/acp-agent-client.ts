@@ -45,8 +45,6 @@ const STDERR_TAIL_BYTES = 2048
 export interface AcpMcpServer {
 	command: string
 	args?: string[]
-	env?: Record<string, string>
-	cwd?: string
 }
 
 export interface StdioAcpClientOptions {
@@ -91,11 +89,6 @@ export class StdioAcpClient {
 	/** Session ID assigned by the remote agent, or null before initialize(). */
 	get sessionId(): string | null {
 		return this._sessionId
-	}
-
-	/** Last captured stderr tail from the child process (diagnostics only). */
-	get stderrTail(): string {
-		return this._stderrTail
 	}
 
 	/**

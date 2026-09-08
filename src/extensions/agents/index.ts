@@ -24,8 +24,7 @@ import {
 import { isKeyRelease, Key, matchesKey, Text } from "@earendil-works/pi-tui"
 import { Type } from "typebox"
 import { isToolExpanded, registerToolCall } from "../../expand-state.js"
-import { ACP_TYPE_PREFIX, acpServerFromType } from "../acp-agents/config.js"
-import { refreshAcpAgents } from "../acp-agents/registry.js"
+import { planAcpSpawn, refreshAcpAgents } from "../acp-agents/registry.js"
 import { resolveAutonomousJudgeRoute } from "../ferment/autonomy.js"
 import { createDefaultFermentRuntime } from "../ferment/runtime.js"
 import { filterThinkingForDisplay } from "../hide-thinking.js"
@@ -1721,25 +1720,27 @@ ${AGENT_TOOL_GUIDELINES}`,
 				const customConfig = getAgentConfig(subagentType)
 
 				// ACP external agents: resolved types with source "acp" run
-
-				// out-of-process via the injected ACP runner. Detected here —
-
-				// before the foreground/background fork — so both spawn call sites
-
-				// are covered once.
-
-				const acpServerName = customConfig?.source === "acp" ? acpServerFromType(subagentType) : undefined
-
-				if (rawType.startsWith(ACP_TYPE_PREFIX) && !resolved) {
-					return textResult(
-						`No ACP agent server "${rawType.slice(ACP_TYPE_PREFIX.length)}" is configured. Check .kimchi/acp-agents.json or run /acp.`,
-					)
-				}
-
+				// out-of-process via the injected ACP runner. The acp-agents module
+				// owns the whole spawn decision — planAcpSpawn returns the external
+				// server, a user-facing error, or undefined — evaluated here, before
+				// the foreground/background fork, so both spawn call sites are covered once.
 				const resolvedConfig = resolveAgentInvocationConfig(
 					customConfig,
 					params as Parameters<typeof resolveAgentInvocationConfig>[1],
 				)
+				const inheritContext = resolvedConfig.inheritContext
+				const isolated = resolvedConfig.isolated
+				const taskRef = readAgentTaskRef(params)
+				const acpPlan = planAcpSpawn({
+					rawType,
+					resolvedType: resolved,
+					configSource: customConfig?.source,
+					inheritContext,
+					taskRef: Boolean(taskRef),
+					isolated,
+				})
+				if (acpPlan && "error" in acpPlan) return textResult(acpPlan.error)
+				const acpServerName = acpPlan?.server
 
 				let model = ctx.model
 				if (resolvedConfig.modelInput) {
@@ -1803,15 +1804,12 @@ ${AGENT_TOOL_GUIDELINES}`,
 				}
 
 				const thinking = resolvedConfig.thinking
-				const inheritContext = resolvedConfig.inheritContext
-				const isolated = resolvedConfig.isolated
 				const requestedCommunication = params.communication
 				const communication: AgentCommunicationMode | undefined =
 					requestedCommunication === "parent" || requestedCommunication === "group" ? requestedCommunication : undefined
 				if (requestedCommunication != null && !communication) {
 					return textResult('communication must be either "parent" or "group".')
 				}
-				const taskRef = readAgentTaskRef(params)
 				if (taskRef && (params.max_turns == null || params.max_duration == null || params.token_budget == null)) {
 					return textResult(
 						"Ferment-linked Agent calls require explicit max_turns, max_duration, and token_budget from the shared worker budget policy.",
@@ -1826,15 +1824,6 @@ ${AGENT_TOOL_GUIDELINES}`,
 					return textResult(
 						"Agent communication cannot be used with isolated: true because isolated agents have no extension tools.",
 					)
-				}
-				if (acpServerName) {
-					const unsupported: string[] = []
-					if (inheritContext) unsupported.push("inherit_context")
-					if (taskRef) unsupported.push("task_ref")
-					if (isolated) unsupported.push("isolated")
-					if (unsupported.length > 0) {
-						return textResult(`ACP agents do not support: ${unsupported.join(", ")}.`)
-					}
 				}
 
 				// The `visibility` field is intentionally NOT exposed in this tool's public schema -

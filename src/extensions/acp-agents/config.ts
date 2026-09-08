@@ -101,7 +101,7 @@ function sanitizeServerEntry(name: string, raw: unknown): AcpAgentServerConfig |
 	const transport: AcpTransport = r.transport === "ws" ? "ws" : "stdio"
 	const permissions: "deny" | "allow" = r.permissions === "allow" ? "allow" : "deny"
 	const displayName = optionalString(r.displayName)
-	const defaultModel = optionalString(r.default_model) ?? optionalString(r.defaultModel)
+	const defaultModel = optionalString(r.default_model)
 
 	if (transport === "stdio") {
 		const command = optionalString(r.command)
@@ -126,7 +126,7 @@ function sanitizeServerEntry(name: string, raw: unknown): AcpAgentServerConfig |
 		name: trimmedName,
 		transport: "ws",
 		url,
-		sessionName: optionalString(r.sessionName) ?? optionalString(r.session_name),
+		sessionName: optionalString(r.sessionName),
 		token: optionalString(r.token),
 		displayName,
 		defaultModel,

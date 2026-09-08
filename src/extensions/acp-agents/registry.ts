@@ -18,10 +18,10 @@
 import { setAcpAgents } from "../agents/personas/agent-types.js"
 import type { AgentConfig } from "../agents/personas/types.js"
 import { isExperimentalFeaturesEnabled } from "../experimental.js"
-import { acpTypeName, loadAcpAgentServers } from "./config.js"
+import { ACP_TYPE_PREFIX, acpServerFromType, acpTypeName, loadAcpAgentServers } from "./config.js"
 
 /** Build the registry AgentConfig for an ACP agent server. */
-export function toAgentConfig(name: string, displayName: string | undefined, transport: string): AgentConfig {
+function toAgentConfig(name: string, displayName: string | undefined, transport: string): AgentConfig {
 	return {
 		name: acpTypeName(name),
 		displayName: displayName ?? name,
@@ -57,4 +57,36 @@ export function refreshAcpAgents(cwd: string): Map<string, AgentConfig> {
 	}
 	setAcpAgents(map)
 	return map
+}
+
+export type AcpSpawnPlan = { server: string } | { error: string }
+
+/** Resolve the ACP spawn plan for an Agent-tool call: which external server to
+ *  use, a user-facing error, or undefined when the call is not an ACP spawn.
+ *  Keeps all ACP spawn decisions inside the acp-agents module — the agents
+ *  extension only consumes this plan. */
+export function planAcpSpawn(input: {
+	rawType: string
+	resolvedType?: string
+	configSource?: string
+	inheritContext?: boolean
+	taskRef?: boolean
+	isolated?: boolean
+}): AcpSpawnPlan | undefined {
+	const server = input.configSource === "acp" ? acpServerFromType(input.resolvedType ?? "") : undefined
+	if (input.rawType.startsWith(ACP_TYPE_PREFIX) && input.resolvedType === undefined) {
+		return {
+			error: `No ACP agent server "${input.rawType.slice(ACP_TYPE_PREFIX.length)}" is configured. Check .kimchi/acp-agents.json or run /acp.`,
+		}
+	}
+	if (server) {
+		const unsupported: string[] = []
+		if (input.inheritContext) unsupported.push("inherit_context")
+		if (input.taskRef) unsupported.push("task_ref")
+		if (input.isolated) unsupported.push("isolated")
+		if (unsupported.length > 0) {
+			return { error: `ACP agents do not support: ${unsupported.join(", ")}.` }
+		}
+	}
+	return server ? { server } : undefined
 }

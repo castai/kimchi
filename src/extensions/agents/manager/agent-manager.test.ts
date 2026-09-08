@@ -984,8 +984,6 @@ describe("AgentManager communication broker", () => {
 			otherRootRecord.groupId = "batch-1"
 
 			expect(manager.listCommunicationPeers(source).map((record) => record.id)).toEqual([peer])
-			expect(manager.isAuthorizedCommunicationPeer(source, peer)).toBe(true)
-			expect(manager.isAuthorizedCommunicationPeer(source, otherRoot)).toBe(false)
 		} finally {
 			manager.dispose()
 		}
@@ -1209,7 +1207,7 @@ describe("AgentManager communication broker", () => {
 		}
 	})
 
-	it("enforces open-question, per-thread, receipt, retention, and global metadata limits", async () => {
+	it("enforces open-question, receipt, retention, and global metadata limits", async () => {
 		const manager = new AgentManager(undefined, 0)
 		try {
 			const source = spawnCommunicatingAgent(manager, "parent")
@@ -1225,12 +1223,6 @@ describe("AgentManager communication broker", () => {
 					createInitialMessage(manager, source, "open-overflow", { type: "parent" }, "question"),
 				),
 			).toEqual({ accepted: false, reason: "Agent has too many open message questions." })
-
-			const threadId = "open-0"
-			for (let index = 1; index < AGENT_MESSAGE_LIMITS.maxMessagesPerThread; index++) {
-				expect(manager.tryReserveThreadMessage(threadId)).toBe(true)
-			}
-			expect(manager.tryReserveThreadMessage(threadId)).toBe(false)
 
 			const receiptSource = spawnCommunicatingAgent(manager, "parent")
 			for (let attempt = 0; attempt < 2; attempt++) {
