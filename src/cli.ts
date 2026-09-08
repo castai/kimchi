@@ -11,6 +11,7 @@ import {
 	isHelpOrVersionArgs,
 	isTerminalUiMode,
 	normalizeResumeIdArgs,
+	parseAgentCommsMcpArgs,
 	populateCliArgs,
 	stripExperimentalFeaturesArg,
 	stripMultiModelArgs,
@@ -37,6 +38,7 @@ import {
 	writeSkillPaths,
 } from "./config.js"
 import { isBunBinary } from "./env.js"
+import acpAgentsExtension from "./extensions/acp-agents/index.js"
 import activityExtension from "./extensions/activity.js"
 import agentsExtension from "./extensions/agents/index.js"
 import assistantPrefixExtension from "./extensions/assistant-prefix.js"
@@ -192,6 +194,21 @@ function getSubcommand(args: string[]): string {
 }
 
 const originalArgs = process.argv.slice(2)
+
+// Hidden harness mode: `--agent-comms-mcp <socket> <token>` runs the MCP
+// comms shim for an external ACP agent. It must run BEFORE any agent startup
+// (telemetry, settings, themes) so a shim spawn has no side effects beyond
+// speaking MCP on stdio.
+const agentCommsMcpArgs = parseAgentCommsMcpArgs(originalArgs)
+if (agentCommsMcpArgs) {
+	const { runAgentCommsMcp } = await import("./extensions/acp-agents/agent-comms-mcp.js")
+	try {
+		await runAgentCommsMcp(agentCommsMcpArgs.socket, agentCommsMcpArgs.token)
+		process.exit(0)
+	} catch {
+		process.exit(1)
+	}
+}
 
 // Observes provider transport failures in-process (via message_end) so the
 // exit path can reclassify a failed run as infrastructure (exit 74).
@@ -633,6 +650,11 @@ try {
 			clipboardImageExtension,
 			sessionModeOnboarding,
 			tipsExtension(),
+			// EXPERIMENTAL: ACP external agents as `acp:<name>` subagent types.
+			// Must register BEFORE extensions.agents: the Agent tool builds its
+			// subagent_type description once at registerTool time from
+			// getAvailableTypes(), so the ACP map must be populated first.
+			...(experimentalFeatures ? [acpAgentsExtension] : []),
 			...enabledExtensionFactories([
 				{ id: "extensions.agents", factory: agentsExtension },
 			] satisfies ManagedExtensionFactory[]),

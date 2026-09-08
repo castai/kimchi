@@ -349,3 +349,21 @@ export function isExperimentalFeaturesArg(args: string[]): boolean {
 export function stripExperimentalFeaturesArg(args: string[]): string[] {
 	return args.filter((a) => a !== "--enable-experimental-features")
 }
+
+const AGENT_COMMS_MCP_ARG = "--agent-comms-mcp"
+
+/**
+ * Raw pre-parse for the hidden `--agent-comms-mcp <socket> <token>` harness
+ * mode (MCP comms shim for external ACP agents — see
+ * src/extensions/acp-agents/agent-comms-mcp.ts). Not in CLI_OPTIONS: it takes
+ * two values, is stripped before main(), and is never user-facing — the same
+ * treatment as the experimental-features flag.
+ */
+export function parseAgentCommsMcpArgs(argv: string[]): { socket: string; token: string } | undefined {
+	const idx = argv.indexOf(AGENT_COMMS_MCP_ARG)
+	if (idx < 0) return undefined
+	const socket = argv[idx + 1]
+	const token = argv[idx + 2]
+	if (!socket || !token || socket.startsWith("-") || token.startsWith("-")) return undefined
+	return { socket, token }
+}

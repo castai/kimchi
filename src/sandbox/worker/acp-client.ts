@@ -71,6 +71,8 @@ export interface AcpSessionClientOptions {
 	signal?: AbortSignal
 	/** Working directory for the session (passed to newSession). */
 	cwd?: string
+	/** MCP servers passed to newSession (e.g. host comms tools for external agents). */
+	mcpServers?: Array<{ command: string; args?: string[]; env?: Record<string, string> }>
 	/**
 	 * Inject a custom WebSocket constructor (for testing). When omitted, uses the `ws` package.
 	 */
@@ -157,7 +159,7 @@ export class AcpSessionClient {
 			this._withTimeout(
 				this._connection.newSession({
 					cwd: this._options.cwd ?? "/home/sandbox",
-					mcpServers: [],
+					mcpServers: this._options.mcpServers ?? [],
 				}),
 				30_000,
 				"newSession",

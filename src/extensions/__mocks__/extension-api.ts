@@ -20,9 +20,20 @@ export function createExtensionApi(): {
 	const registerCommand = vi.fn<ExtensionAPI["registerCommand"]>()
 	const registerTool = vi.fn<ExtensionAPI["registerTool"]>()
 	const emitEvent = vi.fn()
+	// `pi.events.on` records into the same handler store as `pi.on` so tests
+	// can assert custom-event subscriptions via getHandlers.
+	const eventsOn = vi.fn((event: string, handler: RegisteredHandler) => {
+		on(event, handler)
+	})
 
 	return {
-		api: { on, registerCommand, registerTool, sendMessage, events: { emit: emitEvent } } as unknown as ExtensionAPI,
+		api: {
+			on,
+			registerCommand,
+			registerTool,
+			sendMessage,
+			events: { emit: emitEvent, on: eventsOn },
+		} as unknown as ExtensionAPI,
 		getHandler<E, R = undefined>(event: string): ExtensionHandler<E, R> {
 			const handler = handlers.get(event)?.[0]
 			if (!handler) throw new Error(`Extension did not register a ${event} handler`)

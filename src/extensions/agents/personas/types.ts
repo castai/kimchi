@@ -151,7 +151,7 @@ export interface AgentConfig {
 	/** false = agent is hidden from the registry */
 	enabled?: boolean
 	/** Where this agent was loaded from */
-	source?: "default" | "project" | "global" | "package"
+	source?: "default" | "project" | "global" | "package" | "acp"
 	/**
 	 * Task roles this persona is optimized for. Used by the orchestrator
 	 * auto-pick logic when no model is explicitly specified and models[] is empty.
@@ -218,6 +218,8 @@ export interface AgentRecord {
 	isBackground?: boolean
 	/** When true, this agent runs on a remote sandbox via ACP instead of locally. */
 	remote?: boolean
+	/** ACP external agent: runs out-of-process via the acp-agents extension's runner. */
+	acp?: { server: string }
 	/** Resolver to call when this foreground agent is detached to background via Ctrl+B. */
 	detachResolver?: () => void
 	/** Removes the parent abort signal listener so the agent survives after detach. */

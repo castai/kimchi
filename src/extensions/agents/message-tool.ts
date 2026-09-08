@@ -50,7 +50,7 @@ export interface AgentMessageCapability {
 	readBoardEntries(opts?: { sinceId?: string; kind?: BoardEntryKind; limit?: number }): BoardReadReceipt
 }
 
-const PostAgentNoteSchema = Type.Object(
+export const PostAgentNoteSchema = Type.Object(
 	{
 		kind: Type.Enum({
 			note: "note" as const,
@@ -64,7 +64,7 @@ const PostAgentNoteSchema = Type.Object(
 	{ additionalProperties: false },
 )
 
-const ReadAgentBoardSchema = Type.Object(
+export const ReadAgentBoardSchema = Type.Object(
 	{
 		since_id: Type.Optional(Type.String()),
 		kind: Type.Optional(

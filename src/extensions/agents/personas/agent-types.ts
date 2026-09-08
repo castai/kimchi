@@ -18,6 +18,19 @@ const agents = new Map<string, AgentConfig>()
 const lowerCaseIndex = new Map<string, string>()
 
 /**
+ * ACP external agents (experimental, `acp:`-prefixed, source: "acp"),
+ * registered by the acp-agents extension via setAcpAgents. Held separately
+ * from user agents so reloads triggered by the agents extension re-merge them.
+ */
+const acpAgents = new Map<string, AgentConfig>()
+
+/** Replace the ACP agent entries in the unified registry (acp-agents extension only). */
+export function setAcpAgents(entries: Map<string, AgentConfig>): void {
+	acpAgents.clear()
+	for (const [name, config] of entries) acpAgents.set(name, config)
+}
+
+/**
  * Register agents into the unified registry.
  * Starts with DEFAULT_AGENTS, then overlays user agents (overrides defaults with same name).
  */
@@ -31,6 +44,13 @@ export function registerAgents(userAgents: Map<string, AgentConfig>): void {
 	}
 
 	for (const [name, config] of userAgents) {
+		agents.set(name, config)
+		lowerCaseIndex.set(name.toLowerCase(), name)
+	}
+
+	// ACP entries merge last: they are `acp:`-namespaced so collisions with
+	// user agents are pathological only.
+	for (const [name, config] of acpAgents) {
 		agents.set(name, config)
 		lowerCaseIndex.set(name.toLowerCase(), name)
 	}

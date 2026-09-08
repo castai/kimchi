@@ -67,8 +67,16 @@ const DEFAULT_MAX_CONTINUATION_RESUMES = 2
 const DEFAULT_MAX_REPORT_FINALIZERS = 1
 const REPORT_FINALIZATION_LIMITS = { maxTurns: 2, maxDuration: 30, tokenBudget: 8192 } as const
 
-/** Result shape returned by `_runRemote()`, mirroring `RunResult` from agent-runner.ts. */
-type RemoteRunResult = Omit<RunResult, "session"> & { session: undefined }
+/** Result shape returned by `_runRemote()` and the injected ACP runner, mirroring `RunResult` from agent-runner.ts. */
+export type RemoteRunResult = Omit<RunResult, "session"> & { session: undefined }
+
+/** Runner for ACP external agents, injected by the acp-agents extension (experimental). */
+export type AcpRunner = (
+	record: AgentRecord,
+	prompt: string,
+	options: SpawnOptions,
+	ctx: ExtensionContext,
+) => Promise<RemoteRunResult>
 
 interface SpawnArgs {
 	pi: ExtensionAPI
@@ -78,7 +86,7 @@ interface SpawnArgs {
 	options: SpawnOptions
 }
 
-interface SpawnOptions {
+export interface SpawnOptions {
 	description: string
 	visibility?: AgentVisibility
 	communication?: AgentCommunicationMode
@@ -92,6 +100,8 @@ interface SpawnOptions {
 	isBackground?: boolean
 	/** When true, runs on a remote sandbox via ACP instead of locally. */
 	remote?: boolean
+	/** ACP external agent server name; runs out-of-process via the injected ACP runner. */
+	acp?: { server: string }
 	/**
 	 * Skip the maxConcurrent queue check for this spawn — start immediately even
 	 * if the configured concurrency limit would otherwise queue it.
@@ -124,7 +134,7 @@ interface PendingMessageUsage {
 	bytes: number
 }
 
-interface PendingAgentMessage {
+export interface PendingAgentMessage {
 	messageId: string
 	threadId: string
 	sourceAgentId: string
@@ -235,6 +245,10 @@ export class AgentManager {
 	private userContactResolver?: (rootSessionId: string) => AgentContact
 	private onMessageEvent?: (event: AgentMessageEvent) => void
 	private onBoardEvent?: (event: BoardEvent) => void
+	/** Injected ACP external-agent runner (acp-agents extension, experimental). */
+	private acpRunner?: AcpRunner
+	/** Host-owned comms token revoker (acp-agents IPC); fired synchronously on terminal transitions. */
+	private commsTokenRevoker?: (agentId: string) => void
 	private boardStore = new BoardStore()
 	private communicationDisabled = false
 	private cleanupInterval: ReturnType<typeof setInterval>
@@ -264,6 +278,29 @@ export class AgentManager {
 		this.drainQueue()
 	}
 
+	/** Inject the ACP external-agent runner (acp-agents extension, experimental). */
+	setAcpRunner(runner: AcpRunner): void {
+		this.acpRunner = runner
+	}
+
+	/** Register the comms token revoker (acp-agents IPC). Called synchronously from transitionToTerminalRecord. */
+	setCommsTokenRevoker(revoke: (agentId: string) => void): void {
+		this.commsTokenRevoker = revoke
+	}
+
+	/**
+	 * Host-authorized comms capability for IPC dispatch (ACP agents). Returns
+	 * undefined for absent, non-communicating, system-visibility, or non-live
+	 * (terminal) records — map presence alone is never sufficient.
+	 */
+	getAgentCommsCapability(agentId: string): AgentMessageCapability | undefined {
+		const record = this.agents.get(agentId)
+		if (!record?.communication || !record.communicationScope) return undefined
+		if (record.status !== "running" && record.status !== "queued") return undefined
+		if (record.visibility === "system") return undefined
+		return this.createMessageCapability(record)
+	}
+
 	getMaxConcurrent(): number {
 		return this.maxConcurrent
 	}
@@ -278,6 +315,11 @@ export class AgentManager {
 		}
 		if (communication && !rootSessionId) {
 			throw new Error("Communication requires a host-owned root session ID.")
+		}
+		if (effectiveOptions.acp && !this.acpRunner) {
+			throw new Error(
+				"ACP agents require the experimental acp-agents extension. Start kimchi with --enable-experimental-features and configure an ACP agent server.",
+			)
 		}
 		const abortController = new AbortController()
 		const record: AgentRecord = {
@@ -307,6 +349,7 @@ export class AgentManager {
 			lifetimeUsage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
 			compactionCount: 0,
 			remote: effectiveOptions.remote,
+			acp: effectiveOptions.acp,
 		}
 		this.agents.set(id, record)
 
@@ -361,72 +404,74 @@ export class AgentManager {
 		const promise = (
 			record.remote
 				? this._runRemote(record, prompt, options, ctx)
-				: runAgent(ctx, type, prompt, {
-						pi,
-						model: options.model,
-						maxTurns: options.maxTurns,
-						tokenBudget: options.tokenBudget,
-						inactivityTimeout: options.inactivityTimeout,
-						maxDuration: options.maxDuration,
-						workerReport: record.taskRef
-							? {
-									isAccepted: () => record.agentReport?.attempt_id === record.currentAttemptId,
-									submit: (report) => {
-										const accepted = this.submitReport(id, report) != null
-										return {
-											accepted,
-											message: accepted
-												? "Agent report recorded. Worker run complete."
-												: "Agent report rejected because this worker is no longer active.",
-										}
-									},
+				: record.acp
+					? this._runAcp(record, prompt, options, ctx)
+					: runAgent(ctx, type, prompt, {
+							pi,
+							model: options.model,
+							maxTurns: options.maxTurns,
+							tokenBudget: options.tokenBudget,
+							inactivityTimeout: options.inactivityTimeout,
+							maxDuration: options.maxDuration,
+							workerReport: record.taskRef
+								? {
+										isAccepted: () => record.agentReport?.attempt_id === record.currentAttemptId,
+										submit: (report) => {
+											const accepted = this.submitReport(id, report) != null
+											return {
+												accepted,
+												message: accepted
+													? "Agent report recorded. Worker run complete."
+													: "Agent report rejected because this worker is no longer active.",
+											}
+										},
+									}
+								: undefined,
+							hardTurnLimit: record.taskRef?.kind === "ferment_step",
+							isolated: options.isolated,
+							inheritContext: options.inheritContext,
+							thinkingLevel: options.thinkingLevel,
+							sessionFile: options.sessionFile,
+							sessionDir: options.sessionDir,
+							signal: record.abortController?.signal,
+							onToolActivity: (activity) => {
+								if (activity.type === "end") record.toolUses++
+								options.onToolActivity?.(activity)
+							},
+							agentMessage: this.createMessageCapability(record),
+							onTurnEnd: (turnCount) => {
+								record.lastTurnCount = turnCount
+								options.onTurnEnd?.(turnCount)
+							},
+							onTextDelta: options.onTextDelta,
+							onAssistantUsage: (usage) => {
+								addUsage(record.lifetimeUsage, usage)
+								options.onAssistantUsage?.(usage)
+							},
+							onCompaction: (info) => {
+								record.compactionCount++
+								this.onCompact?.(record, info)
+								options.onCompaction?.(info)
+							},
+							onRuntimeCleanupRegistered: (cleanup) => {
+								this.runtimeCleanups.set(record, cleanup)
+							},
+							onSessionCreated: (session) => {
+								record.session = session
+								if (record.pendingSteers?.length) {
+									for (const msg of record.pendingSteers) {
+										session.steer(msg).catch(() => {})
+									}
+									record.pendingSteers = undefined
 								}
-							: undefined,
-						hardTurnLimit: record.taskRef?.kind === "ferment_step",
-						isolated: options.isolated,
-						inheritContext: options.inheritContext,
-						thinkingLevel: options.thinkingLevel,
-						sessionFile: options.sessionFile,
-						sessionDir: options.sessionDir,
-						signal: record.abortController?.signal,
-						onToolActivity: (activity) => {
-							if (activity.type === "end") record.toolUses++
-							options.onToolActivity?.(activity)
-						},
-						agentMessage: this.createMessageCapability(record),
-						onTurnEnd: (turnCount) => {
-							record.lastTurnCount = turnCount
-							options.onTurnEnd?.(turnCount)
-						},
-						onTextDelta: options.onTextDelta,
-						onAssistantUsage: (usage) => {
-							addUsage(record.lifetimeUsage, usage)
-							options.onAssistantUsage?.(usage)
-						},
-						onCompaction: (info) => {
-							record.compactionCount++
-							this.onCompact?.(record, info)
-							options.onCompaction?.(info)
-						},
-						onRuntimeCleanupRegistered: (cleanup) => {
-							this.runtimeCleanups.set(record, cleanup)
-						},
-						onSessionCreated: (session) => {
-							record.session = session
-							if (record.pendingSteers?.length) {
-								for (const msg of record.pendingSteers) {
-									session.steer(msg).catch(() => {})
-								}
-								record.pendingSteers = undefined
-							}
-							const drain = this.drainPendingMessages(record, session)
-							this.pendingDrainPromises.set(record, drain)
-							options.onSessionCreated?.(session)
-						},
-						onSystemPrompt: (prompt) => {
-							record.systemPrompt = prompt
-						},
-					})
+								const drain = this.drainPendingMessages(record, session)
+								this.pendingDrainPromises.set(record, drain)
+								options.onSessionCreated?.(session)
+							},
+							onSystemPrompt: (prompt) => {
+								record.systemPrompt = prompt
+							},
+						})
 		)
 			.then(async ({ responseText, session, aborted, abortReason, steered, turnsUsed, maxTurns, planPath }) => {
 				await this.pendingDrainPromises.get(record)
@@ -474,6 +519,20 @@ export class AgentManager {
 			})
 
 		record.promise = promise
+	}
+
+	/** Runs an ACP external agent via the injected runner (acp-agents extension). */
+	private async _runAcp(
+		record: AgentRecord,
+		prompt: string,
+		options: SpawnOptions,
+		ctx: ExtensionContext,
+	): Promise<RemoteRunResult> {
+		if (!this.acpRunner) {
+			// spawn() rejects this already — belt for direct manager callers.
+			throw new Error("ACP runner is not registered.")
+		}
+		return this.acpRunner(record, prompt, options, ctx)
 	}
 
 	/**
@@ -855,7 +914,7 @@ export class AgentManager {
 					task_id: record.communicationScope?.taskId,
 					persona: record.type,
 					description: record.description,
-					status: record.session ? record.status : "initializing",
+					status: record.session || record.acp ? record.status : "initializing",
 					reachable: true,
 					route: "peer" as const,
 				}))
@@ -1641,6 +1700,36 @@ export class AgentManager {
 		return thread ? { ...thread } : undefined
 	}
 
+	/**
+	 * Next follow-up turn for an ACP external agent: queued steers first
+	 * (orchestrator directives, combined into one turn), then the oldest
+	 * pending broker message. The runner MUST call completeAcpFollowUp after
+	 * the turn it came from finishes — matching the in-process drain contract
+	 * (remove + emit queued_for_running_session). Returns undefined when
+	 * nothing is queued. Follow-ups are only taken while the turn budget
+	 * still allows another turn; undelivered work stays queued and is
+	 * terminalized by the record's own terminal transition.
+	 */
+	takeAcpFollowUp(agentId: string): { prompt: string; pending?: PendingAgentMessage } | undefined {
+		const record = this.agents.get(agentId)
+		if (!record) return undefined
+		const steers = record.pendingSteers
+		if (steers && steers.length > 0) {
+			record.pendingSteers = undefined
+			return { prompt: steers.join("\n\n") }
+		}
+		const pending = this.pendingMessages.get(agentId)?.[0]
+		if (!pending) return undefined
+		return { prompt: pending.prompt, pending }
+	}
+
+	/** Mark a delivered ACP follow-up complete: remove + emit, like the in-process drain. */
+	completeAcpFollowUp(pending: PendingAgentMessage | undefined): void {
+		if (!pending || pending.terminalized) return
+		this.removePendingMessage(pending)
+		this.emitPendingMessageEvent(pending, "queued_for_running_session")
+	}
+
 	private async drainPendingMessages(record: AgentRecord, session: AgentSession): Promise<void> {
 		while (true) {
 			const pending = this.pendingMessages.get(record.id)?.[0]
@@ -1738,6 +1827,7 @@ export class AgentManager {
 		status: Extract<AgentRecord["status"], "completed" | "steered" | "aborted" | "stopped" | "error">,
 	): void {
 		this.closeOpenPeerThreadsForAgent(record.id)
+		this.commsTokenRevoker?.(record.id)
 		if (
 			status === "stopped" ||
 			!record.session ||

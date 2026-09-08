@@ -24,6 +24,8 @@ import {
 import { isKeyRelease, Key, matchesKey, Text } from "@earendil-works/pi-tui"
 import { Type } from "typebox"
 import { isToolExpanded, registerToolCall } from "../../expand-state.js"
+import { ACP_TYPE_PREFIX, acpServerFromType } from "../acp-agents/config.js"
+import { refreshAcpAgents } from "../acp-agents/registry.js"
 import { resolveAutonomousJudgeRoute } from "../ferment/autonomy.js"
 import { createDefaultFermentRuntime } from "../ferment/runtime.js"
 import { filterThinkingForDisplay } from "../hide-thinking.js"
@@ -902,6 +904,12 @@ export default function (pi: ExtensionAPI) {
 	})
 
 	const reloadCustomAgents = (cwd: string = process.cwd()) => {
+		// ACP servers refresh from disk here too — parity with custom agents,
+		// so a server configured after session start resolves on the next
+		// Agent call (refreshAcpAgents no-ops when the experimental flag is
+		// off). Must run BEFORE registerAgents: setAcpAgents only updates the
+		// module-level map that registerAgents re-merges.
+		refreshAcpAgents(cwd)
 		const userAgents = loadCustomAgents(cwd)
 		registerAgents(userAgents)
 	}
@@ -1624,6 +1632,22 @@ ${AGENT_TOOL_GUIDELINES}`,
 
 				const customConfig = getAgentConfig(subagentType)
 
+				// ACP external agents: resolved types with source "acp" run
+
+				// out-of-process via the injected ACP runner. Detected here —
+
+				// before the foreground/background fork — so both spawn call sites
+
+				// are covered once.
+
+				const acpServerName = customConfig?.source === "acp" ? acpServerFromType(subagentType) : undefined
+
+				if (rawType.startsWith(ACP_TYPE_PREFIX) && !resolved) {
+					return textResult(
+						`No ACP agent server "${rawType.slice(ACP_TYPE_PREFIX.length)}" is configured. Check .kimchi/acp-agents.json or run /acp.`,
+					)
+				}
+
 				const resolvedConfig = resolveAgentInvocationConfig(
 					customConfig,
 					params as Parameters<typeof resolveAgentInvocationConfig>[1],
@@ -1715,6 +1739,16 @@ ${AGENT_TOOL_GUIDELINES}`,
 						"Agent communication cannot be used with isolated: true because isolated agents have no extension tools.",
 					)
 				}
+				if (acpServerName) {
+					const unsupported: string[] = []
+					if (inheritContext) unsupported.push("inherit_context")
+					if (taskRef) unsupported.push("task_ref")
+					if (isolated) unsupported.push("isolated")
+					if (unsupported.length > 0) {
+						return textResult(`ACP agents do not support: ${unsupported.join(", ")}.`)
+					}
+				}
+
 				// The `visibility` field is intentionally NOT exposed in this tool's public schema -
 				// LLMs and personas cannot create hidden agents. Internal kimchi callers (e.g. permission
 				// classifiers, future MCP adapters) spawn hidden agents directly via `AgentManager.spawn(..., { visibility: "system" })`,
@@ -1765,11 +1799,9 @@ ${AGENT_TOOL_GUIDELINES}`,
 					let childSessionFile: string | undefined
 					const parentSessionDir = ctx.sessionManager.getSessionDir()
 					try {
-						childSessionFile = prepareAgentSessionFile(
-							parentSessionDir,
-							ctx.sessionManager.getSessionFile(),
-							ctx.cwd,
-						)?.sessionFile
+						childSessionFile = acpServerName
+							? undefined
+							: prepareAgentSessionFile(parentSessionDir, ctx.sessionManager.getSessionFile(), ctx.cwd)?.sessionFile
 					} catch (err) {
 						const detail = err instanceof Error ? err.message : String(err)
 						return textResult(`Failed to pre-write Agent session file under ${parentSessionDir}: ${detail}`)
@@ -1808,6 +1840,7 @@ ${AGENT_TOOL_GUIDELINES}`,
 							sessionFile: childSessionFile,
 							sessionDir: parentSessionDir,
 							...bgCallbacks,
+							acp: acpServerName ? { server: acpServerName } : undefined,
 						})
 					} catch (err) {
 						return textResult(err instanceof Error ? err.message : String(err))
@@ -1915,11 +1948,9 @@ ${AGENT_TOOL_GUIDELINES}`,
 				let fgOutputFile: string | undefined
 				const parentSessionDir = ctx.sessionManager.getSessionDir()
 				try {
-					childSessionFile = prepareAgentSessionFile(
-						parentSessionDir,
-						ctx.sessionManager.getSessionFile(),
-						ctx.cwd,
-					)?.sessionFile
+					childSessionFile = acpServerName
+						? undefined
+						: prepareAgentSessionFile(parentSessionDir, ctx.sessionManager.getSessionFile(), ctx.cwd)?.sessionFile
 					fgOutputFile = createOutputFilePath(
 						ctx.cwd,
 						"placeholder",
@@ -1957,6 +1988,7 @@ ${AGENT_TOOL_GUIDELINES}`,
 						sessionDir: parentSessionDir,
 						signal,
 						...fgCallbacks,
+						acp: acpServerName ? { server: acpServerName } : undefined,
 					})
 				} catch (err) {
 					clearInterval(spinnerInterval)
