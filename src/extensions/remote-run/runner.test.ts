@@ -163,7 +163,7 @@ describe("runCloudAgent", () => {
 		expect(res.id).toBe("agent-bg")
 		// Should show a 'started in background' notification
 		expect(ctx.ui.notify).toHaveBeenCalledWith(
-			"Cloud agent started in background. You'll be notified when it completes.",
+			"Remote agent started in background. You'll be notified when it completes.",
 			"info",
 		)
 		// Should trigger a new turn so the LLM can acknowledge

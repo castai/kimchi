@@ -767,7 +767,7 @@ describe("plan mode assumption detection", () => {
 
 		expect(ctx.ui.select).toHaveBeenCalledWith(
 			"Plan complete. How would you like to proceed?",
-			["Execute the plan", "Rework the plan", "Start as ferment"],
+			["Execute the plan locally", "Rework the plan", "Start as ferment"],
 			expect.anything(),
 		)
 		expect(harness.pi.sendMessage).not.toHaveBeenCalled()
@@ -861,7 +861,7 @@ describe("plan mode assumption detection", () => {
 			await harness.fire("session_start", {}, createMockContext([]))
 			const tmpDir = mkdtempSync(join(tmpdir(), "plan-save-execute-"))
 			try {
-				const ctx = createMockContext(["Execute the plan"])
+				const ctx = createMockContext(["Execute the plan locally"])
 				ctx.cwd = tmpDir
 				await submitPlan(harness, PLAN_V1, ctx)
 
@@ -911,7 +911,7 @@ describe("plan mode assumption detection", () => {
 			await harness.fire("session_start", {}, createMockContext([]))
 			const tmpDir = mkdtempSync(join(tmpdir(), "plan-save-v2-execute-"))
 			try {
-				const ctx = createMockContext(["Execute the plan"])
+				const ctx = createMockContext(["Execute the plan locally"])
 				ctx.cwd = tmpDir
 				await submitPlan(harness, PLAN_V1, ctx)
 
@@ -932,7 +932,7 @@ describe("plan mode assumption detection", () => {
 			isResourceEnabledMock.mockImplementation((id) => id === FERMENT_V2_RESOURCE_ID)
 			const harness = createPermissionsHarness(["read", "bash"], { plan: true })
 			await harness.fire("session_start", {}, createMockContext([]))
-			const ctx = createMockContext(["Execute the plan"])
+			const ctx = createMockContext(["Execute the plan locally"])
 
 			await submitPlan(harness, PLAN_V1, ctx)
 
@@ -956,7 +956,7 @@ describe("plan mode assumption detection", () => {
 			const tmpDir = mkdtempSync(join(tmpdir(), "plan-save-v2-inline-"))
 			try {
 				writeFileSync(join(tmpDir, ".kimchi"), "not a directory")
-				const ctx = createMockContext(["Execute the plan"])
+				const ctx = createMockContext(["Execute the plan locally"])
 				ctx.cwd = tmpDir
 
 				await submitPlan(harness, PLAN_V1, ctx)
@@ -982,7 +982,7 @@ describe("plan mode assumption detection", () => {
 			registerFermentV2PlanExecutor(harness.pi, async () => "kept-existing")
 			await harness.fire("session_start", {}, createMockContext([]))
 
-			await submitPlan(harness, PLAN_V1, createMockContext(["Execute the plan"]))
+			await submitPlan(harness, PLAN_V1, createMockContext(["Execute the plan locally"]))
 
 			expect(harness.pi.sendMessage).not.toHaveBeenCalledWith(
 				expect.objectContaining({ customType: "plan-execute" }),
@@ -998,7 +998,7 @@ describe("plan mode assumption detection", () => {
 			})
 			await harness.fire("session_start", {}, createMockContext([]))
 			const tmpDir = mkdtempSync(join(tmpdir(), "plan-save-v2-reject-"))
-			const ctx = createMockContext(["Execute the plan"])
+			const ctx = createMockContext(["Execute the plan locally"])
 			ctx.cwd = tmpDir
 
 			try {
