@@ -474,6 +474,7 @@ export async function updateModelsConfig(
 			markCredentialStale(apiKey, KIMCHI_PROVIDER_ID)
 		}
 		const cached = readCachedMetadata(modelsJsonPath) ?? []
+		if (err instanceof ModelsFetchError && err.status === 401) throw err
 		if (options.allowCachedFallback === false || (cached.length === 0 && otherModels.length === 0)) throw err
 		console.warn(`Failed to refresh models from API, using cached list: ${message}`)
 		return { models: sortModels([...cached, ...otherModels]) }
