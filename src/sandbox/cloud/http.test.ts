@@ -80,13 +80,12 @@ describe("checkResponse", () => {
 
 	it("maps the humanized aggregation message (usage/requested/limit values)", async () => {
 		const resp = new Response(
-			'{"message":"quota exceeded: user cpu limit exceeded (current usage 9.5 cores, requested 1 core, limit 10 cores)","fieldViolations":[]}',
+			'{"message":"quota exceeded: user cpu limit exceeded (current usage 9500m, requested 1, limit 10)","fieldViolations":[]}',
 			{ status: 429 },
 		)
 		await expect(checkResponse(resp, "https://x")).rejects.toMatchObject({
 			name: "RemoteQuotaError",
-			message:
-				"Unable to provision workspace: user cpu limit exceeded (current usage 9.5 cores, requested 1 core, limit 10 cores)",
+			message: "Unable to provision workspace: user cpu limit exceeded (current usage 9500m, requested 1, limit 10)",
 			statusCode: 429,
 		})
 	})
