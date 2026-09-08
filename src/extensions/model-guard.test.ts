@@ -1,8 +1,15 @@
 import type { ImageContent, TextContent, ToolResultMessage, UserMessage } from "@earendil-works/pi-ai"
-import type { ContextEvent, ExtensionAPI, ExtensionContext, SessionEntry } from "@earendil-works/pi-coding-agent"
+import type {
+	CompactionResult,
+	ContextEvent,
+	ExtensionAPI,
+	ExtensionContext,
+	SessionEntry,
+} from "@earendil-works/pi-coding-agent"
 import { beforeEach, describe, expect, it, vi } from "vitest"
 import type { Ferment } from "../ferment/types.js"
 import { getCompactionEnabled } from "../settings-watcher.js"
+import type { InlineCompactOptions } from "../upstream-inline-compact-patch.js"
 import { COMPACTION_RESERVE_TOKENS } from "./compaction-thresholds.js"
 import { clearActiveFermentId, setActive as setActiveFerment } from "./ferment/state.js"
 import modelGuardExtension, {
@@ -813,7 +820,81 @@ describe("turn_end compaction guard", () => {
 		expect(compact).not.toHaveBeenCalled()
 	})
 
-	it("calls compact when totalTokens exceeds the compaction threshold mid-turn", async () => {
+	it("compacts via inlineCompact without aborting the run when available", async () => {
+		// Regression for the double-compaction incident (session 01a06c70): the
+		// guard must use the non-aborting inline path. ctx.compact() aborts the
+		// run, the run ends with stop=error, and the post-run _checkCompaction
+		// then fires a second (threshold) compaction that races the first.
+		const { pi, trigger } = makeMockPI()
+		modelGuardExtension(pi)
+		const compact = vi.fn()
+		const inlineCompact = vi.fn(
+			async (_options?: InlineCompactOptions) => ({ tokensBefore: THRESHOLD + 1 }) as CompactionResult,
+		)
+		const notify = vi.fn()
+		const ctx = makeMockCtx({
+			model: { id: "kimi-k2.6", input: ["text"], contextWindow: CONTEXT_WINDOW } as ExtensionContext["model"],
+			compact,
+			inlineCompact,
+			ui: { notify } as unknown as ExtensionContext["ui"],
+		})
+		await trigger("turn_end", makeTurnEndEvent(THRESHOLD + 1, "toolUse"), ctx)
+		expect(inlineCompact).toHaveBeenCalledOnce()
+		// Default upstream auto-compaction settings: no force, no custom instructions.
+		expect(inlineCompact.mock.calls[0][0]).toEqual({})
+		// The aborting manual path must not be used when the inline path exists.
+		expect(compact).not.toHaveBeenCalled()
+		expect(notify).toHaveBeenCalledWith(expect.stringContaining("Context compacted"), "info")
+	})
+
+	it("stays silent when the inline compaction is an expected no-op", async () => {
+		const warn = vi.spyOn(console, "warn").mockImplementation(() => {})
+		try {
+			const { pi, trigger } = makeMockPI()
+			modelGuardExtension(pi)
+			const inlineCompact = vi.fn(async () => {
+				throw new Error("Nothing to compact (session too small)")
+			})
+			const notify = vi.fn()
+			const ctx = makeMockCtx({
+				model: { id: "kimi-k2.6", input: ["text"], contextWindow: CONTEXT_WINDOW } as ExtensionContext["model"],
+				inlineCompact,
+				ui: { notify } as unknown as ExtensionContext["ui"],
+			})
+			await trigger("turn_end", makeTurnEndEvent(THRESHOLD + 1, "toolUse"), ctx)
+			expect(notify).not.toHaveBeenCalled()
+			expect(warn).not.toHaveBeenCalled()
+		} finally {
+			warn.mockRestore()
+		}
+	})
+
+	it("warns without throwing when the inline compaction fails for a real reason", async () => {
+		const warn = vi.spyOn(console, "warn").mockImplementation(() => {})
+		try {
+			const { pi, trigger } = makeMockPI()
+			modelGuardExtension(pi)
+			const inlineCompact = vi.fn(async () => {
+				throw new Error("provider exploded")
+			})
+			const notify = vi.fn()
+			const ctx = makeMockCtx({
+				model: { id: "kimi-k2.6", input: ["text"], contextWindow: CONTEXT_WINDOW } as ExtensionContext["model"],
+				inlineCompact,
+				ui: { notify } as unknown as ExtensionContext["ui"],
+			})
+			await expect(trigger("turn_end", makeTurnEndEvent(THRESHOLD + 1, "toolUse"), ctx)).resolves.toBeUndefined()
+			expect(warn).toHaveBeenCalledWith(
+				expect.stringContaining("mid-turn compaction failed"),
+				expect.stringContaining("provider exploded"),
+			)
+			expect(notify).not.toHaveBeenCalled()
+		} finally {
+			warn.mockRestore()
+		}
+	})
+
+	it("falls back to the aborting ctx.compact path when inlineCompact is unavailable", async () => {
 		const { pi, trigger } = makeMockPI()
 		modelGuardExtension(pi)
 		const compact = vi.fn()

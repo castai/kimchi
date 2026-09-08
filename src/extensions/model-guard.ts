@@ -491,16 +491,43 @@ export default function createModelGuardExtension(_pi: ExtensionAPI) {
 
 		// Threshold exceeded mid-turn. Compact now.
 		//
-		// NOTE: ctx.compact() is the manual compaction path which calls abort() on the
-		// current agent run. This means the in-progress tool-call chain stops here and
-		// the user must send another message to resume. This is worse UX than upstream
-		// auto-compaction (which transparently retries via agent.continue()), but it is
-		// the only option available from an extension — _runAutoCompaction and the
-		// agent.continue() path are not exposed on ExtensionContext.
+		// Preferred path: ctx.inlineCompact() (installed by installInlineCompactPatch in
+		// cli.ts) summarises without aborting the run. The turn_end handler is awaited
+		// by the agent loop, so the run cannot end (and the post-run _checkCompaction
+		// cannot fire) while this compaction is in flight — there is no duplicate
+		// compaction race by construction. The emitContext resync patch substitutes the
+		// compacted messages for the run's next LLM call, so the tool-call chain simply
+		// continues on the smaller context, and any queued steering message is
+		// delivered post-compaction instead of being killed mid-flight.
 		//
-		// The proper upstream fix is to wire _checkCompaction into the agent loop via
-		// shouldStopAfterTurn or after_provider_response so compaction fires inside
-		// the loop with transparent retry. This handler is a pragmatic stopgap.
+		// ctx.compact() (the fallback below) is upstream's manual path: it aborts the
+		// current run, the run ends with stop=error, and the post-run _checkCompaction
+		// then fires a SECOND (threshold) compaction that races this one — the
+		// double-compaction incident in session 01a06c70 (2026-09-07). Only used when
+		// the inline patch is unavailable.
+		if (typeof ctx.inlineCompact === "function") {
+			try {
+				const result = await ctx.inlineCompact({})
+				ctx.ui?.notify?.(`Context compacted (${(result.tokensBefore ?? 0).toLocaleString()} tokens → summary).`, "info")
+			} catch (error) {
+				// Routine non-failures (session too small, already compacted, cancelled,
+				// another compaction in flight) are skipped silently; keep this list in
+				// sync with ferment/auto-compaction.ts EXPECTED_COMPACTION_ERROR_MESSAGES.
+				const message = error instanceof Error ? error.message : String(error)
+				const expected = [
+					"too small",
+					"Already compacted",
+					"Compaction cancelled",
+					"Compaction already in progress",
+					"no summarizable messages",
+				]
+				if (!expected.some((fragment) => message.includes(fragment))) {
+					console.warn("[model-guard] mid-turn compaction failed:", message)
+				}
+			}
+			return
+		}
+
 		pendingMidTurnCompaction = true
 		ctx.compact({
 			// onComplete fires with a stale ctx after session replacement.
