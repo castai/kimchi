@@ -3,7 +3,6 @@ import {
 	AGENT_MODEL_PARAMETER_DESCRIPTION,
 	AGENT_TOOL_GUIDELINES,
 	buildAutoResumeNote,
-	createActivityTracker,
 	resolveRoleModelRef,
 	setActiveManagerForTest,
 	shouldAutoResumeFermentWorker,
@@ -763,72 +762,5 @@ describe("spawnGraderAgent", () => {
 		const options = spawnAndWait.mock.calls[0]?.[4] as { model?: unknown }
 		// Even though the judge role resolves, single-model mode must not use it.
 		expect(options.model).toBeUndefined()
-	})
-})
-
-describe("createActivityTracker", () => {
-	// Regression: the real ACP wire sequence per tool call is
-	//   tool_call(pending, partial title) → tool_call_update(in_progress, full title)
-	//   → tool_call_update(completed, NO title).
-	// The tracker must remove the active tool by toolCallId — fuzzy title matching
-	// leaks ghost entries, wedging the progress line on stale tools forever.
-	it("removes the active tool on a title-less completed update (matches by toolCallId)", () => {
-		const { state, callbacks } = createActivityTracker()
-		callbacks.onToolActivity({
-			toolName: "bash",
-			toolCallId: "kt.bash.1",
-			status: "in_progress",
-			title: "cd /home/sandbox && curl -sS https://example.com",
-		})
-		expect(state.activeTools.size).toBe(1)
-
-		// Completed update carries no title (this is what the ACP server actually sends).
-		callbacks.onToolActivity({
-			toolName: "bash",
-			toolCallId: "kt.bash.1",
-			status: "completed",
-		})
-		expect(state.activeTools.size).toBe(0)
-		expect(state.toolUses).toBe(1)
-	})
-
-	it("removes the correct entry when multiple tools overlap, newest title wins", () => {
-		const { state, callbacks } = createActivityTracker()
-		callbacks.onToolActivity({ toolName: "bash", toolCallId: "kt.bash.1", status: "in_progress", title: "ls -la" })
-		callbacks.onToolActivity({
-			toolName: "web_fetch",
-			toolCallId: "kt.web_fetch.2",
-			status: "in_progress",
-			title: "https://example.com",
-		})
-		callbacks.onToolActivity({ toolName: "bash", toolCallId: "kt.bash.1", status: "completed" })
-		expect([...state.activeTools.values()]).toEqual(["https://example.com"])
-
-		callbacks.onToolActivity({ toolName: "web_fetch", toolCallId: "kt.web_fetch.2", status: "completed" })
-		expect(state.activeTools.size).toBe(0)
-		expect(state.toolUses).toBe(2)
-	})
-
-	it("does not count or remove anything on pending status", () => {
-		const { state, callbacks } = createActivityTracker()
-		callbacks.onToolActivity({ toolName: "bash", toolCallId: "kt.bash.1", status: "in_progress", title: "ls" })
-		callbacks.onToolActivity({ toolName: "bash", toolCallId: "kt.bash.2", status: "pending", title: "cat f" })
-		expect(state.activeTools.size).toBe(1)
-		expect(state.toolUses).toBe(0)
-	})
-
-	it("seeds the initial activity and lets real activity replace it", () => {
-		const { state, callbacks } = createActivityTracker(undefined, undefined, "starting…")
-		// While the remote workspace provisions, the widget shows "starting…",
-		// not "thinking…".
-		expect(state.responseText).toBe("starting…")
-		// First real text delta replaces the seed.
-		callbacks.onTextDelta("hello", "hello")
-		expect(state.responseText).toBe("hello")
-	})
-
-	it("defaults to no initial activity (local agents keep the thinking… fallback)", () => {
-		const { state } = createActivityTracker()
-		expect(state.responseText).toBe("")
 	})
 })

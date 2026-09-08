@@ -614,7 +614,7 @@ export async function runRemoteAgent(
 			// Re-authenticate (token may have expired during the disconnect).
 			try {
 				creds = await authenticateWorkspace(workspaceId, apiKey, workspaceName, { endpoint })
-			} catch (reauthErr) {
+			} catch {
 				if (signal?.aborted) throw makeAbortError()
 				reattachAttempts++
 				continue

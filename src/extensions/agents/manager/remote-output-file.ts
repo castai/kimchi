@@ -33,6 +33,10 @@ export function streamRemoteToOutputFile(
 	let pendingToolCall: { title: string; rawOutput?: unknown; toolCallId?: string } | undefined
 	let pendingRawInput: unknown
 	let pendingRawInputId: string | undefined
+	/** toolCallIds already forwarded to innerCallbacks as in_progress — used to
+	 *  drop the ACP server's repeated in_progress notifications before they
+	 *  reach the activity tracker. */
+	const forwardedToolCalls = new Set<string>()
 	let outputPath = ""
 	let agentId = ""
 	let pendingEntries: { type: string; message: unknown; timestamp: string }[] = []
@@ -107,6 +111,20 @@ export function streamRemoteToOutputFile(
 				// pendingAssistantText is cleared when the tool started.
 				textOffset = lastFullTextLength
 				flush()
+			}
+			// Forward to the activity tracker at most once per tool call: the ACP
+			// server re-sends in_progress notifications for the same toolCallId as
+			// args/title stream in. The transcript logic above must see every
+			// repeat (it refreshes the pending tool's title/args), but downstream
+			// consumers would stack a duplicate progress-line entry per repeat
+			// ("run_command, run_command, …").
+			if (activity.toolCallId) {
+				if (activity.status === "in_progress") {
+					if (forwardedToolCalls.has(activity.toolCallId)) return
+					forwardedToolCalls.add(activity.toolCallId)
+				} else {
+					forwardedToolCalls.delete(activity.toolCallId)
+				}
 			}
 			innerCallbacks.onToolActivity?.(activity)
 		},

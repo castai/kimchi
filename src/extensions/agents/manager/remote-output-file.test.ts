@@ -349,6 +349,36 @@ describe("streamRemoteToOutputFile", () => {
 		})
 	})
 
+	describe("in_progress forwarding dedup", () => {
+		it("forwards repeated in_progress notifications for the same toolCallId only once to the tracker", () => {
+			const { callbacks: inner, activities } = makeInnerCallbacks()
+			const { callbacks, setOutputPath } = streamRemoteToOutputFile(inner, "/cwd")
+			setOutputPath(outputPath, "agent-1")
+
+			// The ACP server re-sends in_progress for the same call as args/title
+			// stream in — the tracker must only ever see one per tool call, or the
+			// progress line stacks duplicates ("run_command, run_command, …").
+			callbacks.onToolActivity?.({ status: "in_progress", toolName: "run_command", toolCallId: "kt.run_command.1" })
+			callbacks.onToolActivity?.({
+				status: "in_progress",
+				toolName: "run_command",
+				toolCallId: "kt.run_command.1",
+				title: "cd /home && curl -sS https://example.com",
+			})
+			callbacks.onToolActivity?.({ status: "in_progress", toolName: "run_command", toolCallId: "kt.run_command.1" })
+			expect(activities.filter((a) => a === "in_progress:run_command")).toHaveLength(1)
+
+			// A second concurrent tool call is forwarded independently.
+			callbacks.onToolActivity?.({ status: "in_progress", toolName: "read_file", toolCallId: "kt.read_file.2" })
+			expect(activities.filter((a) => a === "in_progress:read_file")).toHaveLength(1)
+
+			// Completion clears the dedup guard — a subsequent call forwards again.
+			callbacks.onToolActivity?.({ status: "completed", toolName: "run_command", toolCallId: "kt.run_command.1" })
+			callbacks.onToolActivity?.({ status: "in_progress", toolName: "run_command", toolCallId: "kt.run_command.1" })
+			expect(activities.filter((a) => a === "in_progress:run_command")).toHaveLength(2)
+		})
+	})
+
 	describe("text slicing (textOffset / lastFullTextLength)", () => {
 		it("passes full text through before the first tool call", () => {
 			const { callbacks: inner } = makeInnerCallbacks()
