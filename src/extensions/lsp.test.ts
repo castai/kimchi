@@ -15,6 +15,7 @@ vi.mock("./lsp/servers.js", () => ({
 vi.mock("./lsp/client.js", () => ({
 	getOrCreateClient: vi.fn(),
 	ensureFileOpen: vi.fn(),
+	pullDiagnostics: vi.fn(),
 	refreshFile: vi.fn(),
 	sendRequest: vi.fn(),
 	shutdownAll: vi.fn(),
@@ -36,7 +37,7 @@ vi.mock("./prompt-construction/index.js", () => ({
 import * as clientMod from "./lsp/client.js"
 import * as editsMod from "./lsp/edits.js"
 import * as serversMod from "./lsp/servers.js"
-import lspExtension from "./lsp.js"
+import lspExtension, { LSP_TOOL_NAMES } from "./lsp.js"
 import * as promptMod from "./prompt-construction/index.js"
 
 // ---------------------------------------------------------------------------
@@ -178,6 +179,16 @@ const FAKE_GO_SERVER = {
 	installHint: "go install golang.org/x/tools/gopls@latest",
 }
 
+/** TypeScript 7 native server: pull-model diagnostics, no $/progress waits. */
+const FAKE_NATIVE_SERVER = {
+	name: "typescript-native",
+	command: "/project/node_modules/typescript/bin/tsc",
+	args: ["--lsp", "--stdio"],
+	extensions: ["ts", "tsx"],
+	skipProjectLoadWait: true,
+	pullDiagnostics: true,
+}
+
 async function callTool(
 	pi: PiStub,
 	name: string,
@@ -265,6 +276,50 @@ describe("extension registration", () => {
 		await pi.fireSessionStart()
 		const names = pi.getAllTools().map((t) => t.name)
 		expect(names).toContain("lsp_rename")
+	})
+})
+
+// =============================================================================
+// 1b. Tool visibility gate (token-optimization Phase 1 Chunk 6)
+// =============================================================================
+
+describe("tool visibility gate (Chunk 6)", () => {
+	it("keeps all five tools advertised when detection finds a server", async () => {
+		vi.mocked(serversMod.detectServers).mockReturnValue([FAKE_SERVER])
+		const pi = makePi()
+		lspExtension(pi)
+		await pi.fireSessionStart()
+		const active = pi.getActiveTools()
+		for (const name of LSP_TOOL_NAMES) {
+			expect(active).toContain(name)
+		}
+	})
+
+	it("hides all five tools at session_start when no server is detected, but keeps them registered", async () => {
+		// beforeEach default: detectServers -> []
+		const pi = makePi()
+		lspExtension(pi)
+		await pi.fireSessionStart()
+		// Registered (availability preserved — the gate is a visibility vote,
+		// not a registration skip)…
+		expect(pi.getAllTools()).toHaveLength(5)
+		// …but never advertised to the model.
+		const active = pi.getActiveTools()
+		for (const name of LSP_TOOL_NAMES) {
+			expect(active).not.toContain(name)
+		}
+	})
+
+	it("also hides the tools when only degraded candidates exist (no binary on PATH)", async () => {
+		vi.mocked(serversMod.detectServers).mockReturnValue([])
+		vi.mocked(serversMod.detectMissingCandidates).mockReturnValue([FAKE_GO_SERVER])
+		const pi = makePi()
+		lspExtension(pi)
+		await pi.fireSessionStart()
+		const active = pi.getActiveTools()
+		for (const name of LSP_TOOL_NAMES) {
+			expect(active).not.toContain(name)
+		}
 	})
 })
 
@@ -681,6 +736,51 @@ describe("tool_result handler", () => {
 		expect(options).toEqual({ deliverAs: "steer" })
 	})
 
+	it("pulls diagnostics explicitly for pull-model servers (e.g. TypeScript 7 native)", async () => {
+		vi.mocked(serversMod.detectServers).mockReturnValue([FAKE_NATIVE_SERVER])
+		vi.mocked(serversMod.serverForFile).mockReturnValue(FAKE_NATIVE_SERVER)
+		const diag = {
+			range: { start: { line: 0, character: 6 } },
+			message: "Type 'number' is not assignable",
+			severity: 1,
+		}
+		const pull = clientMod.pullDiagnostics as unknown as ReturnType<typeof vi.fn>
+		pull.mockImplementation(async (client: { diagnostics: Map<string, unknown> }, uri: string) => {
+			client.diagnostics.set(uri, { diagnostics: [diag], version: null })
+			return [diag]
+		})
+		const fakeClient = makeClient()
+		vi.mocked(clientMod.getOrCreateClient).mockResolvedValue(fakeClient as never)
+		const pi = makePi()
+		lspExtension(pi)
+		await pi.fireSessionStart({ hasUI: true })
+
+		await pi.fireToolResult({ toolName: "edit", isError: false, input: { path: "/project/a.ts" } })
+
+		// Pull path: no waiting for a publishDiagnostics notification.
+		expect(clientMod.waitForDiagnostics).not.toHaveBeenCalled()
+		expect(clientMod.pullDiagnostics).toHaveBeenCalledWith(fakeClient, "file:///project/a.ts")
+		expect(pi.sendMessage).toHaveBeenCalledTimes(1)
+		const [message, options] = vi.mocked(pi.sendMessage).mock.calls[0]
+		expect(message.content).toContain("[LSP diagnostics for a.ts]")
+		expect(message.content).toContain("Type 'number' is not assignable")
+		expect(options).toEqual({ deliverAs: "steer" })
+	})
+
+	it("does not send diagnostics when the pull request fails (best-effort)", async () => {
+		vi.mocked(serversMod.detectServers).mockReturnValue([FAKE_NATIVE_SERVER])
+		vi.mocked(serversMod.serverForFile).mockReturnValue(FAKE_NATIVE_SERVER)
+		vi.mocked(clientMod.pullDiagnostics).mockRejectedValue(new Error("Method not found"))
+		const fakeClient = makeClient()
+		vi.mocked(clientMod.getOrCreateClient).mockResolvedValue(fakeClient as never)
+		const pi = makePi()
+		lspExtension(pi)
+		await pi.fireSessionStart({ hasUI: true })
+
+		await pi.fireToolResult({ toolName: "edit", isError: false, input: { path: "/project/a.ts" } })
+		expect(pi.sendMessage).not.toHaveBeenCalled()
+	})
+
 	it("does not send diagnostics when waitForDiagnostics resolves false (timeout/abort)", async () => {
 		vi.mocked(serversMod.detectServers).mockReturnValue([FAKE_SERVER])
 		vi.mocked(serversMod.serverForFile).mockReturnValue(FAKE_SERVER)
@@ -795,6 +895,25 @@ describe("lsp_diagnostics", () => {
 		const result = await callTool(pi, "lsp_diagnostics", { file_path: "/project/a.ts", wait_ms: 0 })
 		expect(result.content[0].text).toContain("Type error")
 		expect(result.content[0].text).toContain("error")
+	})
+
+	it("pulls diagnostics for pull-model servers instead of waiting for push", async () => {
+		vi.mocked(serversMod.detectServers).mockReturnValue([FAKE_NATIVE_SERVER])
+		vi.mocked(serversMod.serverForFile).mockReturnValue(FAKE_NATIVE_SERVER)
+		const diag = { range: { start: { line: 4, character: 2 } }, message: "Type error", severity: 1 as const }
+		const pull = clientMod.pullDiagnostics as unknown as ReturnType<typeof vi.fn>
+		pull.mockImplementation(async (client: { diagnostics: Map<string, unknown> }, uri: string) => {
+			client.diagnostics.set(uri, { diagnostics: [diag], version: null })
+			return [diag]
+		})
+		const fakeClient = makeClient()
+		vi.mocked(clientMod.getOrCreateClient).mockResolvedValue(fakeClient as never)
+		const pi = makePi()
+		lspExtension(pi)
+		await pi.fireSessionStart()
+		const result = await callTool(pi, "lsp_diagnostics", { file_path: "/project/a.ts", wait_ms: 0 })
+		expect(clientMod.pullDiagnostics).toHaveBeenCalledWith(fakeClient, "file:///project/a.ts")
+		expect(result.content[0].text).toContain("Type error")
 	})
 
 	it("caps wait_ms at 10000", async () => {

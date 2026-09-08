@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
+import { mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join, resolve } from "node:path"
 import type {
@@ -43,14 +43,27 @@ vi.mock("../../config.js", async (importOriginal) => {
 vi.mock("../../models.js", () => ({
 	updateModelsConfig: vi.fn(),
 }))
+// Pin getVersion() so initialize() agentInfo assertions are deterministic
+// and don't depend on the repo's package.json.
+const getVersionMock = vi.fn(() => "1.2.3-test")
+vi.mock("../../utils.js", async (importOriginal) => {
+	const actual = await importOriginal<typeof import("../../utils.js")>()
+	return {
+		...actual,
+		getVersion: () => getVersionMock(),
+	}
+})
 
 const THEME_KEY = Symbol.for("@earendil-works/pi-coding-agent:theme")
 const THEME_KEY_OLD = Symbol.for("@mariozechner/pi-coding-agent:theme")
 
+import { populateCliArgs } from "../../cli-args.js"
 import { authenticateViaBrowser } from "../../cli-auth/index.js"
 import { clearApiKey, writeApiKey } from "../../config.js"
+import { createMiniEventBus } from "../../extensions/__mocks__/mini-event-bus.js"
 import { PARENT_SESSION_ID_ENV_KEY } from "../../extensions/agents/manager/constants.js"
 import { setProcessOrchestratorRef } from "../../extensions/kimchi-process.js"
+import { clearCallerMcpServers, peekCallerMcpServers } from "../../extensions/mcp-adapter/caller-servers.js"
 import { getMultiModelEnabled, setMultiModelEnabled } from "../../extensions/multi-model.js"
 import { PERMISSION_MODES, PERMISSIONS_ENV_KEY } from "../../extensions/permissions/constants.js"
 import { PERMISSION_MODE_SESSION_ENTRY_TYPE } from "../../extensions/permissions/mode.js"
@@ -62,6 +75,7 @@ import {
 import { updateModelsConfig } from "../../models.js"
 import { getAcpPrompter } from "./permission-prompter-registry.js"
 import {
+	ACP_REATTACH_MID_TURN_META_KEY,
 	type AcpSessionFactory,
 	type AcpSessionLister,
 	type AcpSessionLoader,
@@ -85,9 +99,16 @@ function cleanPermissionEnv(): void {
 			Reflect.deleteProperty(process.env, key)
 		}
 	}
+	// Reset the CLI args cache so permission mode flags (--plan/--auto/--yolo)
+	// set by one test don't leak into another via the module-level cache.
+	populateCliArgs([])
+	clearCallerMcpServers()
 }
 
 beforeEach(cleanPermissionEnv)
+beforeEach(() => {
+	getVersionMock.mockReturnValue("1.2.3-test")
+})
 afterEach(cleanPermissionEnv)
 
 /** Model shape used by FakeAgentSession's model registry. */
@@ -144,6 +165,15 @@ class FakeAgentSession {
 	private listeners = new Set<AgentSessionEventListener>()
 	disposed = false
 	aborted = false
+	clearQueueCalls = 0
+	clearQueueReturn = { steering: [] as string[], followUp: [] as string[] }
+	// Steering-seam state for the cancel-ordering regression: steer() records
+	// as pending, clearQueue() drops what was never delivered, and `order`
+	// pins the clear-before-abort sequence. `emulatedHistory` receives
+	// whatever an abort's wait lets pi-mono's steering chain deliver.
+	pendingSteers: string[] = []
+	emulatedHistory: string[] = []
+	order: string[] = []
 	model: FakeModel | undefined = {
 		provider: "test",
 		id: "test-model",
@@ -259,7 +289,19 @@ class FakeAgentSession {
 
 	async abort(): Promise<void> {
 		this.aborted = true
+		this.order.push("abort")
 		await this.abortImpl()
+	}
+
+	async steer(text: string, _images?: unknown[]): Promise<void> {
+		this.pendingSteers.push(text)
+	}
+
+	clearQueue(): { steering: string[]; followUp: string[] } {
+		this.clearQueueCalls++
+		this.order.push("clearQueue")
+		this.pendingSteers = []
+		return this.clearQueueReturn
 	}
 
 	async bindExtensions(bindings: unknown): Promise<void> {
@@ -382,13 +424,22 @@ describe("KimchiAcpAgent turn lifecycle", () => {
 			const cleanup = restoreEnv("OPENAI_API_KEY", "fake-key-for-testing")
 
 			try {
+				// pi-mono auth resolution reads the stored credentials file, not the
+				// OPENAI_API_KEY env var — availability requires a real auth entry
+				// on disk (probe: env stub alone leaves auth configured: false).
+				writeFileSync(
+					resolve(tempAgentDir, "auth.json"),
+					JSON.stringify({ openai: { type: "api_key", key: "fake-key" } }),
+				)
 				const modelsJson = {
 					providers: {
 						openai: {
+							baseUrl: "https://api.openai.com/v1",
 							models: [
 								{
 									id: "gpt-4o",
 									name: "GPT-4o",
+									api: "openai-responses",
 									input: ["text", "image"],
 								},
 							],
@@ -519,6 +570,36 @@ describe("KimchiAcpAgent turn lifecycle", () => {
 
 			const response = await testAgent.initialize({ protocolVersion: 1 })
 			expect(response.agentCapabilities?.auth?.logout).toEqual({})
+		})
+
+		it("includes agentInfo with name kimchi and current version", async () => {
+			const testAgent = new KimchiAcpAgent(makeConn(), {
+				extensionFactories: [],
+				agentDir: tempAgentDir,
+				sessionFactory: async () => asSession(fake),
+			})
+
+			getVersionMock.mockReturnValue("9.8.7-test")
+
+			const response = await testAgent.initialize({ protocolVersion: 1 })
+			expect(response.agentInfo).toEqual({
+				name: "kimchi",
+				version: "9.8.7-test",
+			})
+		})
+
+		it("reflects the live getVersion() value in agentInfo.version", async () => {
+			const testAgent = new KimchiAcpAgent(makeConn(), {
+				extensionFactories: [],
+				agentDir: tempAgentDir,
+				sessionFactory: async () => asSession(fake),
+			})
+
+			getVersionMock.mockReturnValue("0.0.0-canary.42")
+
+			const response = await testAgent.initialize({ protocolVersion: 1 })
+			expect(response.agentInfo?.name).toBe("kimchi")
+			expect(response.agentInfo?.version).toBe("0.0.0-canary.42")
 		})
 	})
 
@@ -880,6 +961,110 @@ describe("KimchiAcpAgent turn lifecycle", () => {
 		const result = await promptP
 		expect(result.stopReason).toBe("cancelled")
 		expect(fake.aborted).toBe(true)
+	})
+
+	// cancel() must drain the steer/follow-up queue so queued text doesn't
+	// leak into the next prompt — mirrors the TUI's Escape → clearAllQueues().
+	it("drains the steer queue when cancel arrives mid-turn", async () => {
+		let cancelSeen = false
+		fake.promptImpl = async () => {
+			fake.emit({ type: "agent_start" })
+			while (!cancelSeen) await delay(5)
+			fake.emit(agentEnd())
+		}
+		fake.abortImpl = async () => {
+			cancelSeen = true
+		}
+
+		const promptP = agent.prompt({
+			sessionId,
+			prompt: [{ type: "text", text: "run forever" }],
+		})
+		await delay(10)
+		await agent.cancel({ sessionId })
+
+		await promptP
+		expect(fake.aborted).toBe(true)
+		expect(fake.clearQueueCalls).toBe(1)
+	})
+
+	// Arms a turn that hangs until abort() runs — emulating a still-running
+	// turn when session/cancel arrives. onAbort runs inside abortImpl after
+	// the hang flag flips, while prompt() is still parked.
+	function armHangingTurn(onAbort?: () => void): void {
+		let cancelSeen = false
+		fake.promptImpl = async () => {
+			fake.emit({ type: "agent_start" })
+			while (!cancelSeen) await delay(5)
+			fake.emit(agentEnd())
+		}
+		fake.abortImpl = async () => {
+			cancelSeen = true
+			onAbort?.()
+		}
+	}
+
+	// Regression: cancel() must drain the queue BEFORE awaiting the abort.
+	// pi-mono chains queued steering messages into the running prompt —
+	// session.prompt() resolves only after all chained calls — so awaiting
+	// abort() first lets every queued steer self-deliver into history one
+	// reply at a time (observed in dogfooding: steers landing +3.7s/+10.9s
+	// after the abort, each with a full reply). The fake's abortImpl
+	// emulates that chaining by delivering whatever is still pending.
+	it("never delivers queued steers after cancel", async () => {
+		// Emulate pi-mono's steering chain: a waiting abort() gives every
+		// still-queued steer time to deliver into the session's history.
+		armHangingTurn(() => {
+			for (const text of fake.pendingSteers) {
+				fake.emulatedHistory.push(text)
+			}
+		})
+
+		const promptP = agent.prompt({
+			sessionId,
+			prompt: [{ type: "text", text: "t1" }],
+		})
+		await delay(10)
+		await fake.steer("t2")
+		await fake.steer("t3")
+
+		await agent.cancel({ sessionId })
+
+		const result = await promptP
+		expect(result.stopReason).toBe("cancelled")
+		expect(fake.emulatedHistory).toEqual([])
+		expect(fake.order).toEqual(["clearQueue", "abort"])
+	})
+
+	// clearQueue() throwing must not skip the abort — the turn is already
+	// marked cancelled, and leaving the agent running would burn tokens
+	// until the LLM responds. try/finally guarantees abort runs regardless.
+	it("still aborts when clearQueue throws", async () => {
+		armHangingTurn()
+		const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {})
+		fake.clearQueue = (): { steering: string[]; followUp: string[] } => {
+			throw new Error("clearQueue boom")
+		}
+
+		const promptP = agent.prompt({
+			sessionId,
+			prompt: [{ type: "text", text: "t1" }],
+		})
+		await delay(10)
+
+		// cancel() must resolve — clearQueue's error is caught so abort still runs.
+		await agent.cancel({ sessionId })
+
+		const result = await promptP
+		expect(result.stopReason).toBe("cancelled")
+		expect(fake.aborted).toBe(true)
+		// The drain failure is logged, not silently swallowed — a recurring
+		// clearQueue failure must be observable, not re-leak steers quietly.
+		expect(errorSpy).toHaveBeenCalledWith(
+			"kimchi acp: clearQueue() failed during cancel; aborting anyway",
+			expect.any(Error),
+		)
+		errorSpy.mockRestore()
 	})
 
 	// If session.prompt throws (pre-turn validation, config error, etc.), the
@@ -1485,29 +1670,34 @@ describe("KimchiAcpAgent turn lifecycle", () => {
 		await localAgent.shutdown()
 	})
 
-	// mcpServers is declared in the ACP request shape but kimchi has no hook to
-	// wire them into a live session — pi-coding-agent loads MCP servers from its
-	// own config. Silently dropping them would leave the client believing those
-	// servers are available; reject up-front with invalidParams instead.
-	it("rejects newSession when mcpServers is non-empty", async () => {
+	// mcpServers is now accepted per the ACP v1 spec. The caller-supplied
+	// servers are pushed onto the caller-servers registry and consumed by
+	// initializeMcp during session_start. This test verifies the session is
+	// created successfully (factory called) and the servers land in the registry.
+	it("accepts newSession with non-empty mcpServers and registers them", async () => {
 		const factoryCalled = { count: 0 }
 		const factory: AcpSessionFactory = async () => {
 			factoryCalled.count++
-			return asSession(new FakeAgentSession("unused"))
+			return asSession(new FakeAgentSession("with-mcp"))
 		}
 		const localAgent = new KimchiAcpAgent(makeConn(), {
 			extensionFactories: [],
 			agentDir: "/tmp/fake-agent-dir",
 			sessionFactory: factory,
 		})
-		await expect(
-			localAgent.newSession({
-				cwd: "/tmp",
-				// biome-ignore lint/suspicious/noExplicitAny: only the shape we care about
-				mcpServers: [{ name: "x", command: "x", args: [] } as any],
-			}),
-		).rejects.toMatchObject({ code: -32602 })
-		expect(factoryCalled.count).toBe(0)
+		// Clear any stale entries from beforeEach's newSession call so peek
+		// returns only this test's entry.
+		clearCallerMcpServers()
+		const res = await localAgent.newSession({
+			cwd: "/tmp",
+			// biome-ignore lint/suspicious/noExplicitAny: only the shape we care about
+			mcpServers: [{ name: "x", command: "x", args: [], env: [] } as any],
+		})
+		expect(res.sessionId).toBe("with-mcp")
+		expect(factoryCalled.count).toBe(1)
+		// The FakeAgentSession doesn't trigger real session_start/initializeMcp,
+		// so the caller-servers entry stays in the registry — verify it was set.
+		expect(peekCallerMcpServers("with-mcp")).toEqual({ x: { command: "x", args: [] } })
 	})
 
 	// Empty array is fine — equivalent to "no per-session servers requested".
@@ -1933,6 +2123,147 @@ describe("KimchiAcpAgent messageId on streaming chunks", () => {
 		})
 		expect(result.stopReason).toBe("end_turn")
 		expect(messageIdsFor("agent_message_chunk")).toEqual(["km.0", "km.1"])
+	})
+})
+
+// ACP is the only transport that reads assistant text solely from
+// message_update's text_delta stream — the TUI, the session journal, and
+// --print / --mode json all re-read message_end's returned message instead.
+// That makes ACP miss text an extension suppresses during streaming and
+// restores only in message_end (Ferment V2 does this for any message that
+// isn't an unaccepted completion candidate), and text from a provider that
+// skips incremental deltas entirely. onSessionEvent's message_end handler
+// closes that gap by checking each final text block against what
+// message_update already streamed for its contentIndex and sending only a
+// matching un-streamed tail — so a normal fully-streamed turn emits nothing extra.
+describe("KimchiAcpAgent message_end text reconciliation", () => {
+	let fake: FakeAgentSession
+	let agent: KimchiAcpAgent
+	let sessionId: string
+	let updates: SessionNotification[]
+
+	beforeEach(async () => {
+		fake = new FakeAgentSession("session-msgend-text")
+		const rec = makeRecordingConn()
+		updates = rec.updates
+		agent = new KimchiAcpAgent(rec.conn, {
+			extensionFactories: [],
+			agentDir: "/tmp/fake-agent-dir",
+			sessionFactory: async () => asSession(fake),
+		})
+		const res = await agent.newSession({ cwd: "/tmp", mcpServers: [] })
+		sessionId = res.sessionId
+	})
+
+	function emitTextDelta(contentIndex: number, delta: string): void {
+		fake.emit({
+			type: "message_update",
+			assistantMessageEvent: {
+				type: "text_delta",
+				delta,
+				contentIndex,
+				partial: {} as unknown as AssistantMessage,
+			},
+			message: {} as unknown as AssistantMessage,
+		})
+	}
+
+	// Builds the message_end event pi-mono emits after an LLM response,
+	// carrying only what this suite exercises: the final content blocks.
+	// Usage is zeroed out — the usage-accounting path is covered separately
+	// in "KimchiAcpAgent usage reporting".
+	function messageEndEvent(content: AssistantMessage["content"]): AgentSessionEvent {
+		const message: AssistantMessage = {
+			role: "assistant",
+			content,
+			api: "anthropic-messages",
+			provider: "anthropic",
+			model: "claude",
+			usage: {
+				input: 0,
+				output: 0,
+				cacheRead: 0,
+				cacheWrite: 0,
+				totalTokens: 0,
+				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+			},
+			stopReason: "stop",
+			timestamp: 0,
+		}
+		return { type: "message_end", message }
+	}
+
+	const chunks = () =>
+		updates.flatMap((u) =>
+			u.update.sessionUpdate === "agent_message_chunk" ? [(u.update.content as TextContent).text] : [],
+		)
+
+	it("emits no extra chunk when a text block was already fully streamed", async () => {
+		fake.promptImpl = async () => {
+			fake.emit({ type: "agent_start" })
+			emitTextDelta(0, "hello world")
+			fake.emit(messageEndEvent([{ type: "text", text: "hello world" }]))
+			fake.emit(agentEnd())
+		}
+
+		const result = await agent.prompt({ sessionId, prompt: [{ type: "text", text: "go" }] })
+		expect(result.stopReason).toBe("end_turn")
+		expect(chunks()).toEqual(["hello world"])
+	})
+
+	it("emits the full text as one chunk with a stable messageId when no deltas streamed", async () => {
+		fake.promptImpl = async () => {
+			fake.emit({ type: "agent_start" })
+			fake.emit(messageEndEvent([{ type: "text", text: "restored text" }]))
+			fake.emit(agentEnd())
+		}
+
+		const result = await agent.prompt({ sessionId, prompt: [{ type: "text", text: "go" }] })
+		expect(result.stopReason).toBe("end_turn")
+		const chunkUpdates = updates.filter((u) => u.update.sessionUpdate === "agent_message_chunk")
+		expect(chunkUpdates).toHaveLength(1)
+		const update = chunkUpdates[0].update as { content: { text: string }; messageId?: string }
+		expect(update.content.text).toBe("restored text")
+		expect(update.messageId).toBe("km.0")
+	})
+
+	it("emits only the un-streamed tail of a partially streamed block", async () => {
+		fake.promptImpl = async () => {
+			fake.emit({ type: "agent_start" })
+			emitTextDelta(0, "hello ")
+			fake.emit(messageEndEvent([{ type: "text", text: "hello world" }]))
+			fake.emit(agentEnd())
+		}
+
+		const result = await agent.prompt({ sessionId, prompt: [{ type: "text", text: "go" }] })
+		expect(result.stopReason).toBe("end_turn")
+		expect(chunks()).toEqual(["hello ", "world"])
+	})
+
+	it("does not append a bogus tail when message_end text rewrites the streamed prefix", async () => {
+		fake.promptImpl = async () => {
+			fake.emit({ type: "agent_start" })
+			emitTextDelta(0, "streamed text")
+			fake.emit(messageEndEvent([{ type: "text", text: "rewritten final text" }]))
+			fake.emit(agentEnd())
+		}
+
+		const result = await agent.prompt({ sessionId, prompt: [{ type: "text", text: "go" }] })
+		expect(result.stopReason).toBe("end_turn")
+		expect(chunks()).toEqual(["streamed text"])
+	})
+
+	it("emits nothing extra for a thinking block present at message_end", async () => {
+		fake.promptImpl = async () => {
+			fake.emit({ type: "agent_start" })
+			fake.emit(messageEndEvent([{ type: "thinking", thinking: "internal reasoning" }]))
+			fake.emit(agentEnd())
+		}
+
+		const result = await agent.prompt({ sessionId, prompt: [{ type: "text", text: "go" }] })
+		expect(result.stopReason).toBe("end_turn")
+		expect(updates.some((u) => u.update.sessionUpdate === "agent_message_chunk")).toBe(false)
+		expect(updates.some((u) => u.update.sessionUpdate === "agent_thought_chunk")).toBe(false)
 	})
 })
 
@@ -4705,7 +5036,7 @@ describe("ACP mode controller integration with permissions extension", () => {
 			registerFlag: () => {},
 			sendMessage: () => {},
 			appendEntry: () => {},
-			events: { emit: () => {} },
+			events: createMiniEventBus().events,
 			getEnvironment: () => ({
 				environmentInfo: {
 					permittedTools: new Set(tools),
@@ -5286,6 +5617,52 @@ describe("session mode controller lifecycle", () => {
 	})
 })
 
+describe("ACP newSession CLI permission mode flags", () => {
+	it("--yolo flag sets initial permission mode to yolo", async () => {
+		vi.stubEnv(PERMISSIONS_ENV_KEY, "")
+		Reflect.deleteProperty(process.env, PERMISSIONS_ENV_KEY)
+		populateCliArgs(["--yolo"])
+
+		const fake = new FakeAgentSession("cli-yolo-1")
+		const agent = new KimchiAcpAgent(makeConn(), {
+			extensionFactories: [],
+			agentDir: "/tmp/fake-agent-dir",
+			sessionFactory: async () => asSession(fake),
+		})
+
+		const res = await agent.newSession({ cwd: "/tmp", mcpServers: [] })
+		expect(res.configOptions?.[0].currentValue).toBe("yolo")
+
+		const controller = getSessionPermissionFlagController(res.sessionId)
+		expect(controller?.getMode()).toEqual({ mode: "yolo", source: "flag", initiatedBy: "user" })
+	})
+
+	it("CLI flag takes precedence over config defaultMode", async () => {
+		const tmpDir = mkdtempSync(join(tmpdir(), "acp-cli-flag-precedence-"))
+		const kimchiDir = join(tmpDir, ".kimchi")
+		mkdirSync(kimchiDir, { recursive: true })
+		writeFileSync(join(kimchiDir, "permissions.json"), JSON.stringify({ defaultMode: "plan" }))
+
+		vi.stubEnv(PERMISSIONS_ENV_KEY, "")
+		Reflect.deleteProperty(process.env, PERMISSIONS_ENV_KEY)
+		populateCliArgs(["--yolo"])
+
+		try {
+			const agent = new KimchiAcpAgent(makeConn(), {
+				extensionFactories: [],
+				agentDir: "/tmp/fake-agent-dir",
+				sessionFactory: async (params) => asSession(new FakeAgentSession("cli-precedence-1", params.cwd)),
+			})
+
+			const res = await agent.newSession({ cwd: tmpDir, mcpServers: [] })
+			// --yolo flag should win over config defaultMode "plan"
+			expect(res.configOptions?.[0].currentValue).toBe("yolo")
+		} finally {
+			rmSync(tmpDir, { recursive: true, force: true })
+		}
+	})
+})
+
 // Helper for the listSessions tests: builds a pi SessionInfo with sensible
 // defaults so each test only spells out the fields it cares about.
 function makePiSession(overrides: Partial<PiSessionInfo> = {}): PiSessionInfo {
@@ -5575,22 +5952,23 @@ describe("KimchiAcpAgent loadSession", () => {
 		expect(init.agentCapabilities?.sessionCapabilities?.close).toEqual({})
 	})
 
-	it("rejects loadSession when mcpServers is non-empty (does not invoke loader)", async () => {
+	it("accepts loadSession with non-empty mcpServers (invokes loader)", async () => {
 		const loaderCalls = { count: 0 }
 		const loader: AcpSessionLoader = async () => {
 			loaderCalls.count++
-			return asSession(new FakeAgentSession("unused"))
+			return asSession(new FakeAgentSession("s1"))
 		}
 		const agent = makeAgent(loader)
-		await expect(
-			agent.loadSession({
-				sessionId: "s1",
-				cwd: "/tmp",
-				// biome-ignore lint/suspicious/noExplicitAny: only the shape we care about
-				mcpServers: [{ name: "x", command: "x", args: [] } as any],
-			}),
-		).rejects.toMatchObject({ code: -32602 })
-		expect(loaderCalls.count).toBe(0)
+		await agent.loadSession({
+			sessionId: "s1",
+			cwd: "/tmp",
+			// biome-ignore lint/suspicious/noExplicitAny: only the shape we care about
+			mcpServers: [{ name: "x", command: "x", args: [], env: [] } as any],
+		})
+		expect(loaderCalls.count).toBe(1)
+		// The FakeAgentSession doesn't trigger real session_start/initializeMcp,
+		// so the caller-servers entry stays in the registry — verify it was set.
+		expect(peekCallerMcpServers("s1")).toEqual({ x: { command: "x", args: [] } })
 	})
 
 	it("replays and returns an already loaded session without reopening it", async () => {
@@ -5629,6 +6007,67 @@ describe("KimchiAcpAgent loadSession", () => {
 			sessionUpdate: "user_message_chunk",
 			content: { type: "text", text: "already here" },
 		})
+	})
+
+	it("allows loadSession to attach while a turn is in progress (client takeover)", async () => {
+		// Reconnect-after-disconnect attaches mid-turn: replay history and let
+		// the in-flight turn keep streaming to the new client.
+		const live = new FakeAgentSession("live-turn")
+		live.branch = [userTextEntry("earlier", "u1", null)]
+		live.promptImpl = () => new Promise<void>(() => {}) // turn never settles
+		const { conn, updates } = makeRecordingConn()
+		const agent = new KimchiAcpAgent(conn, {
+			extensionFactories: [],
+			agentDir: "/tmp/fake-agent-dir",
+			sessionFactory: async () => asSession(live),
+			sessionLoader: async () => asSession(new FakeAgentSession("unused")),
+		})
+		await agent.newSession({ cwd: "/tmp", mcpServers: [] })
+		// Start a turn that never unwinds (mirrors the post-disconnect wedge).
+		void agent.prompt({
+			sessionId: "live-turn",
+			prompt: [{ type: "text", text: "go" }],
+		})
+		// entry.turn is assigned after an await (skill-command parse) inside
+		// prompt() — give it a macrotask so the turn is firmly in progress.
+		await new Promise((r) => setTimeout(r, 0))
+
+		// Previously this rejected with "has a turn in progress; cancel it first".
+		const res = await agent.loadSession({
+			sessionId: "live-turn",
+			cwd: "/tmp",
+			mcpServers: [],
+			_meta: { [ACP_REATTACH_MID_TURN_META_KEY]: true },
+		})
+
+		expect(res.models).toMatchObject({ currentModelId: "test/test-model" })
+		// History was replayed for the attaching client.
+		const replayUpdates = replayOnly(updates)
+		expect(replayUpdates.some((u) => u.update.sessionUpdate === "user_message_chunk")).toBe(true)
+	})
+
+	it("still rejects mid-turn loadSession without the reattach opt-in flag", async () => {
+		// The strict ACP guard stays the default: clients that don't declare
+		// a takeover get the original error and may cancel the turn first.
+		const live = new FakeAgentSession("guarded-turn")
+		live.promptImpl = () => new Promise<void>(() => {}) // turn never settles
+		const { conn } = makeRecordingConn()
+		const agent = new KimchiAcpAgent(conn, {
+			extensionFactories: [],
+			agentDir: "/tmp/fake-agent-dir",
+			sessionFactory: async () => asSession(live),
+			sessionLoader: async () => asSession(new FakeAgentSession("unused")),
+		})
+		await agent.newSession({ cwd: "/tmp", mcpServers: [] })
+		void agent.prompt({
+			sessionId: "guarded-turn",
+			prompt: [{ type: "text", text: "go" }],
+		})
+		await new Promise((r) => setTimeout(r, 0))
+
+		await expect(agent.loadSession({ sessionId: "guarded-turn", cwd: "/tmp", mcpServers: [] })).rejects.toThrow(
+			"has a turn in progress; cancel it first",
+		)
 	})
 
 	it("returns configOptions in loadSession response", async () => {
@@ -5720,6 +6159,62 @@ describe("KimchiAcpAgent loadSession", () => {
 		await expect(agent.loadSession({ sessionId: "missing", cwd: "/tmp", mcpServers: [] })).rejects.toThrow(
 			/session not found/,
 		)
+	})
+
+	it("recreates an unpersisted empty session after restart without writing a session file", async () => {
+		const agentDir = mkdtempSync(join(tmpdir(), "kimchi-acp-empty-load-"))
+		const cwd = join(agentDir, "work")
+		mkdirSync(cwd)
+		writeFileSync(
+			join(agentDir, "models.json"),
+			JSON.stringify({
+				providers: {
+					fake: {
+						api: "openai-completions",
+						apiKey: "fake",
+						baseUrl: "http://127.0.0.1:1/v1",
+						models: [
+							{
+								id: "fake-model",
+								name: "Fake Model",
+								input: ["text"],
+								contextWindow: 64_000,
+								maxTokens: 1024,
+							},
+						],
+					},
+				},
+			}),
+		)
+		writeFileSync(
+			join(agentDir, "settings.json"),
+			JSON.stringify({ defaultProvider: "fake", defaultModel: "fake-model" }),
+		)
+		const sessionId = "01a06ca3-276b-7af3-b210-05d649cdb3a0"
+		const sessionDir = join(agentDir, "sessions", testEncodeCwdDir(cwd))
+
+		try {
+			for (let restart = 0; restart < 2; restart++) {
+				const agent = new KimchiAcpAgent(makeConn(), { extensionFactories: [], agentDir })
+				await agent.loadSession({ sessionId, cwd, mcpServers: [] })
+				expect(readdirSync(sessionDir).filter((file) => file.endsWith(".jsonl"))).toEqual([])
+				await agent.unstable_closeSession({ sessionId })
+			}
+		} finally {
+			rmSync(agentDir, { recursive: true, force: true })
+		}
+	})
+
+	it("rejects an invalid missing session id instead of recreating it", async () => {
+		const agentDir = mkdtempSync(join(tmpdir(), "kimchi-acp-invalid-load-"))
+		try {
+			const agent = new KimchiAcpAgent(makeConn(), { extensionFactories: [], agentDir })
+			await expect(agent.loadSession({ sessionId: "../escape", cwd: agentDir, mcpServers: [] })).rejects.toMatchObject({
+				code: -32602,
+			})
+		} finally {
+			rmSync(agentDir, { recursive: true, force: true })
+		}
 	})
 
 	it("rejects default-loaded sessions whose header cwd disagrees before opening", async () => {

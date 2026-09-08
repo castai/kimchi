@@ -6,6 +6,7 @@ import {
 	FERMENT_SCOPING_STOP_NUDGE_INTERACTIVE,
 	FERMENT_SCOPING_STOP_NUDGE_ONESHOT,
 	hasFermentScopingCompletionSignal,
+	hasPlanExitToolCall,
 	isNudgeSuppressed,
 	MAX_PLANNING_STOP_NUDGES,
 	PLAN_MODE_STOP_NUDGE,
@@ -46,6 +47,20 @@ describe("isNudgeSuppressed", () => {
 
 	it("allows count 0", () => {
 		expect(isNudgeSuppressed(0)).toBe(false)
+	})
+})
+
+describe("hasPlanExitToolCall", () => {
+	it("returns true when ExitPlanMode is in the tool call list", () => {
+		expect(hasPlanExitToolCall(["read", "ExitPlanMode"])).toBe(true)
+	})
+
+	it("returns false when only exploration tools are present", () => {
+		expect(hasPlanExitToolCall(["read", "grep", "questionnaire"])).toBe(false)
+	})
+
+	it("returns false for an empty list", () => {
+		expect(hasPlanExitToolCall([])).toBe(false)
 	})
 })
 
@@ -113,9 +128,13 @@ describe("contentHasToolCall", () => {
 })
 
 describe("PLAN_MODE_STOP_NUDGE", () => {
-	it("references the plan exit tool", () => {
-		expect(PLAN_MODE_STOP_NUDGE).toContain("ExitPlanMode")
+	it("instructs the model to call the ExitPlanMode tool", () => {
+		expect(PLAN_MODE_STOP_NUDGE).toContain("`ExitPlanMode`")
+	})
+
+	it("does not reference the removed plan-completion markers", () => {
 		expect(PLAN_MODE_STOP_NUDGE).not.toContain("PLAN_COMPLETE")
+		expect(PLAN_MODE_STOP_NUDGE).not.toContain("<done>")
 	})
 
 	it("references the questionnaire tool", () => {

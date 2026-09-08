@@ -32,10 +32,6 @@ export const DEFAULT_PLAN_GUIDELINES = `When planning:
 - **Plan self-validation**: After writing the spec, re-read it in a separate turn and cross-check every requirement. Flag gaps — missing features, ambiguous API choices, unhandled edge cases. This is a lightweight self check; it does not replace external verification for complex tasks.
 - **Plan verification (complex tasks only)**: If the plan is complex (3+ files, new architecture, unclear requirements, or any uncertainty), have a Reviewer agent verify the spec before build. See the Orchestration section for skip/verify criteria and verifier selection.`
 
-/** Co-author trailer appended to every commit message. Defined once here so
- *  it can be referenced consistently from any guideline that mentions commits. */
-export const KIMCHI_COAUTHOR = "Co-Authored-By: Kimchi <noreply@kimchi.dev>"
-
 export const DEFAULT_BUILD_GUIDELINES = `When implementing:
 - Read a file before modifying it — unless the orchestrator already provided its contents and path in the task spec, in which case you may proceed directly to editing.
 - **Batch tool calls**: Issue independent tool calls together in the same turn. If a call doesn't depend on the result of a previous one, it belongs in the same turn. Read files in parallel, run independent bash commands together, and pair todo updates with work tool calls. Every extra turn adds to the context window and wastes tokens.
@@ -43,13 +39,10 @@ export const DEFAULT_BUILD_GUIDELINES = `When implementing:
 - Stay in scope: do NOT add features, refactors, or "improvements" beyond what the spec asks for.
 - If the same code pattern is needed >2 times, extract an abstraction first instead of duplicating.
 - After each meaningful change, run the type-checker / linter / tests. Fix errors before moving on.
-- Always wrap shell commands with a timeout to prevent hanging. Use language-native timeouts where available (e.g. \`go test -timeout 60s\`, \`pytest --timeout=60\`, \`jest --testTimeout=60000\`) and \`timeout <seconds> <command>\` for everything else (e.g. \`timeout 30 go run .\`, \`timeout 60 ./server\`). Default to 60 seconds unless the task explicitly requires longer.
-- **Never run interactive commands** (e.g. \`patch -p1\`, \`git rebase\`, \`git commit\`, \`git merge\`, \`git cherry-pick\`, default \`npm init\`). Use non-interactive flags: \`patch --forward\` or \`patch -N\`, \`git -c core.editor=true ...\`, \`GIT_EDITOR=true\`, \`npm init -y\`, \`--yes\`, \`--non-interactive\`. If a command might block on input, redirect stdin from \`/dev/null\` or prefix with \`timeout\`.
 - If a tool call fails, diagnose the root cause before retrying — do not retry blindly.
 - If you are uncertain about a library API (signature, existence, or current behaviour), run a quick \`web_search\` or ask the user before guessing. A few seconds of research is cheaper than a failed build/test cycle. If web tools are not available, stop and ask rather than bluff.
 - If the task names a specific library, framework, build tool, or vendor kit, assume your knowledge may be stale and verify the specific facts (version, API, install step, protocol, current convention) you plan to rely on with a quick \`web_search\`. Do not trust memory just because the name feels familiar. Best practices and defaults (error handling, project layout, testing conventions) drift over time — if your knowledge of a convention is older than ~18 months, verify it before baking it into code.
-- Keep diffs minimal and reviewable.
-- **Git commits**: Always end every commit message with a blank line followed by \`${KIMCHI_COAUTHOR}\`.`
+- Keep diffs minimal and reviewable.`
 
 export const DEFAULT_REVIEW_GUIDELINES = `When reviewing:
 - Read the diff or changed files first; then read the surrounding context for any touched function.

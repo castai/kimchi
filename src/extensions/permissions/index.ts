@@ -1,18 +1,27 @@
-import { resolve } from "node:path"
+import { basename, extname, resolve } from "node:path"
+import { Type } from "@earendil-works/pi-ai"
 import type { ExtensionAPI, ExtensionContext, SessionManager, ToolCallEvent } from "@earendil-works/pi-coding-agent"
 import { isKeyRelease, matchesKey } from "@earendil-works/pi-tui"
-import { Type } from "typebox"
 import { RST_FG, resolvedSemanticFg } from "../../ansi.js"
 import { FermentEventStore } from "../../ferment/event-store.js"
 import { resolveFermentsDir } from "../../ferment/store.js"
 import { isExistingDirectory } from "../../fs-paths.js"
 import { getAcpPrompter } from "../../modes/acp/permission-prompter-registry.js"
+import { isResourceEnabled } from "../../resources/store.js"
 import * as EntryTriggerRegistry from "../../shared/planning/entry-trigger-registry.js"
 import { parseSharedPlan } from "../../shared/planning/plan-decomposition.js"
 import { derivePlanTitle, savePlanMarkdown, slugifyPlanName } from "../../shared/planning/plan-markdown.js"
 import {
+	consumePlanReviewContext,
+	emitPlanReviewDecision,
+	emitPlanReviewRequest,
+	onPlanReviewDecision,
+	type PlanReviewDecisionPayload,
+} from "../../shared/planning/plan-review-bus.js"
+import {
 	contentHasToolCall,
 	extractTextFromContent,
+	hasPlanExitToolCall,
 	isNudgeSuppressed,
 	PLAN_MODE_STOP_NUDGE,
 	shouldNudge,
@@ -20,6 +29,7 @@ import {
 import * as PromptSupplementRegistry from "../../shared/planning/prompt-supplement-registry.js"
 import * as ToolProfileManager from "../../shared/planning/tool-profile-manager.js"
 import { isAgentWorker } from "../agent-worker-context.js"
+import { BASH_CONTROL_TOOL_NAME } from "../bash-background/bash-control-tool.js"
 import { createFerment } from "../ferment/create.js"
 import { emitFermentCreated } from "../ferment/domain-events-emitter.js"
 import { appendRefEntry } from "../ferment/nudge.js"
@@ -29,6 +39,8 @@ import { hasActiveFerment, notifyFermentActive, onActiveFermentChange } from "..
 import { createApplyAndPersist, formatNextActionHint } from "../ferment/tool-helpers.js"
 import { isFermentToolName, isUserFacingFermentToolName } from "../ferment/tool-names.js"
 import { setActiveFermentAndApplyProfile } from "../ferment/tool-scope.js"
+import { FERMENT_V2_RESOURCE_ID, FERMENT_V2_TOOL_NAMES } from "../ferment-v2/constants.js"
+import { buildApprovedPlanObjective, getFermentV2PlanExecutor } from "../ferment-v2/plan-executor.js"
 import { withBlocked } from "../herdr-events.js"
 import { isIdeConnected } from "../ide-adapter/index.js"
 import { getMultiModelEnabled } from "../multi-model.js"
@@ -39,12 +51,16 @@ import {
 	getDisabledToolNames,
 	type ToolVisibilityAPI,
 } from "../prompt-construction/tool-visibility.js"
+import { buildRemotePlanPrompt } from "../remote-run/prompt-builder.js"
+import { isRemoteRunEnabled, runCloudAgent } from "../remote-run/runner.js"
 import { isRawInputCaptureActive } from "../shared-input.js"
 import { markHarnessSteer } from "../steer-marker.js"
 import { TODO_CUSTOM_ENTRY_TYPE } from "../todos/constants.js"
 import { applyWriteTodos, syncTodoWidget } from "../todos/index.js"
 import { TODO_TOOL_NAMES } from "../todos/tool.js"
 import { classifyToolCall } from "./classifier.js"
+import { classifierHealth } from "./classifier-health.js"
+import { resolveClassifierCandidates } from "./classifier-models.js"
 import { registerCommands } from "./commands.js"
 import { type LoadedConfig, loadConfig } from "./config.js"
 import { BUILTIN_DENY, DEFAULT_CONFIG, PERMISSION_MODES_WITH_META as MODES, PERMISSIONS_ENV_KEY } from "./constants.js"
@@ -123,6 +139,7 @@ const PLAN_MODE_TOOLS = [
 	"bash",
 	"exitplanmode",
 	...TODO_TOOL_NAMES,
+	...FERMENT_V2_TOOL_NAMES,
 	// DAP debugger tools — available in plan mode by product decision: the
 	// debugger is the fastest way to investigate an issue the user is asking
 	// to plan a fix for. NOTE: this is NOT a read-only allowance —
@@ -154,10 +171,20 @@ const PLAN_MODE_TOOL_SET = new Set<string>(PLAN_MODE_TOOLS)
 // `agent`/`get_subagent_result`/`steer_subagent`
 // are the agents-extension surface — `agent` is the canonical delegation tool,
 // the other two are read-only/control-plane operations on already-approved spawns.
+// `bash_control` is the control-plane companion of a background `bash` call: the
+// originating command already passed the permission gate (prompt/classifier), so
+// checking its state or stopping it needs no second approval.
 //
 // Names are lowercased because the tool_call handler lowercases event.toolName
 // before comparing (see `const toolName = event.toolName.toLowerCase()` below).
-const BUILTIN_ALLOW_TOOL_NAMES = ["agent", "get_subagent_result", "steer_subagent", ...TODO_TOOL_NAMES]
+const BUILTIN_ALLOW_TOOL_NAMES = [
+	"agent",
+	"get_subagent_result",
+	"steer_subagent",
+	BASH_CONTROL_TOOL_NAME,
+	...FERMENT_V2_TOOL_NAMES,
+	...TODO_TOOL_NAMES,
+]
 
 export { notifyFermentActive }
 
@@ -232,24 +259,8 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 		type: "string",
 	})
 
-	pi.registerTool({
-		name: "ExitPlanMode",
-		label: "Exit plan mode",
-		description:
-			"Present the complete plan for approval and leave plan mode only after the user approves it. Pass the full plan in `plan`.",
-		promptSnippet: "Present the completed plan for approval",
-		promptGuidelines: [
-			"Call ExitPlanMode only after the complete plan is written and all open questions are resolved.",
-		],
-		parameters: Type.Object({
-			plan: Type.Optional(
-				Type.String({ description: "The complete plan in the shared Goal / Constraints / Chunks structure." }),
-			),
-		}),
-		execute: async (_toolCallId, params, _signal, _onUpdate, ctx) => handlePlanExit(ctx, params.plan),
-	})
-
 	const session = new SessionMemory()
+	const classifierWarnings = new Set<string>()
 	const builtinRules: Rule[] = parseRules(BUILTIN_DENY, "deny", "builtin")
 	// Base KIMCHI_PERMISSIONS env var used as a launch-time default. Subagent
 	// inheritance is handled separately in session_start via the parent session's
@@ -258,6 +269,8 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 	let loaded: LoadedConfig = EMPTY_LOADED_CONFIG
 	let configRules: Rule[] = []
 	let currentCtx: ExtensionContext | undefined
+	let appliedPermissionMode: PermissionModeState | undefined
+	let applyingPermissionMode = false
 	let preFermentMode: PermissionModeState | undefined
 	let cliMode: PermissionMode | undefined
 	// Session-held slug of the plan currently being drafted. Kept across rework
@@ -267,6 +280,7 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 	const activePlanSlugs = new Map<string, string>()
 	const planModeHiddenTools = new Map<string, string[]>()
 	const planModeSnapshots = new Map<string, { mode: PermissionModeState; activeTools: string[] }>()
+	const planStopNudgeCounts = new Map<string, number>()
 	const planToolVisibility: ToolVisibilityAPI = createToolVisibility(pi)
 	/** Tracks all active permission prompt abort controllers for concurrent tool calls. */
 	const activeAbortControllers = new Set<AbortController>()
@@ -400,14 +414,20 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 		skipNotify?: boolean,
 		restorePlanTools = true,
 	): void {
-		const from = getRuntimePermissionMode()
+		const from = appliedPermissionMode ?? getRuntimePermissionMode()
 		const sessionId = ctx.sessionManager.getSessionId()
 		if (next.mode === "plan" && current !== "plan" && !planModeSnapshots.has(sessionId)) {
 			planModeSnapshots.set(sessionId, { mode: from, activeTools: pi.getActiveTools() })
 		}
-		setRuntimePermissionMode(ctx, next, skipNotify)
+		applyingPermissionMode = true
+		try {
+			setRuntimePermissionMode(ctx, next, skipNotify)
+		} finally {
+			applyingPermissionMode = false
+		}
 		if (current === "plan" && next.mode !== "plan") {
 			restoreToolsFromPlanMode(ctx, restorePlanTools)
+			planStopNudgeCounts.delete(sessionId)
 			activePlanSlugs.delete(sessionId)
 			planModeSnapshots.delete(sessionId)
 		}
@@ -417,6 +437,8 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 		activeAbortControllers.clear()
 		updateStatus(ctx)
 		maybeShowYoloWarning(ctx)
+		appliedPermissionMode = next
+		if (reason !== "session_start" && next.initiatedBy === "user") maybePersistPermissionMode(ctx)
 		pi.events.emit(PERMISSION_EVENTS.MODE_CHANGED, { from, to: next, reason })
 	}
 
@@ -497,7 +519,7 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 			return savePlanMarkdown({
 				cwd: ctx.cwd,
 				name: activePlanSlugs.get(sessionId) ?? "untitled-plan",
-				planText: `${text}\n`,
+				planText,
 			})
 		} catch (err) {
 			const detail = err instanceof Error ? err.message : String(err)
@@ -617,106 +639,55 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 		changeMode(ctx, "plan", { mode: "auto", initiatedBy: "user", source: "runtime" }, "plan_approval", undefined, false)
 	}
 
-	async function handlePlanExit(ctx: ExtensionContext, requestedPlan: string | undefined) {
-		if (getRuntimePermissionMode().mode !== "plan") {
-			return {
-				content: [{ type: "text" as const, text: "ExitPlanMode is only available in plan mode." }],
-				details: null,
-			}
-		}
-		const planText = (requestedPlan?.trim() || currentAssistantText(ctx)).trim()
-		if (!planText) {
-			return {
-				content: [
-					{ type: "text" as const, text: "Provide the complete plan in the `plan` argument before exiting plan mode." },
-				],
-				details: null,
-			}
-		}
-		const planPath = savePlan(ctx, planText)
+	function approvedPlanTitle(planText: string, planPath: string | undefined, planSlug: string | undefined): string {
+		const title = derivePlanTitle(planText)
+		if (title !== "untitled-plan") return title
+		if (planPath) return basename(planPath, extname(planPath))
+		return planSlug ?? "Plan"
+	}
 
-		// Non-interactive callers must never wait on a UI that cannot exist. They
-		// receive a deterministic result and remain in read-only plan mode.
-		if (!ctx.hasUI || ctx.mode !== "tui" || isAgentWorker() || pi.getFlag("ferment-oneshot") === true) {
-			return {
-				content: [
-					{
-						type: "text" as const,
-						text: planPath
-							? `Plan saved to ${planPath}. Interactive approval is required before execution.`
-							: "Plan recorded. Interactive approval is required before execution.",
-					},
-				],
-				details: { planPath, approved: false },
+	async function executePlan(
+		ctx: ExtensionContext,
+		planPath: string | undefined,
+		planText: string,
+		planSlug: string | undefined,
+	): Promise<void> {
+		// Notify subscribers (e.g. the ACP plan tracker) that planning ended and
+		// the approved plan is now executing — pre-approval planning todos must
+		// not be reported as plan progress.
+		pi.events.emit(PERMISSION_EVENTS.PLAN_APPROVED, { planPath })
+		if (isResourceEnabled(FERMENT_V2_RESOURCE_ID)) {
+			const executor = getFermentV2PlanExecutor(pi)
+			if (!executor) {
+				ctx.ui.notify("Could not start the approved plan automatically.", "error")
+				return
 			}
-		}
-
-		const EXECUTE = "Execute the plan"
-		const DECLINE = "Rework the plan"
-		const START_AS_FERMENT = "Start as ferment"
-		const choice = await withBlocked(pi.events, "Review plan", () =>
-			withWorkingHidden(ctx, () =>
-				ctx.ui.select(`Review this plan:\n\n${planText}\n\nHow would you like to proceed?`, [
-					EXECUTE,
-					DECLINE,
-					START_AS_FERMENT,
-				]),
-			),
-		)
-		if (choice === EXECUTE) {
-			seedPlanTodos(ctx, planText)
-			changeMode(
-				ctx,
-				"plan",
-				planModeSnapshots.get(ctx.sessionManager.getSessionId())?.mode ?? {
-					mode: "default",
-					source: "config",
-					initiatedBy: "user",
-				},
-				"plan_approval",
-			)
-			pi.events.emit(PERMISSION_EVENTS.PLAN_APPROVED, { planPath })
-			await pi.sendUserMessage(compactPlanHandoff(planText, planPath), { deliverAs: "followUp" })
-			activePlanSlugs.delete(ctx.sessionManager.getSessionId())
-			return {
-				content: [{ type: "text" as const, text: "Plan approved; execution has started." }],
-				details: { planPath, approved: true },
-			}
-		}
-		if (choice === DECLINE) {
-			return {
-				content: [{ type: "text" as const, text: "Revise the plan and call ExitPlanMode again when it is ready." }],
-				details: { planPath, approved: false },
-			}
-		}
-		if (choice === START_AS_FERMENT) {
 			try {
-				await promotePlanToFerment(ctx, planText, planPath)
-				activePlanSlugs.delete(ctx.sessionManager.getSessionId())
-				return {
-					content: [{ type: "text" as const, text: "Plan converted to ferment." }],
-					details: { planPath, approved: true },
-				}
-			} catch (err) {
-				defaultFermentRuntime.setActive(undefined)
-				const message = err instanceof Error ? err.message : String(err)
-				ctx.ui.notify(`Could not start this plan as a ferment: ${message}. Staying in plan mode.`, "warning")
-				return {
-					content: [{ type: "text" as const, text: "Plan promotion failed; remain in plan mode." }],
-					details: { planPath, approved: false },
-				}
+				await executor(
+					{
+						objective: buildApprovedPlanObjective(planPath, planText),
+						title: approvedPlanTitle(planText, planPath, planSlug),
+						planText,
+						...(planPath ? { planPath } : {}),
+					},
+					ctx,
+				)
+			} catch {
+				ctx.ui.notify("Could not start the approved plan automatically.", "error")
 			}
+			return
 		}
-		return {
-			content: [{ type: "text" as const, text: "Plan approval was dismissed; remain in plan mode." }],
-			details: { planPath, approved: false },
-		}
+		await pi.sendUserMessage(compactPlanHandoff(planText, planPath), { deliverAs: "followUp" })
 	}
 
 	pi.on("session_start", async (_event, ctx) => {
+		classifierWarnings.clear()
 		currentCtx = ctx
+		appliedPermissionMode = undefined
+		applyingPermissionMode = false
 		cliMode = undefined
 		activePlanSlugs.delete(ctx.sessionManager.getSessionId())
+		planStopNudgeCounts.delete(ctx.sessionManager.getSessionId())
 		const { errors } = doLoadConfig(ctx)
 
 		for (const err of errors) {
@@ -781,10 +752,14 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 		changeMode(ctx, current.mode, next, "session_start")
 
 		unsubscribePermissionFlagController = getSessionPermissionFlagController(sessionId)?.subscribe(({ mode: next }) => {
-			if (!next) return
+			if (!next || applyingPermissionMode) return
 
-			const current = getRuntimePermissionMode()
-			if (current.mode === next.mode) return
+			const current = appliedPermissionMode
+			if (!current || current.mode === next.mode) {
+				appliedPermissionMode = next
+				if (next.initiatedBy === "user") maybePersistPermissionMode(ctx)
+				return
+			}
 
 			// ACP already emitted the config update from controller.setMode().
 			// This call is only for local transition side effects.
@@ -801,6 +776,8 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 		unsubscribePermissionFlagController?.()
 		unsubscribePermissionFlagController = undefined
 		currentCtx = undefined
+		appliedPermissionMode = undefined
+		applyingPermissionMode = false
 	})
 
 	const blocks = createSystemPromptBlocks(pi, "permissions")
@@ -836,57 +813,280 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 		return { kind: "enter-mode", mode: "adhoc", reason: "questionnaire tool call in default mode" }
 	})
 
-	// Persist user-sourced mode changes at turn boundaries. This satisfies the
-	// spec requirement that shift+tab cycling updates the UI immediately but is
-	// only written to the session log when the next agent run starts.
+	// Initial modes and temporary Ferment elevation are recorded when work starts.
+	// User-owned changes are also persisted immediately by their transition paths.
 	pi.on("before_agent_start", (_event, ctx) => {
 		if (getRuntimePermissionMode().mode === "plan") applyPlanModeTools(ctx)
 		maybePersistPermissionMode(ctx)
 	})
 
-	// Plan-mode stop nudge: fires when the model made tool calls this turn but
-	// ended with stopReason "stop" without calling ExitPlanMode.
-	// Logic lives in src/shared/planning/planning-stop-nudge.ts.
-	const planStopNudgeCounts = new Map<string, number>()
-
+	// Plan-mode stall recovery: when the model made tool calls in plan mode and
+	// then ended the turn with stopReason "stop" without calling ExitPlanMode,
+	// the session would stall silently — nudge it to resolve open questions and
+	// submit the plan. Capped per session; agent workers are excluded (they
+	// submit via ExitPlanMode in their own terminate-on-tool-return flow).
 	pi.on("turn_end", (event, ctx) => {
-		if (getRuntimePermissionMode().mode !== "plan") {
-			planStopNudgeCounts.clear()
+		if (isAgentWorker()) return
+		if (getRuntimePermissionMode().mode !== "plan") return
+		if (event.message.role !== "assistant") return
+		const content = Array.isArray(event.message.content) ? event.message.content : []
+		const toolNames = content
+			.filter((c) => (c as { type: string }).type === "toolCall" || (c as { type: string }).type === "tool_use")
+			.map((c) => (c as { name?: unknown }).name)
+			.filter((name): name is string => typeof name === "string")
+		if (hasPlanExitToolCall(toolNames)) {
+			// The review flow owns the turn now. Reset the stall budget so a
+			// rework round starts fresh.
+			planStopNudgeCounts.delete(ctx.sessionManager.getSessionId())
 			return
 		}
-
-		const message = event.message
-		if (message.role !== "assistant") return
-
-		const stopReason = (message as { stopReason?: string }).stopReason
-		// Reset counter on non-stop turns (model still progressing).
-		if (stopReason !== "stop") {
-			planStopNudgeCounts.clear()
+		const stopReason = (event.message as { stopReason?: string }).stopReason
+		if (!shouldNudge({ hasToolCall: contentHasToolCall(content), stopReason })) {
 			return
 		}
-
-		const content = message.content as unknown[]
-		const exitedPlan = content.some((item) => {
-			const call = item as { type?: string; name?: string }
-			return (call.type === "toolCall" || call.type === "tool_use") && call.name?.toLowerCase() === "exitplanmode"
-		})
-		if (!shouldNudge({ hasToolCall: contentHasToolCall(content) && !exitedPlan, stopReason })) return
-
 		const sessionId = ctx.sessionManager.getSessionId()
 		const count = (planStopNudgeCounts.get(sessionId) ?? 0) + 1
 		planStopNudgeCounts.set(sessionId, count)
-
 		if (isNudgeSuppressed(count)) return
-
-		void pi.sendMessage(
+		safeSendMessage(
+			pi,
 			{
-				customType: "plan_stop_nudge",
-				content: [{ type: "text", text: PLAN_MODE_STOP_NUDGE }],
+				customType: "plan-mode-stop-nudge",
+				content: PLAN_MODE_STOP_NUDGE,
 				display: false,
-				details: undefined,
 			},
-			{ triggerTurn: true },
+			{ triggerTurn: true, deliverAs: "steer" },
 		)
+	})
+
+	// ExitPlanMode submits the plan to the shared user-review flow.
+	pi.registerTool({
+		name: "ExitPlanMode",
+		label: "Exit plan mode",
+		promptSnippet: "Present the completed plan for approval",
+		promptGuidelines: [
+			"Call ExitPlanMode only after the complete plan is written and all open questions are resolved.",
+		],
+		description:
+			"Submit your completed plan for user review. Call this only after the plan " +
+			"is fully written and all open questions are resolved. The plan will be " +
+			"saved to disk and the user will review it in a visual UI before execution. " +
+			"If the plan is denied with feedback, revise and call this again.",
+		parameters: Type.Object({
+			plan: Type.Optional(
+				Type.String({
+					description:
+						"The complete plan as markdown. Must follow the required structure: " +
+						"Goal, Constraints, Chunks (with Files Changed, Depends On, Accept When, " +
+						"Test Coverage, Open Questions), Verification Strategy, Decision Log, Risks.",
+				}),
+			),
+		}),
+		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+			const planText = params.plan?.trim() ? params.plan : currentAssistantText(ctx)
+			if (!planText?.trim()) {
+				return {
+					content: [{ type: "text", text: "Error: plan text is empty." }],
+					details: { submitted: false },
+				}
+			}
+
+			// Allowed contexts:
+			// 1. Adhoc plan mode (mode === "plan") — full review flow.
+			// 2. Agent workers (e.g. Plan persona subagents) — saves + terminates
+			//    with no review emit; the parent orchestrator is the plan's
+			//    evaluator.
+			const mode = getRuntimePermissionMode().mode
+			if (mode !== "plan" && !isAgentWorker()) {
+				return {
+					content: [
+						{
+							type: "text",
+							text: "Error: ExitPlanMode is only available during plan mode or in a Plan agent worker.",
+						},
+					],
+					details: { submitted: false },
+				}
+			}
+
+			const sessionId = ctx.sessionManager.getSessionId()
+			const planPath = savePlan(ctx, planText)
+			const activePlanSlug = activePlanSlugs.get(sessionId)
+			planStopNudgeCounts.delete(sessionId)
+
+			// Agent worker: silent submit. Saves the plan and terminates the turn
+			// with no review emit — workers have no review surface, the parent
+			// orchestrator evaluates the plan, and the plannotator adapter skips
+			// worker sessions. agent-runner surfaces planPath back to the parent
+			// from this tool result.
+			if (isAgentWorker()) {
+				return {
+					content: [
+						{
+							type: "text",
+							text: planPath ? `Plan submitted and saved to ${planPath}.` : "Plan submitted.",
+						},
+					],
+					details: { submitted: true, source: "worker", planPath },
+					terminate: true,
+				}
+			}
+
+			if (!ctx.hasUI || ctx.mode !== "tui" || pi.getFlag("ferment-oneshot") === true) {
+				return {
+					content: [
+						{
+							type: "text",
+							text: planPath
+								? `Plan saved to ${planPath}. Interactive approval is required before execution.`
+								: "Plan recorded. Interactive approval is required before execution.",
+						},
+					],
+					details: { submitted: true, approved: false, planPath },
+					terminate: true,
+				}
+			}
+
+			emitPlanReviewRequest(
+				pi,
+				{ planContent: planText, planFilePath: planPath, source: "adhoc" },
+				{ ctx, planPath, planText, rawText: planText, activePlanSlug },
+			)
+
+			// AbortSignal lets the decision handler dismiss the menu when
+			// plannotator decides first (select returns undefined on abort).
+			// The listener is unsubscribed when the menu resolves — it is
+			// per-review and must not accumulate on the shared event bus.
+			const planMenuAbort = new AbortController()
+			const unsubscribeAbortListener = onPlanReviewDecision(pi, (payload: PlanReviewDecisionPayload) => {
+				if (payload.planReviewSource !== "adhoc") return
+				if (payload.source !== "plannotator") return
+				planMenuAbort.abort()
+			})
+
+			const EXECUTE = "Execute the plan"
+			const DECLINE = "Rework the plan"
+			const START_AS_FERMENT = "Start as ferment"
+			const START_IN_CLOUD = "Start execution in cloud"
+
+			const options = [EXECUTE, DECLINE, START_AS_FERMENT]
+			if (isRemoteRunEnabled()) options.push(START_IN_CLOUD)
+
+			void withBlocked(pi.events, "Plan complete", () =>
+				withWorkingHidden(ctx, () =>
+					ctx.ui.select("Plan complete. How would you like to proceed?", options, {
+						signal: planMenuAbort.signal,
+					}),
+				),
+			)
+				.then((choice) => {
+					unsubscribeAbortListener()
+					// select returns undefined when aborted — plannotator already decided.
+					if (choice === undefined) return
+					if (choice === EXECUTE) {
+						emitPlanReviewDecision(pi, {
+							decision: "execute",
+							source: "kimchi-tui",
+							planReviewSource: "adhoc",
+						})
+					} else if (choice === START_AS_FERMENT) {
+						emitPlanReviewDecision(pi, {
+							decision: "start_ferment",
+							source: "kimchi-tui",
+							planReviewSource: "adhoc",
+						})
+					} else if (choice === START_IN_CLOUD) {
+						emitPlanReviewDecision(pi, {
+							decision: "start_cloud",
+							source: "kimchi-tui",
+							planReviewSource: "adhoc",
+						})
+					} else {
+						emitPlanReviewDecision(pi, {
+							decision: "rework",
+							source: "kimchi-tui",
+							planReviewSource: "adhoc",
+						})
+					}
+				})
+				.catch(() => {
+					// select rejects when the AbortSignal fires (plannotator decided
+					// first) or on unexpected UI errors. Either way, ensure the
+					// abort-listener is cleaned up so it doesn't leak on the bus.
+					unsubscribeAbortListener()
+				})
+
+			return {
+				content: [{ type: "text", text: "Plan submitted for review. Waiting for user decision." }],
+				details: { submitted: true, planPath },
+				terminate: true,
+			}
+		},
+	})
+
+	// Decision handler for adhoc plan reviews — handles decisions from both
+	// the TUI menu and plannotator's browser UI (first decision wins).
+	onPlanReviewDecision(pi, async (payload: PlanReviewDecisionPayload) => {
+		if (payload.planReviewSource !== "adhoc") return
+		const reviewCtx = consumePlanReviewContext()
+		if (!reviewCtx) return
+		const { ctx, planPath, planText, rawText, activePlanSlug: reviewedPlanSlug } = reviewCtx
+		const sessionId = ctx.sessionManager.getSessionId()
+		const restoreMode: PermissionModeState = planModeSnapshots.get(sessionId)?.mode ?? {
+			mode: "default",
+			source: "config",
+			initiatedBy: "user",
+		}
+
+		if (payload.decision === "execute") {
+			seedPlanTodos(ctx, planText)
+			changeMode(ctx, "plan", restoreMode, "plan_approval")
+			await executePlan(ctx, planPath, planText, reviewedPlanSlug)
+			activePlanSlugs.delete(sessionId)
+		} else if (payload.decision === "start_ferment") {
+			try {
+				await promotePlanToFerment(ctx, rawText ?? planText, planPath)
+				activePlanSlugs.delete(sessionId)
+			} catch (err) {
+				defaultFermentRuntime.setActive(undefined)
+				const message = err instanceof Error ? err.message : String(err)
+				ctx.ui.notify(`Could not start this plan as a ferment: ${message}. Staying in plan mode.`, "warning")
+			}
+		} else if (payload.decision === "start_cloud") {
+			// Spawn a foreground remote agent to execute the plan in a cloud sandbox.
+			// Mode switches to auto immediately; the call blocks until the remote
+			// agent completes (or is killed via Ctrl+X). The result is injected
+			// into the local session as a steer message so the local agent has
+			// context for follow-up work.
+			const approvedSlug = reviewedPlanSlug
+			activePlanSlugs.delete(sessionId)
+			pi.events.emit(PERMISSION_EVENTS.PLAN_APPROVED, { planPath })
+			changeMode(ctx, "plan", { mode: "auto", initiatedBy: "user", source: "runtime" }, "plan_approval")
+			const cloudPrompt = buildRemotePlanPrompt(planText, { origin: "plan-mode" })
+			const cloudDescription = `cloud: ${planText.slice(0, 60)}${planText.length > 60 ? "..." : ""}`
+			try {
+				await runCloudAgent(pi, ctx, cloudPrompt, cloudDescription, { background: true })
+			} catch (err) {
+				// Spawn failed — otherwise the user is stranded in auto mode with
+				// no active plan and no visible error. Surface the error and
+				// restore plan mode so they can retry.
+				const message = err instanceof Error ? err.message : String(err)
+				ctx.ui?.notify?.(`Could not start the cloud agent: ${message}`, "error")
+				if (approvedSlug) activePlanSlugs.set(sessionId, approvedSlug)
+				changeMode(ctx, "auto", { mode: "plan", initiatedBy: "user", source: "runtime" }, "cloud_spawn_failed")
+			}
+		} else if (payload.decision === "feedback") {
+			safeSendMessage(
+				pi,
+				{
+					customType: "plannotator-feedback",
+					content: [{ type: "text", text: payload.feedback ?? "" }],
+					display: false,
+				},
+				{ triggerTurn: true },
+			)
+		}
+		// "rework" = stay in plan mode, no action needed
 	})
 
 	pi.on("tool_call", async (event, ctx) => {
@@ -1013,12 +1213,25 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 			// through the classifier; prompts without a frontend fail closed.
 			const promptAvailable = canPrompt(ctx)
 			if (mode === "auto" || !promptAvailable) {
+				const { candidates, missingRefs } = resolveClassifierCandidates(ctx.modelRegistry)
 				const verdict = await classifyToolCall(
+					candidates,
 					ctx.modelRegistry,
 					{ toolName, input, cwd: ctx.cwd },
-					{ timeoutMs: loaded.config.classifierTimeoutMs },
+					{
+						timeoutMs: loaded.config.classifierTimeoutMs,
+						maxTotalMs: loaded.config.classifierMaxTotalMs,
+					},
 					ctx.signal,
 				)
+				const health = classifierHealth(verdict, candidates, missingRefs, ctx.signal)
+				if (health) {
+					pi.events.emit(health.channel, health.payload)
+					if (ctx.hasUI && !classifierWarnings.has(health.notifyKey)) {
+						classifierWarnings.add(health.notifyKey)
+						ctx.ui.notify(health.message, "warning")
+					}
+				}
 
 				if (verdict.verdict === "safe") return undefined
 				if (!promptAvailable) {

@@ -1,3 +1,4 @@
+import type { Model } from "@earendil-works/pi-ai"
 import type { ExtensionContext, ReadonlyFooterDataProvider, Theme } from "@earendil-works/pi-coding-agent"
 import { visibleWidth } from "@earendil-works/pi-tui"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
@@ -6,6 +7,7 @@ import * as AGENTS from "../extensions/agents/index.js"
 import { setBillingStatusForTest } from "../extensions/billing/status.js"
 import * as FERMENT from "../extensions/ferment/index.js"
 import * as MULTI_MODEL from "../extensions/multi-model.js"
+import { clearAutoRoutingState, setAutoRoutingState } from "../extensions/router/state.js"
 import * as TAGS from "../extensions/tags.js"
 import type { Ferment } from "../ferment/types.js"
 import {
@@ -13,6 +15,7 @@ import {
 	buildControlsLineSegments,
 	buildModelAbbrev,
 	buildScriptPayload,
+	buildStatusLineSegments,
 	renderFittedLine,
 	SHORTCUT_TAIL,
 	StatusLine,
@@ -60,6 +63,8 @@ function createMockTheme(): Theme {
 interface MockContextOpts {
 	percent?: number
 	modelId?: string
+	modelProvider?: string
+	thinkingLevel?: ExtensionContext["thinkingLevel"]
 	/** Assistant messages to include in the session, for usage-segment tests. */
 	assistantMessages?: Array<{ input: number; output: number }>
 }
@@ -72,7 +77,8 @@ function createMockContext(opts?: MockContextOpts): ExtensionContext {
 		message: { role: "assistant", usage: { input: u.input, output: u.output } },
 	}))
 	return {
-		model: { id: modelId, name: modelId },
+		model: { id: modelId, name: modelId, provider: opts?.modelProvider ?? "kimchi-dev" },
+		thinkingLevel: opts?.thinkingLevel,
 		cwd: "/test",
 		getContextUsage: vi.fn(() => ({ tokens: 0, percent, contextWindow: 100000 })),
 		sessionManager: {
@@ -83,6 +89,21 @@ function createMockContext(opts?: MockContextOpts): ExtensionContext {
 			getSessionFile: vi.fn(() => "/test/session.md"),
 		},
 	} as unknown as ExtensionContext
+}
+
+function concreteModel(id: string): Model<string> {
+	return {
+		id,
+		name: id,
+		api: "openai-completions",
+		provider: "kimchi-dev",
+		baseUrl: "https://example.test",
+		reasoning: false,
+		input: ["text"],
+		cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+		contextWindow: 128_000,
+		maxTokens: 16_000,
+	}
 }
 
 function createMockStatusLineData(opts?: {
@@ -102,6 +123,26 @@ function createMockStatusLineData(opts?: {
 }
 
 describe("buildScriptPayload", () => {
+	it("shows a V2 run in both the default footer and custom-script controls", () => {
+		const data = createMockStatusLineData()
+		vi.mocked(data.getExtensionStatuses).mockReturnValue(
+			new Map([["ferment-v2", "◈ paused · Cache layer · /ferment-v2 resume"]]),
+		)
+		const context = { ctx: createMockContext(), theme: createMockTheme(), statusLineData: data }
+		const standard = buildStatusLineSegments(context, new Set())
+		expect(stripAnsi(standard.find((segment) => segment.id === "ferment")?.text ?? "")).toBe(
+			"◈ paused · Cache layer · /ferment-v2 resume",
+		)
+		expect(buildControlsLineSegments(context).some((segment) => segment.id === "ferment")).toBe(true)
+		vi.mocked(data.getExtensionStatuses).mockReturnValue(
+			new Map([["ferment-v2", `◈ paused · ${"long objective ".repeat(4)} · /ferment-v2 resume`]]),
+		)
+		for (const segments of [buildStatusLineSegments(context, new Set()), buildControlsLineSegments(context)]) {
+			const line = renderFittedLine(segments, 80, context.theme)
+			expect(stripAnsi(line)).toContain("◈ paused")
+			expect(visibleWidth(line)).toBeLessThanOrEqual(80)
+		}
+	})
 	afterEach(() => setBillingStatusForTest(undefined))
 
 	it("passes credits and budget to custom status-line scripts", () => {
@@ -294,6 +335,17 @@ describe("compact-form builders", () => {
 			expect(seg.text).toBe("claude-opus-4-7 → ctrl+p")
 			expect(seg.raw).toEqual({ kind: "model", multiModel: false, modelId: "claude-opus-4-7" })
 		})
+
+		it("keeps the routed model next to auto in the compact form", () => {
+			const seg = buildModelAbbrev(compactCtx, false, "auto", "kimi-k2.6")
+			expect(seg.text).toBe("auto (kimi-k2.6) → ctrl+p")
+			expect(seg.raw).toEqual({
+				kind: "model",
+				multiModel: false,
+				modelId: "auto",
+				routedModelId: "kimi-k2.6",
+			})
+		})
 	})
 })
 
@@ -385,6 +437,13 @@ describe("StatusLine behavioural acceptance at representative widths", () => {
 			expect(visible).toContain("/ for commands")
 			expect(visibleWidth(raw)).toBe(160)
 			expect(visible.endsWith("/ for commands")).toBe(true)
+		})
+	})
+
+	it("shows the current thinking level when pinned", () => {
+		withPinned(["thinking"], () => {
+			const { visible } = renderAt(160, { thinkingLevel: "max" })
+			expect(visible).toContain("thinking:max")
 		})
 	})
 
@@ -787,6 +846,7 @@ describe("status line pinning", () => {
 	})
 
 	afterEach(() => {
+		clearAutoRoutingState("test-session")
 		vi.restoreAllMocks()
 		restorePlatform()
 		pinnedElements = []
@@ -795,6 +855,53 @@ describe("status line pinning", () => {
 	function makeStatusLine(opts?: MockContextOpts): StatusLine {
 		return new StatusLine(createMockContext(opts), theme, createMockStatusLineData())
 	}
+
+	it("shows only Auto before routing resolves", () => {
+		const visible = stripAnsi(makeStatusLine({ modelId: "auto" }).render(200)[0])
+
+		expect(visible).toContain("auto → ctrl+p")
+	})
+
+	it("shows the routed model next to Auto when routing resolved", () => {
+		setAutoRoutingState("test-session", { status: "resolved", model: concreteModel("kimi-k2.6") })
+
+		const visible = stripAnsi(makeStatusLine({ modelId: "auto" }).render(200)[0])
+
+		expect(visible).toContain("auto (kimi-k2.6) → ctrl+p")
+	})
+
+	it("reverts to plain Auto after routing state is cleared (e.g. /new)", () => {
+		setAutoRoutingState("test-session", { status: "resolved", model: concreteModel("kimi-k2.6") })
+
+		// Before /new — routed model is shown
+		const beforeClear = stripAnsi(makeStatusLine({ modelId: "auto" }).render(200)[0])
+		expect(beforeClear).toContain("auto (kimi-k2.6) → ctrl+p")
+
+		// /new clears the routing state for the session
+		clearAutoRoutingState("test-session")
+
+		// After /new — label reverts to plain Auto
+		const afterClear = stripAnsi(makeStatusLine({ modelId: "auto" }).render(200)[0])
+		expect(afterClear).toContain("auto → ctrl+p")
+		expect(afterClear).not.toContain("kimi-k2.6")
+	})
+
+	it("keeps the multi-model label unchanged when the active model is Auto", () => {
+		vi.spyOn(MULTI_MODEL, "getMultiModelEnabled").mockReturnValue(true)
+		setAutoRoutingState("test-session", { status: "resolved", model: concreteModel("kimi-k2.6") })
+
+		const visible = stripAnsi(makeStatusLine({ modelId: "auto" }).render(200)[0])
+
+		expect(visible).toContain("multi-model (auto) → ctrl+p")
+	})
+
+	it("keeps the routed suffix through compaction at narrow width", () => {
+		setAutoRoutingState("test-session", { status: "resolved", model: concreteModel("kimi-k2.6") })
+
+		const visible = stripAnsi(makeStatusLine({ modelId: "auto" }).render(40)[0])
+
+		expect(visible).toContain("auto (kimi-k2.6)")
+	})
 
 	it("pinned usage shows '↑0 ↓0' when no tokens are present", () => {
 		withPinned(["usage"], () => {
@@ -1136,5 +1243,40 @@ describe("StatusLineScript", () => {
 		const sls = new StatusLineScript(() => null)
 		sls.setLines(["one"])
 		expect(sls.render(80)).toEqual(["one"])
+	})
+})
+
+describe("StatusLine narrow-terminal width invariant", () => {
+	// The status line renders on the main screen, where pi-tui's doRender
+	// hard-crashes on any line wider than the terminal. Sweep widths 1-12
+	// with every segment family active — permissions/model/context, usage,
+	// agents, billing, router — and assert the invariant.
+	afterEach(() => {
+		vi.restoreAllMocks()
+		setBillingStatusForTest(undefined)
+	})
+
+	it("never emits a line wider than the requested width at widths 1-12", () => {
+		const theme = createMockTheme()
+		withPinned(["agents", "credits", "budget"], () => {
+			vi.spyOn(AGENTS, "getActiveAgentCount").mockReturnValue(3)
+			setTestBilling()
+			setAutoRoutingState("test-session", { status: "resolved", model: concreteModel("kimi-k2.6") })
+			const ctx = createMockContext({
+				percent: 87,
+				modelId: "auto",
+				assistantMessages: [
+					{ input: 1200, output: 340 },
+					{ input: 800, output: 200 },
+				],
+			})
+			const sl = new StatusLine(ctx, theme, createMockStatusLineData())
+			for (let width = 1; width <= 12; width++) {
+				const lines = sl.render(width)
+				for (const line of lines) {
+					expect(visibleWidth(line)).toBeLessThanOrEqual(width)
+				}
+			}
+		})
 	})
 })

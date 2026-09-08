@@ -25,6 +25,10 @@ vi.mock("../../../sandbox/worker/sessions.js", () => ({
 	deleteSession: vi.fn().mockResolvedValue(undefined),
 }))
 
+vi.mock("../../teleport/provisioning/git-provision.js", () => ({
+	provisionGitCredential: vi.fn().mockResolvedValue(undefined),
+}))
+
 vi.mock("../../teleport/provisioning/sync-local-changes.js", () => ({
 	syncLocalChangesAfterClone: vi.fn().mockResolvedValue(undefined),
 }))
@@ -59,6 +63,7 @@ import { waitForWorkspaceReady } from "../../../sandbox/cloud/readiness.js"
 import { AcpSessionClient, type AcpSessionClientOptions } from "../../../sandbox/worker/acp-client.js"
 import { WorkerClient } from "../../../sandbox/worker/client.js"
 import { createSession, deleteSession } from "../../../sandbox/worker/sessions.js"
+import { provisionGitCredential } from "../../teleport/provisioning/git-provision.js"
 import { syncLocalChangesAfterClone } from "../../teleport/provisioning/sync-local-changes.js"
 import { type RemoteRunOptions, runRemoteAgent } from "./remote-agent-runner.js"
 
@@ -73,7 +78,6 @@ function makeOptions(overrides: Partial<RemoteRunOptions> = {}): RemoteRunOption
 	return {
 		apiKey: "test-api-key",
 		signal: undefined,
-		cwd: "/home/sandbox",
 		callbacks: {
 			onTextDelta: vi.fn(),
 			onToolActivity: vi.fn(),
@@ -157,32 +161,37 @@ describe("runRemoteAgent", () => {
 			}),
 		)
 
-		// 3. Session creation
+		// 3. Session creation — cwd is NOT sent; the worker assigns /home/sandbox/<sessionName>
+		const sessionNameMatch = expect.stringMatching(/^acp-[0-9a-f]{8}$/)
 		expect(createSession).toHaveBeenCalledWith(
 			expect.anything(),
-			expect.stringMatching(/^acp-[0-9a-f]{8}$/),
-			expect.objectContaining({ agentMode: "ACP", yolo: true, cwd: "/home/sandbox" }),
+			sessionNameMatch,
+			expect.objectContaining({
+				agentMode: "ACP",
+				yolo: true,
+			}),
 			expect.objectContaining({ timeoutMs: 5 * 60_000 }),
 		)
 
-		// 4. ACP client
+		// 4. ACP client — cwd matches the unique session directory
 		expect(AcpSessionClient).toHaveBeenCalledWith(
 			expect.objectContaining({
-				sessionName: expect.stringMatching(/^acp-[0-9a-f]{8}$/),
+				sessionName: sessionNameMatch,
 				credentials: expect.objectContaining({ wsUrl: "wss://worker.example.com" }),
-				cwd: "/home/sandbox",
+				cwd: expect.stringMatching(/^\/home\/sandbox\/acp-[0-9a-f]{8}$/),
 			}),
 		)
 		expect(mockInitialize).toHaveBeenCalledOnce()
 		expect(mockPrompt).toHaveBeenCalledWith(PROMPT)
 
-		// 5. Result
+		// 5. Result — remoteSession includes the unique cwd
 		expect(result.stopReason).toBe("end_turn")
 		expect(result.usage).toEqual({ input: 100, output: 50, cacheRead: 0, cacheWrite: 0 })
 		expect(result.remoteSession.workspaceId).toBe(WORKSPACE_ID)
 		expect(result.remoteSession.wsUrl).toBe("wss://worker.example.com")
 		expect(result.remoteSession.host).toBe("worker.example.com")
 		expect(result.remoteSession.sessionName).toMatch(/^acp-[0-9a-f]{8}$/)
+		expect(result.remoteSession.cwd).toMatch(/^\/home\/sandbox\/acp-[0-9a-f]{8}$/)
 	})
 
 	it("forwards callbacks to AcpSessionClient with onTextDelta wrapping", async () => {
@@ -334,8 +343,8 @@ describe("runRemoteAgent", () => {
 		expect(typeof captured.onRawNotification).toBe("function")
 
 		// Verify forwarding
-		captured.onToolActivity({ type: "end", toolName: "Read" })
-		expect(callbacks.onToolActivity).toHaveBeenCalledWith({ type: "end", toolName: "Read" })
+		captured.onToolActivity({ status: "completed", toolName: "Read" })
+		expect(callbacks.onToolActivity).toHaveBeenCalledWith({ status: "completed", toolName: "Read" })
 
 		captured.onTurnEnd(1)
 		expect(callbacks.onTurnEnd).toHaveBeenCalledWith(1)
@@ -349,7 +358,7 @@ describe("runRemoteAgent", () => {
 		expect(callbacks.onRawNotification).toHaveBeenCalledWith(rawNotif)
 	})
 
-	it("forwards gitDetails to createSession as details.git and sets cwd to the repo dir", async () => {
+	it("forwards gitDetails to createSession with targetDirectory cleared so clone goes into session cwd", async () => {
 		const gitDetails = {
 			repo: "https://github.com/getkimchi/kimchi.git",
 			branch: "main",
@@ -364,15 +373,21 @@ describe("runRemoteAgent", () => {
 			expect.objectContaining({
 				agentMode: "ACP",
 				yolo: true,
-				cwd: "/home/sandbox/kimchi",
-				details: { git: gitDetails },
+				details: {
+					git: {
+						repo: gitDetails.repo,
+						branch: gitDetails.branch,
+						targetDirectory: "",
+						noHistory: true,
+					},
+				},
 			}),
 			expect.anything(),
 		)
 
-		// AcpSessionClient should also receive the repo dir as cwd
+		// AcpSessionClient receives the unique session cwd
 		expect(capturedOptions).toBeDefined()
-		expect(capturedOptions?.cwd).toBe("/home/sandbox/kimchi")
+		expect(capturedOptions?.cwd).toMatch(/^\/home\/sandbox\/acp-[0-9a-f]{8}$/)
 	})
 
 	it("omits details.git when no gitDetails are provided", async () => {
@@ -382,7 +397,7 @@ describe("runRemoteAgent", () => {
 		expect(sessionReq.details).toBeUndefined()
 	})
 
-	it("syncs local changes after createSession when gitDetails + localPath are provided", async () => {
+	it("syncs local changes after createSession with unique remotePath when gitDetails + localPath are provided", async () => {
 		const gitDetails = {
 			repo: "https://github.com/getkimchi/kimchi.git",
 			branch: "main",
@@ -394,7 +409,7 @@ describe("runRemoteAgent", () => {
 		expect(syncLocalChangesAfterClone).toHaveBeenCalledWith(
 			expect.objectContaining({
 				localPath: "/work/kimchi",
-				remotePath: "/home/sandbox/kimchi",
+				remotePath: expect.stringMatching(/^\/home\/sandbox\/acp-[0-9a-f]{8}$/),
 				remoteHost: "worker.example.com",
 				freshClone: true,
 			}),
@@ -417,5 +432,113 @@ describe("runRemoteAgent", () => {
 		await runRemoteAgent(WORKSPACE_ID, PROMPT, makeOptions({ gitDetails }))
 
 		expect(syncLocalChangesAfterClone).not.toHaveBeenCalled()
+	})
+
+	describe("git credential provisioning", () => {
+		beforeEach(() => {
+			vi.mocked(provisionGitCredential).mockResolvedValue(undefined)
+		})
+
+		it("provisions git credential before createSession when gitCredential is provided", async () => {
+			const gitCredential = { host: "gitlab.com", token: "glpat-xyz123" }
+			const gitDetails = {
+				repo: "https://gitlab.com/team/repo.git",
+				branch: "main",
+				targetDirectory: "repo",
+				noHistory: true,
+			}
+			await runRemoteAgent(WORKSPACE_ID, PROMPT, makeOptions({ gitDetails, gitCredential }))
+
+			expect(provisionGitCredential).toHaveBeenCalledWith(
+				expect.anything(),
+				{ gitHost: "gitlab.com", gitToken: "glpat-xyz123" },
+				undefined,
+			)
+
+			// provisionGitCredential must be called BEFORE createSession
+			const provisionOrder = vi.mocked(provisionGitCredential).mock.invocationCallOrder[0]
+			const createOrder = vi.mocked(createSession).mock.invocationCallOrder[0]
+			expect(provisionOrder).toBeLessThan(createOrder)
+		})
+
+		it("does not provision git credential when gitCredential is not provided", async () => {
+			await runRemoteAgent(WORKSPACE_ID, PROMPT, makeOptions())
+
+			expect(provisionGitCredential).not.toHaveBeenCalled()
+		})
+
+		it("does not abort the run when credential provisioning fails", async () => {
+			vi.mocked(provisionGitCredential).mockRejectedValue(new Error("provisioning failed"))
+			const gitCredential = { host: "gitlab.com", token: "bad-token" }
+			const gitDetails = {
+				repo: "https://gitlab.com/team/repo.git",
+				branch: "main",
+				targetDirectory: "repo",
+				noHistory: true,
+			}
+
+			// Should not throw — provisioning failure is non-fatal
+			const result = await runRemoteAgent(WORKSPACE_ID, PROMPT, makeOptions({ gitDetails, gitCredential }))
+
+			expect(result.stopReason).toBe("end_turn")
+			// createSession was still called
+			expect(createSession).toHaveBeenCalledOnce()
+		})
+
+		it("re-throws AbortError when signal is aborted during provisioning", async () => {
+			const abortErr = new Error("aborted")
+			abortErr.name = "AbortError"
+			vi.mocked(provisionGitCredential).mockRejectedValue(abortErr)
+			const gitCredential = { host: "gitlab.com", token: "tok" }
+
+			await expect(runRemoteAgent(WORKSPACE_ID, PROMPT, makeOptions({ gitCredential }))).rejects.toThrow("aborted")
+
+			// createSession must NOT have been called — abort should stop the run
+			expect(createSession).not.toHaveBeenCalled()
+		})
+	})
+
+	describe("onReady callback", () => {
+		it("is called after initialize() and before prompt()", async () => {
+			const callOrder: string[] = []
+			mockInitialize.mockImplementation(async () => {
+				callOrder.push("initialize")
+			})
+			mockPrompt.mockImplementation(async () => {
+				callOrder.push("prompt")
+				return { stopReason: "end_turn", usage: { input: 100, output: 50, cacheRead: 0, cacheWrite: 0 } }
+			})
+			const onReady = vi.fn(() => {
+				callOrder.push("onReady")
+			})
+
+			await runRemoteAgent(WORKSPACE_ID, PROMPT, makeOptions({ onReady }))
+
+			expect(callOrder).toEqual(["initialize", "onReady", "prompt"])
+		})
+
+		it("passes the AcpSessionClient and session metadata", async () => {
+			const onReady = vi.fn()
+			await runRemoteAgent(WORKSPACE_ID, PROMPT, makeOptions({ onReady }))
+
+			expect(onReady).toHaveBeenCalledTimes(1)
+			const [client, meta] = onReady.mock.calls[0]
+			// client should have prompt/close/cancel methods (the mock instance)
+			expect(typeof client.prompt).toBe("function")
+			expect(typeof client.close).toBe("function")
+			expect(meta).toEqual({
+				workspaceId: WORKSPACE_ID,
+				sessionName: expect.stringMatching(/^acp-[0-9a-f]{8}$/),
+				wsUrl: "wss://worker.example.com",
+				host: "worker.example.com",
+				cwd: expect.stringMatching(/^\/home\/sandbox\/acp-[0-9a-f]{8}$/),
+			})
+		})
+
+		it("is not called when omitted", async () => {
+			// Should not throw — onReady is optional
+			const result = await runRemoteAgent(WORKSPACE_ID, PROMPT, makeOptions())
+			expect(result.stopReason).toBe("end_turn")
+		})
 	})
 })

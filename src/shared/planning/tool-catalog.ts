@@ -51,6 +51,8 @@
  * duplicating the set logic inline.
  */
 
+import { FERMENT_V2_TOOL_NAMES } from "../../extensions/ferment-v2/constants.js"
+
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
@@ -138,6 +140,7 @@ export const SHARED_CORE_TOOLS: ToolEntry[] = [
 	{ name: "add_todo", modes: ["shared"] },
 	{ name: "mark_todo", modes: ["shared"] },
 	{ name: "clear_todos", modes: ["shared"] },
+	...FERMENT_V2_TOOL_NAMES.map<ToolEntry>((name) => ({ name, modes: ["shared"] })),
 ]
 
 /** Tools gated behind `--plan` (adhoc planning mode). */
@@ -147,6 +150,19 @@ export const ADHOC_MODE_TOOLS: ToolEntry[] = [
 	// interactive — model presents the completed plan for approval
 	{ name: "ExitPlanMode", modes: ["adhoc"], routing: "interactive" },
 ]
+
+const ADHOC_ONLY_TOOL_NAMES = new Set(ADHOC_MODE_TOOLS.map((t) => t.name))
+
+/**
+ * True when the tool is declared adhoc-only in the catalog (e.g.
+ * `questionnaire`), meaning it must NOT be re-surfaced by ferment profiles
+ * whose base is `getAllTools()`. The ferment interactive-question surface is
+ * `ask_user`; both being visible would give the model two competing ways to
+ * ask the user.
+ */
+export function isAdhocOnlyToolName(name: string): boolean {
+	return ADHOC_ONLY_TOOL_NAMES.has(name)
+}
 
 /**
  * Tools gated behind the ferment lifecycle.

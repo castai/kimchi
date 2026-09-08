@@ -1,6 +1,7 @@
 import { existsSync, mkdtempSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
+import type { Api, Model } from "@earendil-works/pi-ai"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import dapExtension from "../../dap.js"
 import omitKimchiMaxTokensExtension from "../../omit-kimchi-max-tokens.js"
@@ -117,6 +118,10 @@ vi.mock("../../tags.js", () => ({
 	getActiveTags: vi.fn(),
 }))
 
+vi.mock("../../router/index.js", () => ({
+	createAutoModelExtension: vi.fn(() => () => {}),
+}))
+
 import {
 	type AgentSession,
 	type CreateAgentSessionResult,
@@ -130,6 +135,7 @@ import { DEFAULT_BASH_TIMEOUT_SECONDS } from "../../bash-default-timeout.js"
 import { FERMENT_TOOL_NAMES } from "../../ferment/tool-names.js"
 import { buildRoleGuidelinesSection } from "../../orchestration/model-registry/guidelines/guidelines-resolver.js"
 import { loadProjectContextFiles } from "../../prompt-construction/context-files.js"
+import { createAutoModelExtension } from "../../router/index.js"
 import telemetryExtension from "../../telemetry/index.js"
 import { getAgentConfig, getConfig, getToolNamesForType } from "../personas/agent-types.js"
 import { buildAgentPrompt } from "../prompt/prompts.js"
@@ -143,6 +149,7 @@ const mockGetToolNamesForType = vi.mocked(getToolNamesForType)
 const mockLoadProjectContextFiles = vi.mocked(loadProjectContextFiles)
 const mockBuildAgentPrompt = vi.mocked(buildAgentPrompt)
 const mockBuildRoleGuidelinesSection = vi.mocked(buildRoleGuidelinesSection)
+const mockCreateAutoModelExtension = vi.mocked(createAutoModelExtension)
 const mockDefaultResourceLoader = vi.mocked(DefaultResourceLoader)
 const mockTelemetryExtension = vi.mocked(telemetryExtension)
 const mockReadTelemetryConfig = vi.mocked(readTelemetryConfig)
@@ -156,6 +163,19 @@ function runInlineExtension(extension: InlineExtension | undefined, pi: Extensio
 }
 
 const DEFAULT_REGISTERED_TOOL_NAMES = ["read", "bash", "edit", "write", "grep", "find", "ls"]
+
+const AUTO_MODEL: Model<Api> = {
+	id: "auto",
+	name: "Auto (Kimchi Router)",
+	api: "kimchi-auto",
+	provider: "kimchi-dev",
+	baseUrl: "https://llm.kimchi.dev/openai/v1",
+	reasoning: true,
+	input: ["text", "image"],
+	cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+	contextWindow: 128_000,
+	maxTokens: 16_384,
+}
 
 function makeFakeSession({
 	promptTokens = 0,
@@ -357,6 +377,59 @@ describe("runAgent — telemetry extension", () => {
 		expect(ctorArg?.extensionFactories).toContain(omitKimchiMaxTokensExtension)
 		expect(mockReadTelemetryConfig).toHaveBeenCalled()
 		expect(mockTelemetryExtension).toHaveBeenCalledWith(mockReadTelemetryConfig.mock.results[0]?.value)
+	})
+
+	it("registers Auto routing only for children that use Auto", async () => {
+		const concreteSession = makeFakeSession({})
+		const autoSession = makeFakeSession({})
+		mockCreateAgentSession
+			.mockResolvedValueOnce({
+				session: concreteSession as unknown as Awaited<ReturnType<typeof createAgentSession>>["session"],
+				extensionsResult: { extensions: [], tools: [] } as unknown as Awaited<
+					ReturnType<typeof createAgentSession>
+				>["extensionsResult"],
+			})
+			.mockResolvedValueOnce({
+				session: autoSession as unknown as Awaited<ReturnType<typeof createAgentSession>>["session"],
+				extensionsResult: { extensions: [], tools: [] } as unknown as Awaited<
+					ReturnType<typeof createAgentSession>
+				>["extensionsResult"],
+			})
+		const autoRoutingExtension: InlineExtension = () => {}
+		mockCreateAutoModelExtension.mockReturnValueOnce(autoRoutingExtension)
+		await runAgent(ctx as unknown as Parameters<typeof runAgent>[0], "General-Purpose", "concrete work", {
+			pi: pi as unknown as RunOptions["pi"],
+		})
+		await runAgent(ctx as unknown as Parameters<typeof runAgent>[0], "General-Purpose", "do something", {
+			pi: pi as unknown as RunOptions["pi"],
+			model: AUTO_MODEL,
+		})
+
+		const concreteFactories = mockDefaultResourceLoader.mock.calls[0]?.[0]?.extensionFactories ?? []
+		const autoFactories = mockDefaultResourceLoader.mock.calls[1]?.[0]?.extensionFactories ?? []
+		expect(mockCreateAutoModelExtension).toHaveBeenCalledOnce()
+		expect(mockCreateAutoModelExtension).toHaveBeenCalledWith({ requiresVision: undefined })
+		expect(concreteFactories).not.toContain(autoRoutingExtension)
+		expect(autoFactories).toContain(autoRoutingExtension)
+	})
+
+	it("passes forwarded-image vision requirements to the child Auto extension", async () => {
+		const session = makeFakeSession({})
+		mockCreateAgentSession.mockResolvedValue({
+			session: session as unknown as Awaited<ReturnType<typeof createAgentSession>>["session"],
+			extensionsResult: { extensions: [], tools: [] } as unknown as Awaited<
+				ReturnType<typeof createAgentSession>
+			>["extensionsResult"],
+		})
+
+		await runAgent(ctx as unknown as Parameters<typeof runAgent>[0], "General-Purpose", "inspect the image", {
+			pi: pi as unknown as RunOptions["pi"],
+			model: AUTO_MODEL,
+			requiresVision: true,
+		})
+
+		expect(mockCreateAutoModelExtension).toHaveBeenCalledOnce()
+		expect(mockCreateAutoModelExtension).toHaveBeenCalledWith({ requiresVision: true })
 	})
 
 	it("adds the dap extension when the persona requests debug tools", async () => {
@@ -567,6 +640,25 @@ describe("runAgent — Plan agent plan persistence", () => {
 		})
 
 		expect(result.planPath).toBe(planPath)
+	})
+
+	it("does not surface a saved plan path from a non-Plan agent", async () => {
+		const planPath = join(tempCwd, ".kimchi", "plans", "my-plan.md")
+		const session = makeFakeSession({
+			events: [{ type: "tool_execution_end", toolName: "ExitPlanMode", result: { details: { planPath } } }],
+		})
+		mockCreateAgentSession.mockResolvedValue({
+			session: session as unknown as Awaited<ReturnType<typeof createAgentSession>>["session"],
+			extensionsResult: { extensions: [], tools: [] } as unknown as Awaited<
+				ReturnType<typeof createAgentSession>
+			>["extensionsResult"],
+		})
+
+		const result = await runAgent(ctx as unknown as Parameters<typeof runAgent>[0], "General-Purpose", "plan it", {
+			pi: pi as unknown as RunOptions["pi"],
+		})
+
+		expect(result.planPath).toBeUndefined()
 	})
 
 	it("wires ExitPlanMode into the Plan child tool allowlist and loader", async () => {
@@ -910,7 +1002,7 @@ describe("runAgent — token_budget tool skip (R2)", () => {
 
 	it("runAgent: skips tool calls from over-budget message (not mid-stream abort)", async () => {
 		const abortSpy = vi.fn()
-		const toolActivities: Array<{ type: string; toolName: string }> = []
+		const toolActivities: Array<{ status: string; toolName: string }> = []
 		const session = makeFakeSession({
 			abortSpy,
 			promptAction: async (emit) => {
@@ -949,7 +1041,7 @@ describe("runAgent — token_budget tool skip (R2)", () => {
 
 	it("resumeAgent: skips tool calls from over-budget message", async () => {
 		const abortSpy = vi.fn()
-		const toolActivities: Array<{ type: string; toolName: string }> = []
+		const toolActivities: Array<{ status: string; toolName: string }> = []
 		const subscribers: Subscriber[] = []
 		const session = {
 			subscribe: vi.fn((cb: Subscriber) => {

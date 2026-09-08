@@ -30,6 +30,7 @@ import {
 	SettingsManager,
 } from "@earendil-works/pi-coding-agent"
 import { afterAll, describe, expect, it } from "vitest"
+import { runAsAgentWorker } from "../../agent-worker-context.js"
 import dapExtension from "../../dap.js"
 import { createSubagentPlanExitExtension } from "./agent-runner.js"
 
@@ -98,31 +99,37 @@ describe("DAP tools in subagent sessions", () => {
 		})
 		await loader.reload()
 
-		const walker = await createAgentSession({
-			cwd: tmp,
-			agentDir: tmp,
-			sessionManager: SessionManager.inMemory(tmp),
-			settingsManager: SettingsManager.create(tmp, tmp),
-			model: fakeModel,
-			modelRuntime: {} as ModelRuntime,
-			resourceLoader: loader,
-			// Mirrors agent-runner's extensions:false path (sessionOpts.tools = toolNames).
-			tools: ["read", "grep", "find", "ls", "debug_launch", "debug_state_at", "step_in"],
-		})
-		const session = walker.session
-		await session.bindExtensions({
-			onError: (err) => {
-				throw new Error(`dap extension failed in child session: ${err.error ?? err.extensionPath}`)
-			},
-		})
+		// The real agent-runner wraps every child session in runAsAgentWorker
+		// (agent-runner.ts:351), so the DAP deferral carve-out (isAgentWorker →
+		// keep full visibility) applies. Mirror that here: without the worker
+		// context, the deferral would hide step_in and fail the allowlist test.
+		await runAsAgentWorker(async () => {
+			const walker = await createAgentSession({
+				cwd: tmp,
+				agentDir: tmp,
+				sessionManager: SessionManager.inMemory(tmp),
+				settingsManager: SettingsManager.create(tmp, tmp),
+				model: fakeModel,
+				modelRuntime: {} as ModelRuntime,
+				resourceLoader: loader,
+				// Mirrors agent-runner's extensions:false path (sessionOpts.tools = toolNames).
+				tools: ["read", "grep", "find", "ls", "debug_launch", "debug_state_at", "step_in"],
+			})
+			const session = walker.session
+			await session.bindExtensions({
+				onError: (err) => {
+					throw new Error(`dap extension failed in child session: ${err.error ?? err.extensionPath}`)
+				},
+			})
 
-		const active = session.getActiveToolNames()
-		expect(active).toContain("debug_launch")
-		expect(active).toContain("debug_state_at")
-		expect(active).toContain("step_in")
+			const active = session.getActiveToolNames()
+			expect(active).toContain("debug_launch")
+			expect(active).toContain("debug_state_at")
+			expect(active).toContain("step_in")
 
-		// Cleanup: emit shutdown so the dap extension tears down registries.
-		await session.extensionRunner?.emit({ type: "session_shutdown", reason: "quit" })
+			// Cleanup: emit shutdown so the dap extension tears down registries.
+			await session.extensionRunner?.emit({ type: "session_shutdown", reason: "quit" })
+		})
 	})
 
 	it("without the dap extension factory, debug tool names activate nothing", async () => {
@@ -204,7 +211,7 @@ describe("DAP tools in subagent sessions", () => {
 		const planText = "# Child Plan\n\n## Goal\nPersist this plan."
 		const result = await tool.execute("exit-plan", { plan: planText }, undefined, undefined, {} as ExtensionContext)
 		const planPath = join(tmp, ".kimchi", "plans", "child-plan.md")
-		expect(result.details).toEqual({ planPath })
+		expect(result.details).toEqual({ submitted: true, source: "worker", planPath })
 		expect(result.terminate).toBe(true)
 		expect(existsSync(planPath)).toBe(true)
 		expect(readFileSync(planPath, "utf8")).toBe(`${planText}\n`)

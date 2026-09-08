@@ -23,7 +23,6 @@ export interface EnvironmentInfo {
 	rawPlatform: string
 	cpuArchitecture: string
 	shell: string
-	osRelease: string
 	osVersion: string
 	username: string
 	homeDir: string
@@ -200,7 +199,10 @@ export const CORE_GUIDELINES = `- Be concise in your responses. Do not repeat wh
 - Show file paths clearly when working with files. Always use absolute paths.
 - Do NOT introduce security vulnerabilities.
 - After every tool result, ALWAYS produce text — either the next tool call with explicit reasoning, or a final summary. Never re-issue the same tool call after a successful result.
-- Never emit tool calls with empty names, blank IDs, or malformed arguments. If a tool call fails to advance the task after 3 attempts, stop calling tools, summarize what is not working, and reassess in plain text before continuing.`
+- Never emit tool calls with empty names, blank IDs, or malformed arguments. If a tool call fails to advance the task after 3 attempts, stop calling tools, summarize what is not working, and reassess in plain text before continuing.
+- Always wrap shell commands with a timeout (default 60s) — e.g. \`timeout 60 <cmd>\` — to prevent hangs.
+- Never run interactive commands (e.g. \`git rebase\`, \`npm init\`): use non-interactive flags (\`--yes\`, \`GIT_EDITOR=true\`) or redirect stdin from \`/dev/null\`.
+- **Git commits**: end every commit message with a blank line, then \`Co-Authored-By: Kimchi <noreply@kimchi.dev>\`.`
 
 const ORCHESTRATOR_GUIDELINES = `- Be concise in your responses. Do not repeat what you just did or summarize completed steps — act and move on.
 - Follow **Orchestration** for what to do yourself vs delegate. Do not read implementation files, write or edit source code, run tests, or review diffs unless Orchestration **Role responsibilities** explicitly says DO for your current role.
@@ -264,9 +266,8 @@ export function buildOutputAndTruncationSection(toolNames?: ReadonlySet<string>)
 	const lines: string[] = []
 	if (hasTool(toolNames, "bash")) {
 		lines.push(
-			"- Bash: pipe to `head`/`tail` or pass `-n`/`--tail`. Use `git log -n 20 --oneline`, `git diff --stat`, `2>&1 | tail -100` for build/test/install output, `--log-failed` for CI logs, `| head -c 5000` or `| jq` for large `curl` responses, `tree -L 2`, never `git status -uall` on large repos.",
-			"- GitHub CLI: `gh run view --log` is huge — use `--log-failed` or `| tail -N`. `gh api ... --paginate` can be massive — add `--jq`. `gh pr diff` on big PRs — `--name-only` first, then targeted reads.",
-			"- GitLab CLI: `glab ci view` is a TUI — never call from a headless harness. Use `glab ci trace` or `glab api`. `glab api .../trace` — full job logs; always `| tail -N`. `--paginate` on busy projects is huge — combine with `--jq`. `glab mr diff` on big MRs — list changed paths first with `glab api --paginate projects/:fullpath/merge_requests/<iid>/diffs --jq '.[].new_path'`, then use targeted reads.",
+			"- Bash: cap output with `head`/`tail`/`-n`/`--tail` — e.g. `git log -n 20 --oneline`, `git diff --stat`, `2>&1 | tail -100` for build/test output, `--log-failed` for CI logs, `tree -L 2`. Never `git status -uall` on large repos.",
+			"- GitHub/GitLab CLI: `gh run view --log` and `--paginate` API calls are huge — prefer `--log-failed`, `--jq`, `| tail -N`. `glab ci view` is a TUI — never call headless; use `glab ci trace`. Big PR/MR diffs: list changed paths first, then targeted reads.",
 		)
 	}
 	if (hasTool(toolNames, "grep")) {
@@ -383,8 +384,8 @@ Ask before unrequested actions that publish externally, mutate remote state, or 
 
 Approval covers exactly the action the user requested — not escalations or workarounds toward the same goal. A request to "push" does not authorize opening a pull request; a request to "commit" does not authorize tagging a release. A request to investigate an issue, evaluate options, or draft a plan authorizes only the analysis — not the fix or implementation; report the findings and wait for the user's go-ahead before writing or modifying code. If the requested action is blocked or fails, propose the alternative and wait for the user to choose.
 
-- GitHub CLI: do not run \`gh pr review\`, \`gh pr comment\`, \`gh issue comment\`, \`gh pr merge\`, \`gh pr close\`, \`gh pr reopen\`, \`gh pr ready\`, \`gh pr edit\`, \`gh run rerun\`, \`gh run cancel\`, \`gh issue close\`, \`gh issue reopen\`, \`gh issue edit\`, \`gh issue delete\`, \`gh release create/edit/delete\`, or any \`gh api POST/PATCH/PUT/DELETE\` unprompted. Read-only commands (\`list\`, \`view\`, \`diff\`, \`checks\`, \`status\`, \`gh api\` GETs) are fine.
-- GitLab CLI: do not run \`glab mr note\`, \`glab mr note resolve/reopen\`, \`glab issue note\`, \`glab mr merge\`, \`glab mr rebase\`, \`glab mr close\`, \`glab mr reopen\`, \`glab mr update\`, \`glab mr approve\`, \`glab mr revoke\`, \`glab ci retry/cancel/run\`, \`glab issue close/reopen/update/delete\`, \`glab release create/update/delete\`, or any \`glab api POST/PUT/PATCH/DELETE\` unprompted.
+- GitHub CLI: do not run mutating commands unprompted — \`gh pr/issue/run/release\` write verbs (review, comment, merge, close/reopen, ready, edit, rerun, cancel, delete, create) and any \`gh api POST/PATCH/PUT/DELETE\`. Read-only commands (\`list\`, \`view\`, \`diff\`, \`checks\`, \`status\`, \`gh api\` GETs) are fine.
+- GitLab CLI: same rule — mutating \`glab mr/issue/ci/release\` write verbs (incl. approve, note resolve, rebase, retry) and \`glab api POST/PUT/PATCH/DELETE\` need explicit approval.
 - Git remote ops (any CLI): pushing branches, force-push, deleting branches/tags need explicit approval.`
 
 export const HARNESS_NOTES_AND_APPROVAL = `## Harness Notes and Approval
@@ -445,8 +446,13 @@ function buildPrompt(parts: PromptParts): string {
 
 function formatToolsSection(tools: readonly ToolInfo[]): string {
 	if (tools.length === 0) return "## Available Tools\n\n(No tools available)"
-	const entries = tools.map((t) => `<tool name="${t.name}">\n${t.description}\n</tool>`).join("\n")
-	return `## Available Tools\n\n<available_tools>\n${entries}\n</available_tools>`
+	// The API request already carries each
+	// tool's description in the function-calling payload, so embedding a second
+	// copy here pays ~3,000 est per call for duplicated text. Keep the prompt
+	// section to the discovery surface (names) — the model learns what each
+	// tool does from the API-side description.
+	const names = tools.map((t) => t.name).join(", ")
+	return `## Available Tools\n\n${names}`
 }
 
 export function formatEnvironmentSection(env: EnvironmentInfo): string {
@@ -455,13 +461,12 @@ export function formatEnvironmentSection(env: EnvironmentInfo): string {
 		"## Environment",
 		"",
 		`- OS: ${env.os}`,
-		`- OS release: ${env.osRelease}`,
 		`- OS version: ${env.osVersion}`,
 		`- Raw platform: ${env.rawPlatform}`,
 		`- CPU architecture: ${env.cpuArchitecture}`,
 		`- Shell: ${env.shell}`,
 		`- Shell family: ${shellFamily}`,
-		"- Command guidance: Use commands compatible with the shell family. Do not use PowerShell/cmd syntax in POSIX shells, and do not use POSIX-only syntax in PowerShell/cmd unless the shell is Git Bash or WSL. If shell/platform conflict or are unclear, check with a read-only command before running write/destructive commands.",
+		"- Command guidance: use commands compatible with the shell family (POSIX vs PowerShell/cmd syntax); if shell/platform conflict or are unclear, check with a read-only command before write/destructive ones.",
 		`- Username: ${env.username}`,
 		`- Home directory: "${env.homeDir}"`,
 		`- Working directory: "${env.cwd}"`,

@@ -239,6 +239,8 @@ When implementing:
 		// Plan-Agent-specific tool bindings (override the shared planning process).
 		expect(output).toContain("`questionnaire`")
 		expect(output).toContain("harness saves completed plans automatically")
+		expect(output).toContain("ExitPlanMode")
+		expect(output).not.toContain("submit_plan")
 
 		// The shared planning process must be embedded verbatim. Asserting on the
 		// imported constant means any legitimate tweak to the shared process is

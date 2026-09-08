@@ -12,6 +12,7 @@ import {
 	getAgentDir,
 	type InlineExtension,
 	type ModelRuntime,
+	type ModelRegistry as PiModelRegistry,
 	SessionManager,
 	SettingsManager,
 } from "@earendil-works/pi-coding-agent"
@@ -28,6 +29,9 @@ import omitKimchiMaxTokensExtension from "../../omit-kimchi-max-tokens.js"
 import { buildRoleGuidelinesSection } from "../../orchestration/model-registry/guidelines/guidelines-resolver.js"
 import { ModelRegistry } from "../../orchestration/model-registry/index.js"
 import { loadProjectContextFiles } from "../../prompt-construction/context-files.js"
+import { isAutoModel } from "../../router/constants.js"
+import { createAutoModelExtension } from "../../router/index.js"
+import { getEffectiveModel } from "../../router/state.js"
 import telemetryExtension from "../../telemetry/index.js"
 import { detectEnv } from "../env.js"
 import { buildMemoryBlock, buildReadOnlyMemoryBlock } from "../memory/memory.js"
@@ -161,7 +165,7 @@ export function setGraceTurns(n: number): void {
  */
 function resolveDefaultModel(
 	parentModel: Model<Api> | undefined,
-	registry: { find(provider: string, modelId: string): Model<Api> | undefined; getAvailable?(): Model<Api>[] },
+	registry: Pick<PiModelRegistry, "find" | "getAvailable">,
 	configModel?: string,
 ): Model<Api> | undefined {
 	if (configModel) {
@@ -170,16 +174,8 @@ function resolveDefaultModel(
 			const provider = configModel.slice(0, slashIdx)
 			const modelId = configModel.slice(slashIdx + 1)
 
-			const available = registry.getAvailable?.()
-			const availableKeys = available
-				? new Set(
-						available.map(
-							(m: unknown) =>
-								`${(m as { provider: string; id: string }).provider}/${(m as { provider: string; id: string }).id}`,
-						),
-					)
-				: undefined
-			const isAvailable = (p: string, id: string) => !availableKeys || availableKeys.has(`${p}/${id}`)
+			const availableKeys = new Set(registry.getAvailable().map((model) => `${model.provider}/${model.id}`))
+			const isAvailable = (p: string, id: string) => availableKeys.has(`${p}/${id}`)
 
 			const found = registry.find(provider, modelId)
 			if (found && isAvailable(provider, modelId)) return found
@@ -198,14 +194,18 @@ function getGuidelinesRegistry(): ModelRegistry {
 
 /** Info about a tool event in the subagent. */
 export interface ToolActivity {
-	type: "start" | "end"
 	toolName: string
+	toolCallId?: string
+	/** ACP tool-call status — "in_progress" = start, "completed"/"failed" = end. */
+	status: "pending" | "in_progress" | "completed" | "failed"
 }
 
 export interface RunOptions {
 	/** ExtensionAPI instance — used for pi.exec() instead of execSync. */
 	pi: ExtensionAPI
 	model?: Model<Api>
+	/** The parent is forwarding image context as file paths to this child. */
+	requiresVision?: boolean
 	maxTurns?: number
 	signal?: AbortSignal
 	isolated?: boolean
@@ -324,7 +324,7 @@ export function createSubagentPlanExitExtension(cwd: string): InlineExtension {
 				})
 				return {
 					content: [{ type: "text" as const, text: `Plan saved to ${planPath}.` }],
-					details: { planPath },
+					details: { submitted: true, source: "worker", planPath },
 					terminate: true,
 				}
 			},
@@ -465,10 +465,7 @@ ${skillLines}`
 
 	const disallowedSet = agentConfig?.disallowedTools ? new Set(agentConfig.disallowedTools) : undefined
 
-	const modelId = (options.model as { id?: string } | undefined)?.id
 	const guidelineRole = agentConfig?.roles?.[0]
-	const guidelinesBlock = buildRoleGuidelinesSection(modelId, guidelineRole, getGuidelinesRegistry())
-	if (guidelinesBlock) extras.guidelinesBlock = guidelinesBlock
 
 	const effectiveMaxTurns = normalizeMaxTurns(options.maxTurns ?? agentConfig?.maxTurns ?? defaultMaxTurns)
 	const MIN_TOKEN_BUDGET = 1024
@@ -478,8 +475,12 @@ ${skillLines}`
 		extras.budget = { maxTurns: effectiveMaxTurns, tokenBudget: effectiveTokenBudget }
 	}
 
-	const buildSystemPrompt = (activeToolNames: string[]) => {
+	const model = options.model ?? resolveDefaultModel(ctx.model, ctx.modelRegistry, agentConfig?.models?.[0])
+
+	const buildSystemPrompt = (activeToolNames: string[], promptModelId = model?.id) => {
 		extras.activeToolNames = activeToolNames
+		const guidelinesBlock = buildRoleGuidelinesSection(promptModelId, guidelineRole, getGuidelinesRegistry())
+		extras.guidelinesBlock = guidelinesBlock
 		if (agentConfig) return buildAgentPrompt(agentConfig, effectiveCwd, env, parentSystemPrompt, extras)
 		const fallback = DEFAULT_AGENTS.get(AGENT_GENERAL_PURPOSE)
 		if (!fallback) throw new Error(`No fallback config available for unknown type "${type}"`)
@@ -521,8 +522,22 @@ ${skillLines}`
 			: bashDefaultTimeoutExtension
 	// Subagents share this process and its patched retry classifier, so their
 	// successes must close the shared infrastructure breaker just like the parent's.
+	const autoExtensionFactories: InlineExtension[] = isAutoModel(model)
+		? [
+				createAutoModelExtension({ requiresVision: options.requiresVision }),
+				(pi) => {
+					pi.on("before_agent_start", (_event, childCtx) => {
+						const effectiveModel = getEffectiveModel(childCtx)
+						const rebuilt = buildSystemPrompt(pi.getActiveTools(), effectiveModel?.id)
+						options.onSystemPrompt?.(rebuilt)
+						return { systemPrompt: rebuilt }
+					})
+				},
+			]
+		: []
 	const extensionFactories: InlineExtension[] = [
 		telemetryExtension(readTelemetryConfig()),
+		...autoExtensionFactories,
 		bashExtension,
 		infrastructureBreakerExtension,
 		omitKimchiMaxTokensExtension,
@@ -553,17 +568,6 @@ ${skillLines}`
 	})
 	await loader.reload()
 
-	const model =
-		options.model ??
-		resolveDefaultModel(
-			ctx.model as Model<Api> | undefined,
-			ctx.modelRegistry as {
-				find(provider: string, modelId: string): Model<Api> | undefined
-				getAvailable?(): Model<Api>[]
-			},
-			agentConfig?.models?.[0],
-		)
-
 	const thinkingLevel = options.thinkingLevel ?? agentConfig?.thinking
 
 	const settingsManager = SettingsManager.create(effectiveCwd, agentDir)
@@ -593,7 +597,7 @@ ${skillLines}`
 	await session.bindExtensions({
 		onError: (err) => {
 			options.onToolActivity?.({
-				type: "end",
+				status: "completed",
 				toolName: `extension-error:${err.extensionPath}`,
 			})
 		},
@@ -709,11 +713,11 @@ ${skillLines}`
 				// to ensure the agent loop halts and this tool call is skipped.
 				hardAbort(session)
 			} else {
-				options.onToolActivity?.({ type: "start", toolName: event.toolName })
+				options.onToolActivity?.({ status: "in_progress", toolName: event.toolName })
 			}
 		}
 		if (event.type === "tool_execution_end") {
-			options.onToolActivity?.({ type: "end", toolName: event.toolName })
+			options.onToolActivity?.({ status: "completed", toolName: event.toolName })
 			if (type === "Plan" && event.toolName === "ExitPlanMode") {
 				const reportedPlanPath = getPlanPathFromToolResult(event.result)
 				if (reportedPlanPath) planPath = reportedPlanPath
@@ -937,11 +941,11 @@ export async function resumeAgent(
 			if (budgetAborted) {
 				hardAbort(session)
 			} else {
-				options.onToolActivity?.({ type: "start", toolName: event.toolName })
+				options.onToolActivity?.({ status: "in_progress", toolName: event.toolName })
 			}
 		}
 		if (event.type === "tool_execution_end") {
-			options.onToolActivity?.({ type: "end", toolName: event.toolName })
+			options.onToolActivity?.({ status: "completed", toolName: event.toolName })
 			if (options.shouldTerminateAfterTool?.(event.toolName)) {
 				terminationToolCompleted = true
 				queueMicrotask(() => hardAbort(session))

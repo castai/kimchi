@@ -3,7 +3,7 @@
  *
  * Used by:
  * - Plan mode (permissions extension): the model made tool calls, then ended
- *   with stopReason "stop" without calling ExitPlanMode.
+ *   with stopReason "stop" without calling `ExitPlanMode`.
  * - Ferment scoping (ferment extension): the model made tool calls during
  *   draft scoping, then ended with stopReason "stop" without calling
  *   scope_ferment or propose_ferment_scoping.
@@ -45,13 +45,13 @@ import { markHarnessSteer } from "../../extensions/steer-marker.js"
 
 /**
  * Nudge text for plan mode (interactive, non-worker session).
- * Instructs the model to finish writing the plan and call ExitPlanMode.
+ * Instructs the model to finish writing the plan and call `ExitPlanMode`.
  */
 export const PLAN_MODE_STOP_NUDGE = markHarnessSteer(
-	"You stopped without completing the plan. Continue now:\n" +
+	"You stopped without submitting the plan. Continue now:\n" +
 		"- If you still have open questions, use the questionnaire tool to resolve them.\n" +
-		"- If the plan is ready, write it out in full using the Goal / Constraints / Chunks / Verification Strategy / Decision Log / Risks structure, then call ExitPlanMode with the complete plan.\n" +
-		"- Do NOT stop again until you have called ExitPlanMode.",
+		"- If the plan is ready, write it out in full using the Goal / Constraints / Chunks / Verification Strategy / Decision Log / Risks structure, then call the `ExitPlanMode` tool with the full plan text as the `plan` parameter.\n" +
+		"- Do NOT stop again until you have called `ExitPlanMode`.",
 )
 
 /**
@@ -81,6 +81,14 @@ export const FERMENT_SCOPING_STOP_NUDGE_ONESHOT = markHarnessSteer(
  * Kept for backwards compatibility with callers that don't know their mode yet.
  */
 export const FERMENT_SCOPING_STOP_NUDGE = FERMENT_SCOPING_STOP_NUDGE_INTERACTIVE
+
+/**
+ * Returns true if the turn's tool calls include `ExitPlanMode` — the adhoc
+ * plan-mode completion signal. Mirrors {@link hasFermentScopingCompletionSignal}.
+ */
+export function hasPlanExitToolCall(toolNames: string[]): boolean {
+	return toolNames.some((name) => name.toLowerCase() === "exitplanmode")
+}
 
 /**
  * Tool names whose presence in a turn signals ferment scoping progress.

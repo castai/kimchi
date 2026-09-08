@@ -11,7 +11,6 @@ const testEnv: EnvironmentInfo = {
 	rawPlatform: "linux",
 	cpuArchitecture: "x64",
 	shell: "/bin/bash",
-	osRelease: "6.1.0-test",
 	osVersion: "#1 SMP PREEMPT_DYNAMIC Test",
 	username: "testuser",
 	homeDir: "/home/testuser",
@@ -46,13 +45,12 @@ describe("formatEnvironmentSection", () => {
 				"## Environment",
 				"",
 				"- OS: Linux",
-				"- OS release: 6.1.0-test",
 				"- OS version: #1 SMP PREEMPT_DYNAMIC Test",
 				"- Raw platform: linux",
 				"- CPU architecture: x64",
 				"- Shell: /bin/bash",
 				"- Shell family: posix",
-				"- Command guidance: Use commands compatible with the shell family. Do not use PowerShell/cmd syntax in POSIX shells, and do not use POSIX-only syntax in PowerShell/cmd unless the shell is Git Bash or WSL. If shell/platform conflict or are unclear, check with a read-only command before running write/destructive commands.",
+				"- Command guidance: use commands compatible with the shell family (POSIX vs PowerShell/cmd syntax); if shell/platform conflict or are unclear, check with a read-only command before write/destructive ones.",
 				"- Username: testuser",
 				'- Home directory: "/home/testuser"',
 				'- Working directory: "/home/testuser/projects/myapp"',
@@ -155,10 +153,8 @@ describe("buildSystemPrompt", () => {
 			mode: "single",
 		})
 
-		expect(result).toContain("`glab mr diff` on big MRs")
-		expect(result).toContain("merge_requests/<iid>/diffs")
+		expect(result).toContain("Big PR/MR diffs: list changed paths first, then targeted reads")
 		expect(result).toContain("--paginate")
-		expect(result).toContain("'.[].new_path'")
 		expect(result).not.toContain("merge_requests/123/changes")
 	})
 
@@ -179,14 +175,17 @@ describe("buildSystemPrompt", () => {
 			expect(result).toContain("token_budget")
 		})
 
-		it("includes all tool names and descriptions", () => {
+		it("includes all tool names (descriptions live in the API payload)", () => {
 			const result = buildSystemPrompt({
 				tools,
 				env: testEnv,
 				mode: "orchestrator",
 			})
-			expect(result).toContain('<tool name="read">')
-			expect(result).toContain('<tool name="Agent">')
+			expect(result).toContain("## Available Tools\n\nread, bash, Agent, get_subagent_result, steer_subagent")
+			// Descriptions are intentionally not duplicated in the prompt: the API
+			// tools parameter already carries them.
+			expect(result).not.toContain("<available_tools>")
+			expect(result).not.toContain("Launch a specialized agent")
 		})
 
 		it("includes role guidelines without set_phase tool", () => {
@@ -278,7 +277,7 @@ describe("buildSystemPrompt", () => {
 				mode: "orchestrator",
 			})
 			expect(result).toContain(`OS: ${testEnv.os}`)
-			expect(result).toContain(`OS release: ${testEnv.osRelease}`)
+			expect(result).not.toContain(`OS release:`)
 			expect(result).toContain(`OS version: ${testEnv.osVersion}`)
 			expect(result).toContain(`Raw platform: ${testEnv.rawPlatform}`)
 			expect(result).toContain(`CPU architecture: ${testEnv.cpuArchitecture}`)
@@ -453,9 +452,10 @@ describe("buildSystemPrompt", () => {
 				env: testEnv,
 				mode: "subagent",
 			})
-			expect(result).not.toContain('<tool name="Agent">')
-			expect(result).not.toContain('<tool name="get_subagent_result">')
-			expect(result).not.toContain('<tool name="steer_subagent">')
+			expect(result).toContain("## Available Tools\n\nread, bash")
+			expect(result).not.toContain("Agent, ")
+			expect(result).not.toContain("get_subagent_result")
+			expect(result).not.toContain("steer_subagent")
 		})
 
 		it("includes all other tools", () => {
@@ -464,8 +464,7 @@ describe("buildSystemPrompt", () => {
 				env: testEnv,
 				mode: "subagent",
 			})
-			expect(result).toContain('<tool name="read">')
-			expect(result).toContain('<tool name="bash">')
+			expect(result).toContain("## Available Tools\n\nread, bash")
 		})
 
 		it("contains subagent instructions", () => {
@@ -545,7 +544,7 @@ describe("buildSystemPrompt", () => {
 				mode: "subagent",
 			})
 			expect(result).toContain(`OS: ${testEnv.os}`)
-			expect(result).toContain(`OS release: ${testEnv.osRelease}`)
+			expect(result).not.toContain(`OS release:`)
 			expect(result).toContain(`OS version: ${testEnv.osVersion}`)
 			expect(result).toContain(`Raw platform: ${testEnv.rawPlatform}`)
 			expect(result).toContain(`CPU architecture: ${testEnv.cpuArchitecture}`)
@@ -610,9 +609,7 @@ describe("buildSystemPrompt", () => {
 				env: testEnv,
 				mode: "single",
 			})
-			expect(result).toContain('<tool name="read">')
-			expect(result).toContain('<tool name="bash">')
-			expect(result).toContain('<tool name="Agent">')
+			expect(result).toContain("## Available Tools\n\nread, bash, Agent, get_subagent_result, steer_subagent")
 		})
 
 		it("includes Working Practices section when model is provided", () => {
@@ -627,7 +624,39 @@ describe("buildSystemPrompt", () => {
 			expect(result).toContain("Prefer `edit` over `write` for files >30 lines")
 		})
 
-		it("includes Working Practices section for a non-OSS model", () => {
+		it("retains universal safety rules without a phase tool", () => {
+			const result = buildSystemPrompt({
+				tools,
+				env: testEnv,
+				currentModelId: "minimax-m3",
+				registry,
+				mode: "single",
+			})
+			expect(result).not.toContain("## Phase Management")
+			expect(result).not.toContain("During **build** phase")
+			expect(result).not.toContain("During **research** phase")
+			expect(result).not.toContain("Call `set_phase`")
+			// The tool-independent safety rules that used to ride the phase payload
+			// are hoisted to CORE_GUIDELINES, so a --print session still sees them.
+			expect(result).toContain("Co-Authored-By: Kimchi <noreply@kimchi.dev>")
+			expect(result).toContain("Always wrap shell commands with a timeout")
+			expect(result).toContain("Never run interactive commands")
+		})
+
+		it("keeps static working practices in subagent mode without phase instructions", () => {
+			const result = buildSystemPrompt({
+				tools,
+				env: testEnv,
+				currentModelId: "minimax-m3",
+				registry,
+				mode: "subagent",
+			})
+			expect(result).toContain("## Working Practices")
+			expect(result).not.toContain("## Phase Management")
+			expect(result).not.toContain("During **build** phase")
+		})
+
+		it("includes static Working Practices for a non-OSS model", () => {
 			const result = buildSystemPrompt({
 				tools,
 				env: testEnv,

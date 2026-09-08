@@ -25,7 +25,7 @@
 import { execSync } from "node:child_process"
 import { randomUUID } from "node:crypto"
 import { existsSync, mkdirSync, writeFileSync } from "node:fs"
-import { arch, homedir, version as osVersion, platform, release, userInfo } from "node:os"
+import { arch, homedir, version as osVersion, platform, userInfo } from "node:os"
 import { join } from "node:path"
 import type { AssistantMessage, ToolCall } from "@earendil-works/pi-ai"
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
@@ -60,6 +60,7 @@ import {
 	validateModelRoles,
 } from "../orchestration/model-roles.js"
 import { registerModelRolesCommand } from "../orchestration/model-roles-command.js"
+import { getEffectiveModel } from "../router/state.js"
 import { type ContextFile, loadGlobalContextFiles, loadProjectContextFiles } from "./context-files.js"
 import { isKimiK2Model, normalizeKimiToolCallIds } from "./normalize-kimi-tool-call-ids.js"
 import {
@@ -436,13 +437,14 @@ export default function (skillPathsFromConfig: string[]) {
 			})
 
 			pi.on("context", async (event, ctx) => {
+				const effectiveModel = getEffectiveModel(ctx)
 				let messages = stripStaleNudges(event.messages)
 				messages = stripEmptyToolCalls(messages)
 				messages = stripUiOnlyMessages(messages)
 				// kimi-k2.x stalls on historical tool calls whose IDs are not in
 				// Moonshot's canonical format (issue #1063) — normalize for those
 				// targets only.
-				if (isKimiK2Model(ctx.model?.id)) {
+				if (isKimiK2Model(effectiveModel?.id)) {
 					messages = normalizeKimiToolCallIds(messages)
 				}
 				messages = tagSelfEchoes(messages)
@@ -458,8 +460,9 @@ export default function (skillPathsFromConfig: string[]) {
 			// which the runtime rejects with a "Tool  not found" result that would
 			// otherwise accumulate in the subagent's context across turns.
 			pi.on("context", async (event, ctx) => {
+				const effectiveModel = getEffectiveModel(ctx)
 				let messages = stripEmptyToolCalls(event.messages)
-				if (isKimiK2Model(ctx.model?.id)) {
+				if (isKimiK2Model(effectiveModel?.id)) {
 					messages = normalizeKimiToolCallIds(messages)
 				}
 				messages = brandUnmarkedSteers(messages)
@@ -472,7 +475,6 @@ export default function (skillPathsFromConfig: string[]) {
 		const cachedOs = platformNames[cachedRawPlatform] ?? cachedRawPlatform
 		const cachedCpuArchitecture = arch()
 		const cachedShell = process.env.SHELL ?? process.env.ComSpec ?? "unknown"
-		const cachedOsRelease = release()
 		const cachedOsVersion = osVersion()
 		const cachedUsername = safeUsername()
 		const cachedHomeDir = homedir()
@@ -495,6 +497,7 @@ export default function (skillPathsFromConfig: string[]) {
 			syncSessionModelState(pi, ctx)
 
 			const sessionId = ctx.sessionManager.getSessionId()
+			const effectiveModel = getEffectiveModel(ctx)
 
 			const activeToolNames = new Set(pi.getActiveTools())
 			const tools = pi.getAllTools().filter((tool) => activeToolNames.has(tool.name))
@@ -517,7 +520,6 @@ export default function (skillPathsFromConfig: string[]) {
 				rawPlatform: cachedRawPlatform,
 				cpuArchitecture: cachedCpuArchitecture,
 				shell: cachedShell,
-				osRelease: cachedOsRelease,
 				osVersion: cachedOsVersion,
 				username: cachedUsername,
 				homeDir: cachedHomeDir,
@@ -542,12 +544,12 @@ export default function (skillPathsFromConfig: string[]) {
 				env,
 				contextFiles: cachedContextFiles,
 				skills: skills,
-				currentModelId: mode === "orchestrator" ? getOrchestratorModelId(sessionId) : ctx.model?.id,
+				currentModelId: mode === "orchestrator" ? getOrchestratorModelId(sessionId) : effectiveModel?.id,
 				registry: registry,
 				mode,
 				roles,
 				customConfigs,
-				sessionId: ctx.sessionManager.getSessionId(),
+				sessionId,
 			})
 
 			// The rebuilt prompt replaces pi's base prompt entirely, which would

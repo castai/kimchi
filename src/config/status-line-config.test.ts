@@ -46,8 +46,8 @@ afterEach(() => {
 // ── STATUS_LINE_ELEMENTS metadata ────────────────────────────────────────────
 
 describe("STATUS_LINE_ELEMENTS", () => {
-	it("has 10 entries", () => {
-		expect(STATUS_LINE_ELEMENTS).toHaveLength(10)
+	it("has 11 entries", () => {
+		expect(STATUS_LINE_ELEMENTS).toHaveLength(11)
 	})
 
 	it("every entry has id, label, description", () => {
@@ -63,6 +63,7 @@ describe("STATUS_LINE_ELEMENTS", () => {
 		const expected = [
 			"permissions",
 			"model",
+			"thinking",
 			"ferment",
 			"agents",
 			"context",
@@ -84,13 +85,13 @@ describe("readStatusLineConfig", () => {
 		expect(readStatusLineConfig().pinned).toEqual(DEFAULT_STATUS_LINE_PINNED)
 	})
 
-	it("DEFAULT_STATUS_LINE_PINNED contains agents, context, usage", () => {
-		expect(DEFAULT_STATUS_LINE_PINNED).toEqual(expect.arrayContaining(["agents", "context", "usage"]))
-		expect(DEFAULT_STATUS_LINE_PINNED).toHaveLength(3)
+	it("DEFAULT_STATUS_LINE_PINNED contains thinking, agents, context, usage", () => {
+		expect(DEFAULT_STATUS_LINE_PINNED).toEqual(expect.arrayContaining(["thinking", "agents", "context", "usage"]))
+		expect(DEFAULT_STATUS_LINE_PINNED).toHaveLength(4)
 	})
 
-	it("agents, context, usage are all isStatusLineElementPinned=true on first read with no config", () => {
-		for (const id of ["agents", "context", "usage"] as const) {
+	it("thinking, agents, context, usage are all isStatusLineElementPinned=true on first read with no config", () => {
+		for (const id of ["thinking", "agents", "context", "usage"] as const) {
 			expect(isStatusLineElementPinned(id)).toBe(true)
 		}
 	})
