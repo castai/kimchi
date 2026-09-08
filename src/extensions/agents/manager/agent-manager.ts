@@ -445,11 +445,7 @@ export class AgentManager {
 			},
 			onReconnecting: (reconnecting) => {
 				remoteSession.setReconnecting(reconnecting)
-				if (reconnecting) {
-					record.status = "reconnecting"
-				} else {
-					record.status = "running"
-				}
+				record.status = reconnecting ? "reconnecting" : "running"
 			},
 			callbacks: {
 				onTextDelta: (delta, fullText) => {

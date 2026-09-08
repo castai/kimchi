@@ -118,16 +118,6 @@ export interface AcpSessionClientOptions {
 	WebSocketImpl?: any
 }
 
-/**
- * Maps ACP tool kinds whose kimchi tool name differs — unlisted kinds
- * (read, edit, delete, move, think, …) already match their tool name.
- */
-const KIND_TO_TOOL_NAME: Record<string, string> = {
-	search: "grep",
-	execute: "bash",
-	fetch: "web_fetch",
-}
-
 /** Parses a single JSON-RPC frame line; undefined for non-JSON or malformed. */
 function parseJsonRpcFrame(text: string): Record<string, unknown> | undefined {
 	if (!text.startsWith("{")) return undefined
@@ -257,8 +247,6 @@ export class AcpSessionClient {
 						"loadSession",
 					),
 				)
-			} catch (loadErr) {
-				throw loadErr
 			} finally {
 				this._loading = false
 			}
@@ -644,7 +632,7 @@ export class AcpSessionClient {
 				if (update.title) {
 					this._toolCallTitles.set(update.toolCallId, update.title)
 				}
-				this._dispatchToolActivity(cb, update.status, update.toolCallId, update.title, update.kind, update.rawInput)
+				this._dispatchToolActivity(cb, update.status, update.toolCallId, update.title, update.rawInput)
 				break
 			}
 			case "tool_call_update": {
@@ -657,14 +645,7 @@ export class AcpSessionClient {
 					this._toolCallTitles.set(update.toolCallId, update.title)
 				}
 				const title = update.title ?? this._toolCallTitles.get(update.toolCallId)
-				this._dispatchToolActivity(
-					cb,
-					update.status,
-					update.toolCallId,
-					title,
-					update.kind ?? undefined,
-					update.rawInput,
-				)
+				this._dispatchToolActivity(cb, update.status, update.toolCallId, title, update.rawInput)
 				break
 			}
 			default:
@@ -679,37 +660,25 @@ export class AcpSessionClient {
 		status: ToolCallStatus | null | undefined,
 		toolCallId: string,
 		title: string | undefined,
-		kind?: string,
 		rawInput?: unknown,
 	): void {
+		// pending = model is still streaming the args — nothing is executing yet.
+		if (!status || status === "pending") return
 		// Extract the actual tool name from the ACP toolCallId.
 		// The format is `kt.<toolName>.<counter>` (e.g. kt.bash.1, kt.web_fetch.2).
-		// Fall back to kind→tool name mapping, then title, then toolCallId.
-		let toolName: string
-		const parsed = parseToolCallId(toolCallId)
-		if (parsed) {
-			toolName = parsed.toolName
-		} else if (kind) {
-			toolName = KIND_TO_TOOL_NAME[kind] ?? kind
-		} else {
-			toolName = title ?? toolCallId
-		}
-		if (!status) return
+		// Fall back to the ACP title, then the raw id.
+		const toolName = parseToolCallId(toolCallId)?.toolName ?? title ?? toolCallId
 		// Attach rawInput only when the notification carries it — keeps the
 		// payload shape stable for notifications without args.
-		const activity = {
+		cb.onToolActivity?.({
 			toolName,
 			toolCallId,
 			status,
 			title,
 			...(rawInput != null ? { rawInput } : {}),
-		}
-		if (status === "in_progress") {
-			cb.onToolActivity?.(activity)
-		} else if (status === "completed" || status === "failed") {
-			cb.onToolActivity?.(activity)
-			this._toolCallTitles.delete(toolCallId)
-		}
+		})
+		// completed/failed clears the title cache entry.
+		if (status !== "in_progress") this._toolCallTitles.delete(toolCallId)
 	}
 
 	/**

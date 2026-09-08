@@ -14,7 +14,6 @@
 import { existsSync, mkdirSync, readFileSync, unlinkSync } from "node:fs"
 import { join } from "node:path"
 import {
-	type AgentSession,
 	defineTool,
 	type ExtensionAPI,
 	type ExtensionCommandContext,
@@ -262,7 +261,12 @@ function formatLifetimeTokens(o: { lifetimeUsage: LifetimeUsage }): string {
 	return t > 0 ? formatTokens(t) : ""
 }
 
-export function createActivityTracker(maxTurns?: number, onStreamUpdate?: () => void, initialActivity?: string) {
+export function createActivityTracker(
+	maxTurns?: number,
+	onStreamUpdate?: () => void,
+	initialActivity?: string,
+	onActivityReset?: () => void,
+) {
 	const state: AgentActivity = {
 		activeTools: new Map(),
 		toolUses: 0,
@@ -322,13 +326,15 @@ export function createActivityTracker(maxTurns?: number, onStreamUpdate?: () => 
 			state.session = session as AgentActivity["session"]
 			// For remote agents: listen for activity_reset (fires on WS reattach)
 			// and clear stale tools so the progress line doesn't accumulate
-			// ghost entries from before the disconnect.
+			// ghost entries from before the disconnect. onActivityReset lets the
+			// caller reset its own per-reattach state in the same subscription.
 			const s = session as { subscribe?: (fn: (e: { type: string }) => void) => () => void }
 			if (typeof s?.subscribe === "function") {
 				s.subscribe((event) => {
 					if (event.type === "activity_reset") {
 						state.activeTools.clear()
 						state.responseText = ""
+						onActivityReset?.()
 						onStreamUpdate?.()
 					}
 				})
@@ -1114,7 +1120,12 @@ export default function (pi: ExtensionAPI) {
 
 	spawnRemoteAgentFn = async (pi, ctx, promptText, desc, opts) => {
 		widget.setUICtx(ctx.ui as UICtx)
-		const { state: bgState, callbacks: bgCallbacks } = createActivityTracker(1, undefined, "starting…")
+		// resetForReattach is produced by streamRemoteToOutputFile below but fires
+		// from the tracker's activity_reset subscription — resolved via this holder.
+		let resetForReattach: () => void = () => {}
+		const { state: bgState, callbacks: bgCallbacks } = createActivityTracker(1, undefined, "starting…", () =>
+			resetForReattach(),
+		)
 		const parentSessionDir = ctx.sessionManager.getSessionDir()
 
 		// Build transcript-writing callbacks BEFORE spawn so they're captured
@@ -1123,8 +1134,9 @@ export default function (pi: ExtensionAPI) {
 			callbacks: transcriptCallbacks,
 			setOutputPath,
 			flushRemaining,
-			resetForReattach,
+			resetForReattach: reset,
 		} = streamRemoteToOutputFile(bgCallbacks, ctx.cwd)
+		resetForReattach = reset
 
 		const spawnOpts = {
 			description: desc,
@@ -1134,19 +1146,10 @@ export default function (pi: ExtensionAPI) {
 			...transcriptCallbacks,
 			// The streamer wrapper only forwards AcpSessionCallbacks, so the
 			// activity tracker's onSessionCreated is wired here too. _runRemote
-			// fires this with the RemoteAgentSession; activity_reset fires exactly
-			// on WS reattach — reset the streamer's text-slice offsets so
-			// post-reattach deltas aren't sliced against stale pre-disconnect
-			// lengths (cast: activity_reset is not in the AgentSessionEvent union).
-			onSessionCreated: (session: AgentSession) => {
-				bgCallbacks.onSessionCreated?.(session)
-				const s = session as unknown as {
-					subscribe: (fn: (e: { type: string }) => void) => () => void
-				}
-				s.subscribe((ev) => {
-					if (ev.type === "activity_reset") resetForReattach()
-				})
-			},
+			// fires this with the RemoteAgentSession; the tracker's activity_reset
+			// subscription then clears the widget state and resets the streamer's
+			// text-slice offsets (onActivityReset above).
+			onSessionCreated: bgCallbacks.onSessionCreated,
 		}
 		const id = manager.spawn(pi, ctx, "Remote-Runner", promptText, spawnOpts)
 

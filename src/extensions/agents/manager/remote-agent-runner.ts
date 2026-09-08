@@ -167,15 +167,6 @@ function isTurnInProgressError(err: unknown): boolean {
 	return err instanceof Error && /turn in progress/i.test(err.message)
 }
 
-/** Resolves after `ms`; rejects with an AbortError (name-checked by callers) if `signal` aborts.
- *  Wraps node:timers/promises so the rejection shape matches makeAbortError(). */
-function sleep(ms: number, signal?: AbortSignal): Promise<void> {
-	return timersSleep(ms, undefined, { signal }).catch((err: unknown) => {
-		if (err instanceof Error && err.name === "AbortError") throw makeAbortError()
-		throw err
-	})
-}
-
 /** Union of a normal prompt result and the recovery placeholder shape. */
 type PromptOutcome = { stopReason: string; usage?: RemoteRunResult["usage"] }
 
@@ -386,7 +377,7 @@ export async function runRemoteAgent(
 				if (signal?.aborted) throw makeAbortError()
 				// network error or not yet ready — retry after backoff
 			}
-			if (i < REVIVE_MAX_ATTEMPTS - 1) await sleep(reviveDelayMs, signal)
+			if (i < REVIVE_MAX_ATTEMPTS - 1) await timersSleep(reviveDelayMs, undefined, { signal })
 		}
 		return false
 	}
@@ -449,33 +440,20 @@ export async function runRemoteAgent(
 		// remote kimchi writes it where the worker expects only when its --session
 		// arg is honored, which deployed remotes don't.)
 		const replay = await recoverTextViaReplay()
+		let gapNote: string
 		if (replay && "text" in replay) {
 			responseText = replay.text
 			recoveryNote = REPLAY_RECOVERY_NOTE
-			try {
-				if (options.outputFile) {
-					await appendTranscriptGapMarker(
-						options.outputFile,
-						"disconnect window — local streaming was interrupted; the final result was recovered via session replay",
-					)
-				}
-			} catch {
-				// The marker is best-effort — never fail the recovery over it.
-			}
+			gapNote = "disconnect window — local streaming was interrupted; the final result was recovered via session replay"
 		} else {
 			const reason = replay?.error ?? "no session id was captured to replay"
 			responseText = `(remote agent completed during disconnect; the result could not be recovered — ${reason})`
 			recoveryNote = `Recovery failed: ${reason}. The result of the remote run is unknown — before re-running or re-dispatching anything, ask the user how to proceed.`
-			try {
-				if (options.outputFile) {
-					await appendTranscriptGapMarker(
-						options.outputFile,
-						`disconnect window — the result could not be recovered (${reason})`,
-					)
-				}
-			} catch {
-				// The marker is best-effort — never fail the recovery over it.
-			}
+			gapNote = `disconnect window — the result could not be recovered (${reason})`
+		}
+		// The transcript-gap marker is best-effort — never fail the recovery over it.
+		if (options.outputFile) {
+			await appendTranscriptGapMarker(options.outputFile, gapNote).catch(() => {})
 		}
 		return { stopReason: "recovered", usage: undefined }
 	}
@@ -521,7 +499,7 @@ export async function runRemoteAgent(
 					}
 				}
 				pollsFailing = true
-				await sleep(pollDelayMs(), signal)
+				await timersSleep(pollDelayMs(), undefined, { signal })
 				continue
 			}
 			consecutivePollFailures = 0
@@ -620,7 +598,11 @@ export async function runRemoteAgent(
 			// agent still running) this is a steady watch, not a retry — poll at
 			// the spec's ~15s cadence, not the reconnect backoff.
 			const watchOnly = attached || reattachAttempts >= backoffs.length
-			await sleep(watchOnly ? pollDelayMs() : backoffs[Math.min(reattachAttempts, backoffs.length - 1)], signal)
+			await timersSleep(
+				watchOnly ? pollDelayMs() : backoffs[Math.min(reattachAttempts, backoffs.length - 1)],
+				undefined,
+				{ signal },
+			)
 
 			if (watchOnly) {
 				// Already attached to the live session — poll only. Turn updates
