@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
@@ -9,6 +9,33 @@ import type { AgentRecord } from "../agents/personas/types.js"
 import { runAcpAgent } from "./acp-runner.js"
 
 const fixturePath = new URL("./test-fixtures/fake-acp-agent.mjs", import.meta.url).pathname
+
+type LogEntry = Record<string, unknown> & { type: string }
+
+function readLog(path: string): LogEntry[] {
+	if (!existsSync(path)) return []
+	return readFileSync(path, "utf-8")
+		.split("\n")
+		.filter(Boolean)
+		.map((line) => JSON.parse(line) as LogEntry)
+}
+
+async function waitFor(predicate: () => boolean, ms = 5000): Promise<void> {
+	const deadline = Date.now() + ms
+	while (Date.now() < deadline) {
+		if (predicate()) return
+		await new Promise((r) => setTimeout(r, 50))
+	}
+}
+
+function pidAlive(pid: number): boolean {
+	try {
+		process.kill(pid, 0)
+		return true
+	} catch {
+		return false
+	}
+}
 
 function makeRecord(server: string): AgentRecord {
 	return {
@@ -126,6 +153,133 @@ describe("runAcpAgent", () => {
 		await runAcpAgent(record, "hello", { description: "test", onAssistantUsage }, makeCtx())
 
 		expect(onAssistantUsage).toHaveBeenCalledWith({ input: 11, output: 7, cacheRead: 0, cacheWrite: 0 })
+	})
+
+	it("applies default_model after initialize via session/set_model", async () => {
+		writeFileSync(
+			join(projectDir, ".kimchi", "acp-agents.json"),
+			JSON.stringify({
+				agent_servers: {
+					fake: {
+						command: process.execPath,
+						args: [fixturePath],
+						env: { FAKE_ACP_LOG: join(logDir, "log.jsonl") },
+						default_model: "test-model-42",
+					},
+				},
+			}),
+		)
+		const record = makeRecord("fake")
+
+		const result = await runAcpAgent(record, "hello", { description: "test" }, makeCtx())
+
+		// The run completes normally and the model request was sent between
+		// newSession and the first prompt.
+		expect(result.responseText).toBe("echo:hello")
+		const entries = readLog(join(logDir, "log.jsonl"))
+		const setModel = entries.find((e) => e.type === "setModel")
+		expect(setModel).toMatchObject({ model: "test-model-42" })
+		const newSessionIdx = entries.findIndex((e) => e.type === "newSession")
+		const setModelIdx = entries.findIndex((e) => e.type === "setModel")
+		expect(newSessionIdx).toBeGreaterThanOrEqual(0)
+		expect(setModelIdx).toBeGreaterThan(newSessionIdx)
+	})
+
+	it("session shutdown kills a live ACP agent child process", async () => {
+		const manager = new AgentManager(undefined, 4)
+		setActiveManagerForTest(manager)
+		try {
+			manager.setAcpRunner(runAcpAgent)
+			const id = manager.spawn({} as ExtensionAPI, makeCtx(), "acp:fake", "BLOCK forever", {
+				description: "shutdown target",
+				isBackground: true,
+				bypassQueue: true,
+				acp: { server: "fake" },
+			})
+			const record = manager.getRecord(id)
+			if (!record?.promise) throw new Error("expected a running ACP record")
+
+			// Wait until the fixture child is mid-prompt (BLOCK turn open), then
+			// confirm it is alive before shutting the session down.
+			const logPath = join(logDir, "log.jsonl")
+			await waitFor(() => readLog(logPath).some((e) => e.type === "blockStarted"))
+			const started = readLog(logPath).find((e) => e.type === "started")
+			const pid = started?.pid as number
+			expect(pidAlive(pid)).toBe(true)
+
+			const startedAt = Date.now()
+			manager.abortAll()
+			await manager.waitForAll()
+
+			expect(Date.now() - startedAt).toBeLessThan(15_000)
+			expect(["stopped", "aborted"]).toContain(record.status)
+			// The runner's close() must have terminated the fixture process.
+			await waitFor(() => !pidAlive(pid))
+		} finally {
+			await manager.waitForAll().catch(() => {})
+			manager.dispose()
+			setActiveManagerForTest(undefined)
+		}
+	}, 30_000)
+
+	it("delivers queued steers before pending peer messages in the ACP drain", async () => {
+		const manager = new AgentManager(undefined, 0)
+		setActiveManagerForTest(manager)
+		try {
+			manager.bindCommunicationRoot("root-1")
+			manager.registerParentBridge("root-1", () => true)
+			const sourceId = manager.spawn({} as ExtensionAPI, makeCtx(), "Explore", "source", {
+				description: "source",
+				isBackground: true,
+				communication: "group",
+				rootSessionId: "root-1",
+			})
+			const targetId = manager.spawn({} as ExtensionAPI, makeCtx(), "Explore", "target", {
+				description: "target",
+				isBackground: true,
+				communication: "group",
+				rootSessionId: "root-1",
+			})
+			const source = manager.getRecord(sourceId)
+			const target = manager.getRecord(targetId)
+			if (!source || !target) throw new Error("expected records")
+			source.groupId = "batch-1"
+			target.groupId = "batch-1"
+			target.acp = { server: "fake" }
+			target.pendingSteers = ["steer one"]
+
+			// The source asks the ACP target a question; the target has no
+			// session, so the broker queues it (queued_before_session).
+			const capability = manager.getAgentCommsCapability(sourceId)
+			if (!capability) throw new Error("expected comms capability")
+			const receipt = await capability.sendMessage("t-1", {
+				recipient: { type: "agent", agentId: targetId },
+				payload: { kind: "question", question: "peer question", impact: "correctness", canContinue: false },
+			})
+			expect(receipt).toMatchObject({ status: "queued_before_session" })
+
+			// Steers come first and clear the steer queue.
+			const first = manager.takeAcpFollowUp(targetId)
+			expect(first?.prompt).toBe("steer one")
+			expect(first?.pending).toBeUndefined()
+			expect(target.pendingSteers).toBeUndefined()
+
+			// Then the oldest pending peer message, carrying its delivery receipt.
+			const second = manager.takeAcpFollowUp(targetId)
+			expect(second?.prompt).toContain("peer question")
+			expect(second?.pending).toBeDefined()
+
+			// The runner contract: complete the delivery after the turn. Until
+			// then the same pending message is still queued.
+			expect(manager.takeAcpFollowUp(targetId)?.prompt).toContain("peer question")
+			manager.completeAcpFollowUp(second?.pending)
+
+			// Nothing else queued.
+			expect(manager.takeAcpFollowUp(targetId)).toBeUndefined()
+		} finally {
+			manager.dispose()
+			setActiveManagerForTest(undefined)
+		}
 	})
 
 	it("aborts a running ACP agent through the manager and reaches a terminal state quickly", async () => {

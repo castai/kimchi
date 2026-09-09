@@ -245,6 +245,16 @@ export class AcpSessionClient {
 		await this._connection.cancel({ sessionId: this._sessionId })
 	}
 
+	/**
+	 * Selects the model for the current session via the experimental
+	 * `session/set_model` request (the SDK exposes it as
+	 * `unstable_setSessionModel`). No-op before initialize().
+	 */
+	async setModel(model: string): Promise<void> {
+		if (!this._connection || !this._sessionId) return
+		await this._connection.unstable_setSessionModel({ sessionId: this._sessionId, modelId: model })
+	}
+
 	/** Closes the WebSocket and frees resources. Safe to call multiple times. */
 	close(): void {
 		if (this._closed) return

@@ -10,12 +10,14 @@
  *   - "PERM ..."       → sends a permission request, logs the client's
  *                        outcome, then finishes the turn
  *   - "BLOCK ..."      → does not answer the prompt until session/cancel
+ *   - "EXIT_DURING ..."→ exits immediately (child death mid-turn)
  *   - otherwise        → streams `echo:<text>` as agent_message_chunk
  *
  * When FAKE_ACP_LOG is set, startup, received newSession params, permission
- * outcomes, and process exit are appended as JSON lines to that file so
- * tests can assert on what the client actually sent. When FAKE_ACP_MODE=hang,
- * initialize never responds (timeout testing).
+ * outcomes, the setModel request, a blocked prompt, and process exit are
+ * appended as JSON lines to that file so tests can assert on what the
+ * client actually sent. When FAKE_ACP_MODE=hang, initialize never responds
+ * (timeout testing).
  */
 
 import { appendFileSync } from "node:fs"
@@ -90,8 +92,12 @@ function handle(msg) {
 			const sessionId = msg.params.sessionId
 			const text = msg.params.prompt?.[0]?.text ?? ""
 			if (text.startsWith("BLOCK")) {
+				log({ type: "blockStarted" })
 				pendingCancelPromptId = msg.id
 				return
+			}
+			if (text.startsWith("EXIT_DURING")) {
+				process.exit(3)
 			}
 			if (text.startsWith("PERM")) {
 				pendingPermPromptId = msg.id
@@ -119,6 +125,11 @@ function handle(msg) {
 				stopReason: "end_turn",
 				usage: { inputTokens: 11, outputTokens: 7, cachedReadTokens: 0, cachedWriteTokens: 0 },
 			})
+			break
+		}
+		case "session/set_model": {
+			log({ type: "setModel", model: msg.params?.modelId ?? msg.params?.model })
+			respond(msg.id, {})
 			break
 		}
 		case "session/cancel": {

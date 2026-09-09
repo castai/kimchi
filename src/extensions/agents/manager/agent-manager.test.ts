@@ -1554,6 +1554,52 @@ describe("AgentManager communication broker", () => {
 		}
 	})
 
+	it("reports an ACP-backed peer with its live record status instead of initializing", async () => {
+		const manager = new AgentManager(undefined, 0)
+		// Hold the peer's runner open so its record is genuinely "running"
+		// (and thus visible to listCommunicationPeers) while we read contacts.
+		const gate = new Promise<void>(() => {})
+		mockRunAgent.mockImplementationOnce(() =>
+			gate.then(() => ({
+				responseText: "done",
+				session: { dispose: vi.fn() } as unknown as AgentSession,
+				aborted: false,
+				steered: false,
+			})),
+		)
+		manager.bindCommunicationRoot("root-1")
+		try {
+			const source = manager.spawn(fakePi(), fakeCtx(), "Explore", "source", {
+				description: "source",
+				communication: "group",
+				rootSessionId: "root-1",
+				isBackground: true,
+			})
+			const peer = manager.spawn(fakePi(), fakeCtx(), "Explore", "peer", {
+				description: "peer",
+				communication: "group",
+				rootSessionId: "root-1",
+				isBackground: true,
+				bypassQueue: true,
+			})
+			const sourceRecord = manager.getRecord(source)
+			const peerRecord = manager.getRecord(peer)
+			if (!sourceRecord || !peerRecord) throw new Error("expected communication records")
+			sourceRecord.groupId = "batch-1"
+			peerRecord.groupId = "batch-1"
+			// The peer is an ACP external agent: no in-process session, but the
+			// contact list must surface its real record status once acp is set.
+			peerRecord.acp = { server: "fake" }
+
+			expect(peerRecord.status).toBe("running")
+			expect(manager.getCommunicationContacts(source).peers).toEqual([
+				expect.objectContaining({ agent_id: peer, status: "running", route: "peer", reachable: true }),
+			])
+		} finally {
+			manager.dispose()
+		}
+	})
+
 	it("does not retain thread or event metadata when the synchronous bridge rejects", async () => {
 		const manager = new AgentManager(undefined, 0)
 		const bridge = vi.fn(() => false)

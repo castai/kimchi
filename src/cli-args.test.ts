@@ -14,11 +14,43 @@ import {
 	isProtocolOrPrintMode,
 	isTerminalUiMode,
 	normalizeResumeIdArgs,
+	parseAgentCommsMcpArgs,
 	populateCliArgs,
 	stripExperimentalFeaturesArg,
 	stripMultiModelArgs,
 } from "./cli-args.js"
 import { normalizeAtFileArgs } from "./fs-paths.js"
+
+describe("parseAgentCommsMcpArgs", () => {
+	it("parses socket and token after the flag", () => {
+		expect(parseAgentCommsMcpArgs(["--agent-comms-mcp", "/tmp/comms.sock", "tok-1"])).toEqual({
+			socket: "/tmp/comms.sock",
+			token: "tok-1",
+		})
+	})
+
+	it("finds the flag among other arguments", () => {
+		expect(parseAgentCommsMcpArgs(["--mode", "acp", "--agent-comms-mcp", "/s", "t", "positional"])).toEqual({
+			socket: "/s",
+			token: "t",
+		})
+	})
+
+	it("returns undefined when the flag is absent", () => {
+		expect(parseAgentCommsMcpArgs(["--mode", "acp"])).toBeUndefined()
+		expect(parseAgentCommsMcpArgs([])).toBeUndefined()
+	})
+
+	it("returns undefined when a value is missing", () => {
+		expect(parseAgentCommsMcpArgs(["--agent-comms-mcp", "/tmp/comms.sock"])).toBeUndefined()
+		expect(parseAgentCommsMcpArgs(["--agent-comms-mcp"])).toBeUndefined()
+	})
+
+	it("returns undefined when a value looks like another flag", () => {
+		expect(parseAgentCommsMcpArgs(["--agent-comms-mcp", "--other", "tok"])).toBeUndefined()
+		expect(parseAgentCommsMcpArgs(["--agent-comms-mcp", "/tmp/comms.sock", "--other"])).toBeUndefined()
+	})
+})
 
 describe("getCliModeArg", () => {
 	it("reads --mode value", () => {

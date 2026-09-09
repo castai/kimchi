@@ -35,6 +35,8 @@ interface AcpClientSurface {
 	prompt(text: string): Promise<AcpPromptResult>
 	cancel(): Promise<void>
 	close(): void
+	/** Best-effort model selection via the experimental session/set_model. */
+	setModel?(model: string): Promise<void>
 }
 
 /** Far-future expiry for synthesized WS credentials (the field is required but unused by the client). */
@@ -144,6 +146,17 @@ export async function runAcpAgent(
 
 	try {
 		await client.initialize()
+
+		// default_model from the server config: applied right after initialize
+		// so the session exists. Non-fatal — servers without session/set_model
+		// support (or an unknown model id) must not kill the run.
+		if (config.defaultModel && client.setModel) {
+			try {
+				await client.setModel(config.defaultModel)
+			} catch {
+				// best effort only — the run continues on the server's default model
+			}
+		}
 
 		// maxDuration enforcement (seconds): cancel the in-flight turn; the
 		// client's prompt stall timeout is the backstop for agents that ignore

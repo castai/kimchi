@@ -162,6 +162,15 @@ describe("StdioAcpClient", () => {
 		client.close()
 	})
 
+	it("rejects a pending prompt when the agent process dies mid-turn", async () => {
+		const client = makeClient()
+		await client.initialize()
+
+		await expect(client.prompt("EXIT_DURING now")).rejects.toThrow(/ACP agent process exited \(code=3/)
+
+		client.close()
+	})
+
 	it("kills the child process on close()", async () => {
 		const client = makeClient()
 		await client.initialize()

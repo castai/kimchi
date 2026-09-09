@@ -209,6 +209,16 @@ export class StdioAcpClient {
 		await this._connection.cancel({ sessionId: this._sessionId })
 	}
 
+	/**
+	 * Selects the model for the current session via the experimental
+	 * `session/set_model` request. No-op before initialize(); servers
+	 * without model support reject (callers decide whether that is fatal).
+	 */
+	async setModel(model: string): Promise<void> {
+		if (!this._connection || !this._sessionId) return
+		await this._connection.unstable_setSessionModel({ sessionId: this._sessionId, modelId: model })
+	}
+
 	/** Kills the child process with SIGTERM→SIGKILL escalation and frees resources. */
 	close(): void {
 		if (this._closed) return

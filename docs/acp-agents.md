@@ -47,7 +47,7 @@ Connect any ACP-speaking agent (Gemini CLI, any custom ACP harness, or a remote 
       "sessionName": "optional",     // ws only — defaults to a derived name
       "token": "...",                // ws only — connect token
       "displayName": "Gemini",       // display name in the TUI tree
-      "default_model": "gemini-2.5-pro",
+      "default_model": "gemini-2.5-pro", // applied via the experimental session/set_model after initialize (best-effort)
       "permissions": "deny"          // "deny" (default) | "allow" — stdio only
     }
   }
