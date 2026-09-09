@@ -133,6 +133,57 @@ describe("AgentCommsIpcServer", () => {
 		})
 	})
 
+	// 3+ agents hammering the singleton socket at once: posts, reads, contacts,
+	// and a parent question — interleaved through separate connections.
+	it("handles concurrent multi-agent traffic with per-agent stamping", async () => {
+		manager = new AgentManager(undefined, 0)
+		setActiveManagerForTest(manager)
+		bindCommunication(manager)
+		const ids = [spawnCommunicatingAgent(manager), spawnCommunicatingAgent(manager), spawnCommunicatingAgent(manager)]
+		const tokens = ids.map((id) => ipc.registerToken(id))
+
+		const calls: Array<Promise<IpcResponse>> = []
+		for (const [i] of ids.entries()) {
+			calls.push(
+				ipcCall(socketPath, {
+					id: `post-${i}`,
+					token: tokens[i],
+					method: "post_agent_note",
+					params: { kind: "note", title: `from ${i}`, body: `body ${i}` },
+				}),
+			)
+			calls.push(ipcCall(socketPath, { id: `read-${i}`, token: tokens[i], method: "read_agent_board" }))
+			calls.push(ipcCall(socketPath, { id: `contacts-${i}`, token: tokens[i], method: "list_agent_contacts" }))
+		}
+		calls.push(
+			ipcCall(socketPath, {
+				id: "ask",
+				token: tokens[0],
+				method: "send_agent_message",
+				params: {
+					recipient: { type: "user" },
+					payload: { kind: "question", question: "concurrent?", impact: "load test", canContinue: true },
+				},
+			}),
+		)
+
+		const results = await Promise.all(calls)
+
+		// All ten concurrent calls succeed — no cross-talk, no rejections.
+		for (const res of results) expect(res.error).toBeUndefined()
+
+		// After the storm: the board holds exactly three entries, each stamped
+		// with the RIGHT author for its token.
+		const read = await ipcCall(socketPath, { id: "final-read", token: tokens[0], method: "read_agent_board" })
+		expect(read.error).toBeUndefined()
+		const entries = (read.result as { ok: boolean; entries: Array<{ authorAgentId: string; title: string }> }).entries
+		expect(entries).toHaveLength(3)
+		const byAuthor = new Map(entries.map((e) => [e.authorAgentId, e.title]))
+		expect(byAuthor.get(ids[0])).toBe("from 0")
+		expect(byAuthor.get(ids[1])).toBe("from 1")
+		expect(byAuthor.get(ids[2])).toBe("from 2")
+	})
+
 	it("denies a terminal record even before token revocation (accessor-level defense)", async () => {
 		manager = new AgentManager(undefined, 0)
 		setActiveManagerForTest(manager)
