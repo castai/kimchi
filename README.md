@@ -152,13 +152,19 @@ Kimchi supports tagging LLM requests for usage tracking and cost attribution. Ta
 
 Tags use `key:value` format. Key and value must start and end with alphanumeric characters (middle characters may include `-`, `_`, `.`), each 64 characters max, 10 tags total.
 
-### Static tags
+### Tag defaults hierarchy
 
-Set via the `KIMCHI_TAGS` environment variable (comma-separated). Static tags are read-only within the session and shown with a `[static]` marker.
+Default tags are resolved from three sources, strongest first:
+
+1. `KIMCHI_TAGS` environment variable (comma-separated)
+2. Project config — the nearest `.kimchi/tags.json` found walking up from the working directory (so monorepo subdirectories pick up the repo-level file)
+3. Global config — `~/.config/kimchi/tags.json`
 
 ```bash
 export KIMCHI_TAGS="team:backend,project:api"
 ```
+
+Sources are unioned; when two sources define the same tag key, the stronger source's value wins. Default tags are shown with an `[env]`, `[project]`, or `[global]` marker in the `/tags` list; user-added tags show as `[user]`.
 
 ### Auto-tags
 
@@ -169,7 +175,7 @@ Two tags are added automatically to every request and do not count toward the 10
 
 ### Persistence
 
-User-defined tags (added via `/tags add`) are persisted to `~/.config/kimchi/tags.json` and survive across sessions. Static tags from `KIMCHI_TAGS` must be set each session.
+User-defined tags (added via `/tags add`) are persisted with the session: once a session has its own tag set (created by any `/tags add`, `/tags remove`, or `/tags clear`), it fully overrides the defaults above and is restored when the session resumes. `KIMCHI_TAGS` must be set per session; it is the strongest source while present.
 
 ## Ferment V2
 
