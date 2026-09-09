@@ -898,6 +898,34 @@ describe("runRemoteAgent", () => {
 			expect(deleteSession).toHaveBeenCalledOnce()
 		})
 
+		it("returns stopReason 'recovery_failed' when the replay yields no result", async () => {
+			// The run finished during the disconnect, but session/load replay
+			// cannot produce the final assistant text — the result is unknown.
+			// Recovery must resolve (not throw, not hang) with a DISTINCT
+			// stopReason so the manager can treat the run as failed instead of
+			// showing the post-completion dropdown on an unknown result.
+			mockPrompt.mockRejectedValueOnce(new RemoteConnectionError("WS closed"))
+			vi.mocked(getSession).mockResolvedValue({
+				name: "s",
+				agentMode: "ACP",
+				yolo: true,
+				alive: true,
+				agentRunning: false,
+				clientConnected: false,
+				connectedThroughBridge: false,
+				finishedAt: new Date().toISOString(),
+			})
+			// Empty replay — extractFinalAssistantText finds no final assistant text.
+			mockLoadReplay = []
+
+			const result = await runRemoteAgent(WORKSPACE_ID, PROMPT, makeOptions({ reconnectBackoffsMs: [10, 20, 40] }))
+
+			expect(result.stopReason).toBe("recovery_failed")
+			expect(result.recoveryNote).toContain("Recovery failed")
+			// The placeholder responseText still documents the unknown result.
+			expect(result.responseText).toContain("could not be recovered")
+		})
+
 		it("throws 'result unknown' and does not delete when the session is unreachable", async () => {
 			mockPrompt.mockRejectedValueOnce(new RemoteConnectionError("WS closed"))
 			// getSession always reports !alive → revive attempts fail.

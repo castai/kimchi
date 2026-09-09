@@ -1113,6 +1113,120 @@ describe("AgentManager remote git credential resolution", () => {
 	})
 })
 
+describe("AgentManager remote stopReason mapping", () => {
+	let manager: AgentManager | undefined
+
+	afterEach(() => {
+		manager?.dispose()
+		manager = undefined
+		vi.clearAllMocks()
+	})
+
+	function fakeRemoteCtx(): ExtensionContext {
+		return {
+			cwd: "/work/myrepo",
+			mode: "tui",
+			ui: { custom: vi.fn() },
+		} as unknown as ExtensionContext
+	}
+
+	const remoteSession = {
+		workspaceId: "ws-1",
+		sessionName: "acp-test",
+		wsUrl: "wss://worker.example.com",
+		host: "worker.example.com",
+		cwd: "/home/sandbox/acp-test",
+	}
+
+	beforeEach(() => {
+		// Skip git clone planning — not relevant to stopReason mapping.
+		mockResolveClonePlan.mockRejectedValue(new Error("not a git repo"))
+	})
+
+	it("marks a failed recovery as an error — no completion dropdown on an unknown result", async () => {
+		// Regression: the run finished during a disconnect and the replay could
+		// not recover the result. Previously "recovery_failed" read as
+		// "completed", showing the Review/Sync dropdown on an unknown result.
+		mockRunRemoteAgent.mockResolvedValue({
+			responseText: "(remote agent completed during disconnect; the result could not be recovered — …)",
+			stopReason: "recovery_failed",
+			remoteSession,
+			recoveryNote: "Recovery failed: the replayed session contained no final assistant message.",
+		})
+		manager = new AgentManager()
+
+		const record = await manager.spawnAndWait(fakePi(), fakeRemoteCtx(), "Explore", "test", {
+			description: "test",
+			remote: true,
+		})
+
+		expect(record.status).toBe("error")
+		expect(record.error).toContain("could not be recovered")
+		// The recovery note is preserved for the failure UX / steer message.
+		expect(record.recoveryNote).toContain("Recovery failed")
+	})
+
+	it("marks non-whitelisted stop reasons as errors, not completions", async () => {
+		// ACP can resolve a prompt with "refusal", "max_tokens",
+		// "max_turn_requests", or a custom "error" — none of these mean the
+		// plan was executed. Previously anything but "cancelled" read as
+		// "completed" and triggered the completion dropdown.
+		for (const stopReason of ["refusal", "max_tokens", "max_turn_requests", "error"]) {
+			mockRunRemoteAgent.mockResolvedValue({
+				responseText: "irrelevant",
+				stopReason,
+				remoteSession,
+			})
+			manager?.dispose()
+			manager = new AgentManager()
+
+			const record = await manager.spawnAndWait(fakePi(), fakeRemoteCtx(), "Explore", "test", {
+				description: "test",
+				remote: true,
+			})
+
+			expect(record.status, `stopReason ${stopReason}`).toBe("error")
+			expect(record.error, `stopReason ${stopReason}`).toContain(stopReason)
+		}
+	})
+
+	it("still treats end_turn and recovered as completed (reconnect flow unaffected)", async () => {
+		for (const stopReason of ["end_turn", "recovered"]) {
+			mockRunRemoteAgent.mockResolvedValue({
+				responseText: "the result",
+				stopReason,
+				remoteSession,
+			})
+			manager?.dispose()
+			manager = new AgentManager()
+
+			const record = await manager.spawnAndWait(fakePi(), fakeRemoteCtx(), "Explore", "test", {
+				description: "test",
+				remote: true,
+			})
+
+			expect(record.status, `stopReason ${stopReason}`).toBe("completed")
+			expect(record.result).toBe("the result")
+		}
+	})
+
+	it("maps a cancelled remote turn to aborted", async () => {
+		mockRunRemoteAgent.mockResolvedValue({
+			responseText: "",
+			stopReason: "cancelled",
+			remoteSession,
+		})
+		manager = new AgentManager()
+
+		const record = await manager.spawnAndWait(fakePi(), fakeRemoteCtx(), "Explore", "test", {
+			description: "test",
+			remote: true,
+		})
+
+		expect(record.status).toBe("aborted")
+	})
+})
+
 describe("AgentManager reconnecting lifecycle", () => {
 	let manager: AgentManager | undefined
 
@@ -1204,6 +1318,24 @@ describe("AgentManager reconnecting lifecycle", () => {
 		expect(abortSpy).toHaveBeenCalled()
 
 		// Let the parked runner settle so dispose doesn't see a mid-flight record.
+		resolveRun(remoteResult)
+		await done.catch(() => {})
+	})
+
+	it("abort (single-record path, used by Ctrl+X) stops a reconnecting agent", async () => {
+		const { opts, resolveRun, done } = await spawnParkedRemote()
+		const record = manager?.listAgents()[0]
+		if (!record) throw new Error("record not spawned")
+
+		opts.onReconnecting?.(true)
+		expect(record.status).toBe("reconnecting")
+
+		// Previously abort() only accepted "running" — a reconnecting cloud
+		// agent (transport reattach in flight) could never be stopped by the
+		// user via the single-record kill path.
+		expect(manager?.abort(record.id)).toBe(true)
+		expect(record.status).toBe("stopped")
+
 		resolveRun(remoteResult)
 		await done.catch(() => {})
 	})

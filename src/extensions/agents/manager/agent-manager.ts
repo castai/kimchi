@@ -486,6 +486,23 @@ export class AgentManager {
 			record.recoveryNote = result.recoveryNote
 		}
 
+		// A failed recovery means the run's outcome is unknown — the run must
+		// not read as completed (the post-completion dropdown would offer
+		// Review/Sync on a result nobody has). Throw so the manager's catch
+		// path marks the record "error" and the failure UX takes over.
+		if (result.stopReason === "recovery_failed") {
+			throw new Error(
+				"the remote run finished during a network disconnect and its result could not be recovered — outcome unknown",
+			)
+		}
+		// Whitelist successful stop reasons: "end_turn" (normal completion) and
+		// "recovered" (result replayed after a disconnect). ACP can also resolve
+		// a prompt with "refusal", "max_tokens", or "max_turn_requests" — those
+		// are failures, not completions. "cancelled" maps to aborted below.
+		if (result.stopReason !== "end_turn" && result.stopReason !== "recovered" && result.stopReason !== "cancelled") {
+			throw new Error(`remote agent stopped unexpectedly (stopReason: ${result.stopReason})`)
+		}
+
 		return {
 			responseText: result.responseText,
 			session: remoteSession as unknown as AgentSession,
@@ -768,7 +785,10 @@ export class AgentManager {
 			return true
 		}
 
-		if (record.status !== "running") return false
+		// "reconnecting" is live remote work (a transport reattach in flight) —
+		// it must be killable too, or a wedged reconnect can never be stopped
+		// (Escape / Ctrl+X both route through here).
+		if (record.status !== "running" && record.status !== "reconnecting") return false
 		record.abortController?.abort()
 		record.status = "stopped"
 		record.completedAt = Date.now()

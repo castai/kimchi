@@ -35,7 +35,7 @@ import {
 	getModelRoles,
 	normalizeRoleModels,
 } from "../orchestration/model-roles.js"
-import { handleRemoteCompletion } from "../remote-run/post-completion.js"
+import { handleRemoteCompletion, handleRemoteFailure } from "../remote-run/post-completion.js"
 import { isAutoModel } from "../router/constants.js"
 import { isRawInputCaptureActive } from "../shared-input.js"
 import { isStaleCtxError } from "../stale-ctx.js"
@@ -949,6 +949,18 @@ export default function (pi: ExtensionAPI) {
 		}
 	}
 
+	// When the user last aborted a main turn (Escape during a streaming run — the
+	// turn ends with stopReason "aborted"; the same signal the ferment extension
+	// uses to pause ferments on Esc). Background cloud agents check this at
+	// completion: a run the user aborted out of still finishes on its own, but
+	// its completion must not surface the dropdown.
+	let lastUserAbortAt: number | undefined
+	pi.on("turn_end", (event) => {
+		const message = event.message
+		if (message.role !== "assistant" || message.stopReason !== "aborted") return
+		lastUserAbortAt = Date.now()
+	})
+
 	const manager = new AgentManager(
 		(record) => {
 			const retryCandidate = budgetRetryCandidates.get(record.id)
@@ -998,13 +1010,22 @@ export default function (pi: ExtensionAPI) {
 				// spawnCtx is captured at spawn time — don't fall back to a stale
 				// global context.
 				const completionCtx = record.spawnCtx
+				// A user abort (Escape) after this agent started means the user opted
+				// out of the cloud run — it finishes on its own, but its completion is
+				// surfaced nowhere.
+				const userAbortedRun = !isError && lastUserAbortAt !== undefined && lastUserAbortAt >= record.startedAt
 				if (isError) {
-					// Errored runs have no result to review/sync — surface a plain
-					// error notification instead of the completion dropdown.
-					if (completionCtx) {
-						completionCtx.ui.notify(`Cloud agent failed: ${record.error ?? "unknown error"}`, "error")
-					}
-				} else if (completionCtx) {
+					// Errored runs have no result to review/sync — no completion
+					// dropdown. handleRemoteFailure notifies the user (or steers a
+					// headless agent, which would otherwise see nothing) and resumes
+					// the ferment paused for cloud execution.
+					handleRemoteFailure(pi, completionCtx, record.remoteOrigin ?? "plan", {
+						error: record.error,
+						recoveryNote: record.recoveryNote,
+						fermentId: record.fermentId,
+						stoppedByUser: record.status === "stopped",
+					})
+				} else if (!userAbortedRun && completionCtx) {
 					void handleRemoteCompletion(pi, completionCtx, record.result ?? "", record.remoteOrigin ?? "plan", {
 						transcriptPath: record.outputFile,
 						agentId: record.id,
@@ -1017,8 +1038,19 @@ export default function (pi: ExtensionAPI) {
 							"warning",
 						)
 					})
-				} else {
+				} else if (!userAbortedRun) {
 					currentUi?.notify("Remote agent completed but result could not be surfaced (no active context).", "warning")
+				} else if (record.fermentId) {
+					// Suppressed by a user abort — no dropdown, no steer, no state change.
+					// Esc is the product's ferment-pause signal (the ferment extension
+					// pauses and says "Run /ferment resume to continue"), so the ferment
+					// stays paused. Only leave a breadcrumb so the finished run isn't
+					// forgotten.
+					const ui = completionCtx?.hasUI ? completionCtx.ui : currentUi
+					ui?.notify(
+						"Cloud agent finished after abort; ferment stays paused — /ferment resume to continue.",
+						"info",
+					)
 				}
 				agentActivity.delete(record.id)
 				widget.markFinished(record.id)

@@ -120,6 +120,10 @@ vi.mock("./manager/agent-manager.js", () => {
 })
 
 vi.mock("./telemetry/index.js", () => ({ trackSubagentSpawned: vi.fn().mockResolvedValue(undefined) }))
+vi.mock("../remote-run/post-completion.js", () => ({
+	handleRemoteCompletion: vi.fn().mockResolvedValue(undefined),
+	handleRemoteFailure: vi.fn(),
+}))
 vi.mock("./settings.js", () => ({
 	applyAndEmitLoaded: vi.fn(),
 	saveAndEmitChanged: vi.fn(),
@@ -159,6 +163,7 @@ import { createContext } from "../__mocks__/context.js"
 import { sessionHasImages } from "../model-guard.js"
 import { getMultiModelEnabled } from "../multi-model.js"
 import { getAllowedMultiModelRefs, getModelRoles } from "../orchestration/model-roles.js"
+import { handleRemoteCompletion } from "../remote-run/post-completion.js"
 import agentsExtension from "./index.js"
 import { AgentManager as MockedAgentManager } from "./manager/agent-manager.js"
 import type { Theme } from "./ui/agent-widget.js"
@@ -762,5 +767,114 @@ describe("spawnGraderAgent", () => {
 		const options = spawnAndWait.mock.calls[0]?.[4] as { model?: unknown }
 		// Even though the judge role resolves, single-model mode must not use it.
 		expect(options.model).toBeUndefined()
+	})
+})
+
+describe("user abort suppresses the remote completion dropdown", () => {
+	beforeEach(() => {
+		vi.clearAllMocks()
+		vi.useFakeTimers()
+	})
+	afterEach(() => {
+		vi.useRealTimers()
+	})
+
+	/** Fire every turn_end handler the extension registered. */
+	function fireTurnEnd(pi: ReturnType<typeof makeMockPi>, stopReason: string): void {
+		const handlers = pi._handlers.get("turn_end") ?? []
+		expect(handlers.length).toBeGreaterThan(0)
+		for (const handler of handlers) void handler({ message: { role: "assistant", stopReason }, toolResults: [] })
+	}
+
+	function makeCloudRecord(startedAt: number): Record<string, unknown> {
+		return {
+			id: "cloud-1",
+			type: "general-purpose",
+			description: "cloud: test plan",
+			status: "completed",
+			visibility: "user",
+			resultConsumed: false,
+			result: "remote result",
+			triggersRemoteCompletion: true,
+			spawnCtx: { hasUI: true, ui: { notify: vi.fn() } },
+			remoteOrigin: "plan",
+			startedAt,
+			completedAt: Date.now(),
+			toolUses: 3,
+			lifetimeUsage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+		}
+	}
+
+	function currentManager(): { onComplete: (record: unknown) => void } {
+		const managerInstance = (MockedAgentManager as ReturnType<typeof vi.fn>).mock.results.at(-1)?.value
+		expect(managerInstance).toBeDefined()
+		return managerInstance as { onComplete: (record: unknown) => void }
+	}
+
+	it("suppresses the dropdown when the user aborted after the agent started", () => {
+		vi.setSystemTime(10_000)
+		const pi = makeMockPi()
+		agentsExtension(pi)
+		const manager = currentManager()
+
+		// Agent started at t=5000; the user aborts the turn at t=10000 (mid-run).
+		fireTurnEnd(pi, "aborted")
+		manager.onComplete(makeCloudRecord(5_000))
+
+		expect(vi.mocked(handleRemoteCompletion)).not.toHaveBeenCalled()
+	})
+
+	it("leaves a breadcrumb instead of resuming when the user aborted a ferment cloud run", () => {
+		vi.setSystemTime(10_000)
+		const pi = makeMockPi()
+		agentsExtension(pi)
+		const manager = currentManager()
+
+		// Agent started at t=5000; the user aborts the turn at t=10000 (mid-run).
+		const notify = vi.fn()
+		const record = {
+			...makeCloudRecord(5_000),
+			fermentId: "ferment-1",
+			spawnCtx: { hasUI: true, ui: { notify } },
+		}
+		fireTurnEnd(pi, "aborted")
+		manager.onComplete(record)
+
+		expect(vi.mocked(handleRemoteCompletion)).not.toHaveBeenCalled()
+		expect(notify).toHaveBeenCalledWith(expect.stringContaining("/ferment resume"), "info")
+	})
+
+	it("still shows the dropdown when no abort happened", () => {
+		const pi = makeMockPi()
+		agentsExtension(pi)
+		const manager = currentManager()
+
+		manager.onComplete(makeCloudRecord(5_000))
+
+		expect(vi.mocked(handleRemoteCompletion)).toHaveBeenCalledTimes(1)
+	})
+
+	it("still shows the dropdown when the abort predates the agent start", () => {
+		const pi = makeMockPi()
+		agentsExtension(pi)
+		const manager = currentManager()
+
+		vi.setSystemTime(1_000)
+		fireTurnEnd(pi, "aborted") // lastUserAbortAt = 1000
+		vi.setSystemTime(5_000)
+		manager.onComplete(makeCloudRecord(4_000)) // started after the abort
+
+		expect(vi.mocked(handleRemoteCompletion)).toHaveBeenCalledTimes(1)
+	})
+
+	it("ignores non-aborted turn ends", () => {
+		const pi = makeMockPi()
+		agentsExtension(pi)
+		const manager = currentManager()
+
+		fireTurnEnd(pi, "stop")
+		manager.onComplete(makeCloudRecord(5_000))
+
+		expect(vi.mocked(handleRemoteCompletion)).toHaveBeenCalledTimes(1)
 	})
 })

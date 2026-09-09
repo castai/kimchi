@@ -114,7 +114,9 @@ export interface RemoteRunOptions {
 export interface RemoteRunResult {
 	/** The assistant's full response text. */
 	responseText: string
-	/** Why the prompt stopped. */
+	/** Why the prompt stopped: "end_turn" (normal), "cancelled", "recovered"
+	 *  (result replayed after a disconnect), or "recovery_failed" (the replay
+	 *  could not produce the result — the run's outcome is unknown). */
 	stopReason: string
 	/** Token usage for the turn (if reported by the agent). */
 	usage?: { input: number; output: number; cacheRead: number; cacheWrite: number }
@@ -446,11 +448,13 @@ export async function runRemoteAgent(
 		// arg is honored, which deployed remotes don't.)
 		const replay = await recoverTextViaReplay()
 		let gapNote: string
+		let recovered = true
 		if (replay && "text" in replay) {
 			responseText = replay.text
 			recoveryNote = REPLAY_RECOVERY_NOTE
 			gapNote = "disconnect window — local streaming was interrupted; the final result was recovered via session replay"
 		} else {
+			recovered = false
 			const reason = replay?.error ?? "no session id was captured to replay"
 			responseText = `(remote agent completed during disconnect; the result could not be recovered — ${reason})`
 			recoveryNote = `Recovery failed: ${reason}. The result of the remote run is unknown — before re-running or re-dispatching anything, ask the user how to proceed.`
@@ -460,7 +464,7 @@ export async function runRemoteAgent(
 		if (options.outputFile) {
 			await appendTranscriptGapMarker(options.outputFile, gapNote).catch(() => {})
 		}
-		return { stopReason: "recovered", usage: undefined }
+		return { stopReason: recovered ? "recovered" : "recovery_failed", usage: undefined }
 	}
 
 	/** Inner recovery loop — throws on any failure (abort or unrecoverable). */
