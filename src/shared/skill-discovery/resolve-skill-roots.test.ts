@@ -1,9 +1,16 @@
+import { execFileSync } from "node:child_process"
 import { mkdirSync, mkdtempSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { dirname, join } from "node:path"
 import { fileURLToPath } from "node:url"
+import { loadSkills } from "@earendil-works/pi-coding-agent"
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
-import { resolveBundledSkillsDir, resolveHarnessSkillsDir, resolveSkillRoots } from "./resolve-skill-roots.js"
+import {
+	resolveBundledSkillsDir,
+	resolveHarnessSkillsDir,
+	resolveSkillPathsForDiscovery,
+	resolveSkillRoots,
+} from "./resolve-skill-roots.js"
 
 describe("resolveHarnessSkillsDir", () => {
 	it("points at ~/.config/kimchi/harness/skills", () => {
@@ -30,6 +37,24 @@ describe("resolveSkillRoots", () => {
 	afterEach(() => {
 		rmSync(home, { recursive: true, force: true })
 		rmSync(cwd, { recursive: true, force: true })
+	})
+
+	it("discovers the bundled tmux skill and runs its linked controller from the temporary copy", () => {
+		const skillPaths = resolveSkillPathsForDiscovery(cwd, { homeDir: home })
+		try {
+			const { skills } = loadSkills({ cwd, agentDir: join(home, "agent"), skillPaths, includeDefaults: false })
+			const skill = skills.find((entry) => entry.name === "kimchi-tmux")
+			expect(skill).toBeDefined()
+			if (!skill) throw new Error("Bundled tmux skill is missing")
+			const controller = join(dirname(skill.filePath), "scripts", "harness-live.mjs")
+			const help = execFileSync(process.execPath, ["--no-experimental-detect-module", controller, "--help"], {
+				encoding: "utf8",
+				cwd,
+			})
+			expect(help).toContain("KIMCHI_BINARY")
+		} finally {
+			for (const path of skillPaths) rmSync(path, { recursive: true, force: true })
+		}
 	})
 
 	it("orders weakest-first: bundled, harness, config, project", () => {

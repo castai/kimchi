@@ -24,21 +24,22 @@ You are editing the kimchi coding harness. This repo extends the pi-mono SDK (`@
 
 ## Live harness controller (development only)
 
-Use `scripts/harness-live.js` when developing a harness feature, command, menu, or TUI workflow. It launches the real harness in tmux, injects input, and operates menus. This is a developer/agent tool, not a test runner: do not wire it into CI or test scripts.
+Use the bundled [kimchi-tmux skill](resources/skills/kimchi-tmux/SKILL.md) and its linked `scripts/harness-live.mjs` when developing a harness feature, command, menu, or TUI workflow. It launches the real harness in tmux, injects input, and operates menus. This is a developer/agent tool, not a test runner: do not wire it into CI or test scripts.
 
-Prerequisites: `tmux`, `pnpm run build:binary`, and an existing provider login. Run from the repository root or invoke the script by absolute path. Each run gets a temporary Git working directory and starts in Plan mode. It uses your existing settings/auth; model requests consume inference credits. Use the model requested by the user; the provider defaults to `kimchi-dev`. No feature resource is required unless checking that feature.
+Prerequisites: Node.js 22+, `tmux`, `pnpm run build:binary`, and an existing provider login. For this checkout, set `KIMCHI_BINARY="$PWD/dist/bin/kimchi"`; otherwise the controller uses the installed `kimchi` on PATH. Run from the repository root or invoke the script by absolute path. Each run gets a temporary Git working directory and starts in Plan mode. It uses your existing settings/auth; model requests consume inference credits. Use the model requested by the user; the provider defaults to `kimchi-dev`. No feature resource is required unless checking that feature.
 
 ```sh
-node scripts/harness-live.js start <model> [provider]
-node scripts/harness-live.js status <run-dir>
-node scripts/harness-live.js type <run-dir> '<text without submitting>'
-node scripts/harness-live.js send <run-dir> '<prompt or /command to submit>'
-node scripts/harness-live.js send <run-dir> '/model'
-node scripts/harness-live.js key <run-dir> Down
-node scripts/harness-live.js key <run-dir> Escape
-node scripts/harness-live.js key <run-dir> Enter
-node scripts/harness-live.js stop <run-dir>
-node scripts/harness-live.js resume <run-dir>
+export KIMCHI_BINARY="$PWD/dist/bin/kimchi"
+node resources/skills/kimchi-tmux/scripts/harness-live.mjs start <model> [provider]
+node resources/skills/kimchi-tmux/scripts/harness-live.mjs status <run-dir>
+node resources/skills/kimchi-tmux/scripts/harness-live.mjs type <run-dir> '<text without submitting>'
+node resources/skills/kimchi-tmux/scripts/harness-live.mjs send <run-dir> '<prompt or /command to submit>'
+node resources/skills/kimchi-tmux/scripts/harness-live.mjs send <run-dir> '/model'
+node resources/skills/kimchi-tmux/scripts/harness-live.mjs key <run-dir> Down
+node resources/skills/kimchi-tmux/scripts/harness-live.mjs key <run-dir> Escape
+node resources/skills/kimchi-tmux/scripts/harness-live.mjs key <run-dir> Enter
+node resources/skills/kimchi-tmux/scripts/harness-live.mjs stop <run-dir>
+node resources/skills/kimchi-tmux/scripts/harness-live.mjs resume <run-dir>
 ```
 
 Inspect `status` between actions. `/model` opens the model menu; `C-p` cycles models instead. `type` also fills menu search fields. Run the script without arguments for supported keys, including arrows, Tab, Shift+Tab (`BTab`), Space, Backspace (`BSpace`), and PageUp/PageDown (`PPage`/`NPage`). Enter selects/submits; Escape dismisses. Ctrl+C (`C-c`) interrupts streaming but only denies the current request inside a permission dialog.

@@ -87,7 +87,10 @@ if (!isDev) {
 	const bundledSkillsDest = join(projectRoot, "dist", "share", "kimchi", "skills")
 	if (existsSync(bundledSkillsSrc)) {
 		mkdirSync(bundledSkillsDest, { recursive: true })
-		cpSync(bundledSkillsSrc, bundledSkillsDest, { recursive: true })
+		cpSync(bundledSkillsSrc, bundledSkillsDest, {
+			recursive: true,
+			filter: (src) => !src.endsWith(".test.ts"),
+		})
 	}
 
 	// Copy custom OAuth page templates
