@@ -194,6 +194,41 @@ function handle(msg) {
 				break
 			}
 
+			// ASK_PARENT mode: send a user-question through the MCP comms shim,
+			// then finish the turn — lets live runs exercise the parent-reply
+			// path against a settled external agent.
+			if (text.startsWith("ASK_PARENT")) {
+				Promise.resolve(shimReady)
+					.then(() =>
+						mcpCall("send_agent_message", {
+							recipient: { type: "user" },
+							payload: {
+								kind: "question",
+								question: "External agent check: which option should I use, A or B?",
+								impact: "validation of the parent reply path against an external agent",
+								options: ["A", "B"],
+								recommendedDefault: "A",
+								canContinue: false,
+							},
+						}),
+					)
+					.then((receipt) => {
+						notify(sessionId, {
+							sessionUpdate: "agent_message_chunk",
+							content: { type: "text", text: `ACP-ASKED-PARENT: ${receipt.text.slice(0, 200)}` },
+						})
+						respond(msg.id, { stopReason: "end_turn" })
+					})
+					.catch((err) => {
+						notify(sessionId, {
+							sessionUpdate: "agent_message_chunk",
+							content: { type: "text", text: `ACP-ASKED-PARENT: failed (${err.message})` },
+						})
+						respond(msg.id, { stopReason: "end_turn" })
+					})
+				break
+			}
+
 			// ASK_PEER mode: discover a peer via MCP list_agent_contacts, ask it
 			// one question, then stay busy ~30s so the peer can answer while this
 			// agent is still live (the answer arrives as a follow-up turn and

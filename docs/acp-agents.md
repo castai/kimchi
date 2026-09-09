@@ -87,6 +87,7 @@ Agent tool (subagent_type "acp:<name>", communication: "group")
 
 - Transcript files for ACP agents contain the initial entry and the final result only — there is no in-process session to subscribe to.
 - `RunResult.steered` is always false for ACP records; steer-equivalents are delivered as follow-up prompts and the record completes normally.
+- **External agents cannot receive parent replies.** An external agent can send a user-question via `send_agent_message` (the receipt is `queued_for_parent` and the notification reaches the parent), but the record has no in-process session to resume: once its turn ends the record goes terminal and the open parent-question thread is closed (`participant_terminal`). The parent's `reply_to_agent_message` is then rejected with `thread_closed`. In-process children keep their threads open and receive replies via bounded resume; external agents have no equivalent — questions should be treated as fire-and-forget notifications from them.
 - No circuit breaker / health polling / auto-restart for agent servers — the process dies with the record.
 - No OAuth flows for remote endpoints; WS auth is a static token.
 - Tool-call content from the external agent surfaces as activity titles only.

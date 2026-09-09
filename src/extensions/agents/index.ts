@@ -470,7 +470,9 @@ only when it would be empty.
   citations, nothing else (no transcripts, logs, or narration).
 - Escape hatches: do not stall or guess. Ask through send_agent_message with a
   declared canContinue; the first answer or decline closes the thread; still
-  blocked → submit_agent_report naming the exit reason ("blocked: <cause>").`
+  blocked → submit_agent_report naming the exit reason ("blocked: <cause>")
+  when the worker is ferment-linked (it has that tool), otherwise instruct the
+  worker to finish with a blocked final report.`
 
 function formatParentAgentMessage(notification: AgentParentNotification, userContact?: AgentContact): string {
 	if (notification.kind === "delivery_failure") {
