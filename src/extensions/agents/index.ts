@@ -1047,10 +1047,7 @@ export default function (pi: ExtensionAPI) {
 					// stays paused. Only leave a breadcrumb so the finished run isn't
 					// forgotten.
 					const ui = completionCtx?.hasUI ? completionCtx.ui : currentUi
-					ui?.notify(
-						"Cloud agent finished after abort; ferment stays paused — /ferment resume to continue.",
-						"info",
-					)
+					ui?.notify("Cloud agent finished after abort; ferment stays paused — /ferment resume to continue.", "info")
 				}
 				agentActivity.delete(record.id)
 				widget.markFinished(record.id)
