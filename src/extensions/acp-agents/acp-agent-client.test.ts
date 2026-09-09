@@ -166,7 +166,13 @@ describe("StdioAcpClient", () => {
 		const client = makeClient()
 		await client.initialize()
 
-		await expect(client.prompt("EXIT_DURING now")).rejects.toThrow(/ACP agent process exited \(code=3/)
+		// Either rejection is valid: the SDK's stream-close handler fires on
+		// stdout EOF ("ACP connection closed") and races ahead of our exit
+		// handler ("process exited (code=3)" with the stderr tail). The test
+		// proves the prompt rejects — it must not hang when the child dies.
+		await expect(client.prompt("EXIT_DURING now")).rejects.toThrow(
+			/ACP agent process exited \(code=3|ACP connection closed/,
+		)
 
 		client.close()
 	})
