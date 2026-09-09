@@ -38,7 +38,7 @@ import { determineNextAction } from "../../ferment/engine.js"
 import type { Ferment, Phase, Step } from "../../ferment/types.js"
 import { getCompactionEnabled } from "../../settings-watcher.js"
 import { isToolCallInFlight } from "../../tool-call-in-flight.js"
-import { COMPACTION_RESERVE_TOKENS } from "../compaction-thresholds.js"
+import { COMPACTION_RESERVE_TOKENS, isExpectedCompactionError } from "../compaction-thresholds.js"
 import { getModelRoles, splitModelRef } from "../orchestration/model-roles.js"
 import { renderCharterCompact } from "./charter.js"
 import type { FermentRuntime } from "./runtime.js"
@@ -406,19 +406,6 @@ export function buildHandoffDetails(
 		completedPhaseSummary: completedPhase?.summary,
 		compactionTokensBefore: result?.tokensBefore,
 	}
-}
-
-// Error messages that upstream treats as routine "no-op" compaction outcomes.
-// Kept as a single source of truth so the two compaction paths stay consistent.
-const EXPECTED_COMPACTION_ERROR_MESSAGES = [
-	"too small",
-	"Already compacted",
-	"Compaction cancelled",
-	"no summarizable messages",
-]
-
-function isExpectedCompactionError(error: Error): boolean {
-	return EXPECTED_COMPACTION_ERROR_MESSAGES.some((message) => error.message.includes(message))
 }
 
 /**
