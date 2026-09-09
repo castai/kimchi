@@ -203,6 +203,54 @@ describe("AgentCommsIpcServer", () => {
 		).resolves.toMatchObject({ id: "r1", error: "not authorized" })
 	})
 
+	it("rejects malformed post_agent_note params with a clean receipt, not a raw TypeError", async () => {
+		manager = new AgentManager(undefined, 0)
+		setActiveManagerForTest(manager)
+		bindCommunication(manager)
+		const agentId = spawnCommunicatingAgent(manager)
+
+		const token = ipc.registerToken(agentId)
+		// No kind (required), title is a number (not a string).
+		const bad = await ipcCall(socketPath, {
+			id: "r1",
+			token,
+			method: "post_agent_note",
+			params: { title: 42, body: "valid body" },
+		})
+		expect(bad).toMatchObject({ id: "r1", error: "invalid post_agent_note params" })
+
+		// kind is an arbitrary string outside the enum.
+		const badKind = await ipcCall(socketPath, {
+			id: "r2",
+			token,
+			method: "post_agent_note",
+			params: { kind: "chaos", title: "t", body: "b" },
+		})
+		expect(badKind).toMatchObject({ id: "r2", error: "invalid post_agent_note params" })
+
+		// The board is unchanged — no partial writes from rejected calls.
+		const read = await ipcCall(socketPath, { id: "r3", token, method: "read_agent_board" })
+		expect(read.error).toBeUndefined()
+		expect((read.result as { entries: unknown[] }).entries).toHaveLength(0)
+	})
+
+	it("rejects malformed read_agent_board params with a clean receipt", async () => {
+		manager = new AgentManager(undefined, 0)
+		setActiveManagerForTest(manager)
+		bindCommunication(manager)
+		const agentId = spawnCommunicatingAgent(manager)
+
+		const token = ipc.registerToken(agentId)
+		// since_id is a number, limit is negative.
+		const bad = await ipcCall(socketPath, {
+			id: "r1",
+			token,
+			method: "read_agent_board",
+			params: { since_id: 42, limit: -1 },
+		})
+		expect(bad).toMatchObject({ id: "r1", error: "invalid read_agent_board params" })
+	})
+
 	it("revokes tokens through the manager-owned hook on terminal transitions", async () => {
 		manager = new AgentManager(undefined, 0)
 		setActiveManagerForTest(manager)

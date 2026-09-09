@@ -23,7 +23,9 @@ import { mkdtempSync, rmSync } from "node:fs"
 import { createServer, type Server, type Socket } from "node:net"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
+import { Value } from "typebox/value"
 import type { BoardEntryKind } from "../agents/manager/board.js"
+import { PostAgentNoteSchema, ReadAgentBoardSchema } from "../agents/message-tool.js"
 import type { AgentMessageInput } from "../agents/messages.js"
 
 interface IpcRequest {
@@ -139,18 +141,28 @@ export class AgentCommsIpcServer {
 					const receipt = await capability.sendMessage(`mcp:${req.id}`, req.params as AgentMessageInput)
 					return { ok: true, result: receipt }
 				}
-				case "post_agent_note":
+				case "post_agent_note": {
+					// Validate against the same schema the in-process tool uses — a
+					// malformed external call gets a clean receipt, not a raw TypeError.
+					if (!Value.Check(PostAgentNoteSchema, req.params)) {
+						return { ok: false, error: "invalid post_agent_note params" }
+					}
 					return {
 						ok: true,
 						result: capability.postBoardEntry(req.params as { kind: BoardEntryKind; title: string; body: string }),
 					}
-				case "read_agent_board":
+				}
+				case "read_agent_board": {
+					if (!Value.Check(ReadAgentBoardSchema, req.params ?? {})) {
+						return { ok: false, error: "invalid read_agent_board params" }
+					}
 					return {
 						ok: true,
 						result: capability.readBoardEntries(
 							req.params as { sinceId?: string; kind?: BoardEntryKind; limit?: number },
 						),
 					}
+				}
 				default:
 					return { ok: false, error: `unknown method: ${req.method}` }
 			}
