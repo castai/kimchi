@@ -9,6 +9,7 @@ import {
 	buildToolSelectionSection,
 } from "../../prompt-construction/system-prompt.js"
 import type { AgentConfig, EnvInfo } from "../personas/types.js"
+import { WORKER_REPORT_TOOL_NAME } from "../worker-report.js"
 
 /** Budget limits communicated to the agent so it can plan its work. */
 export interface BudgetInfo {
@@ -67,7 +68,6 @@ export const WORKER_COMMUNICATION_PROMPT = `## Communication
   remains, submit a final blocked report with the message ID.
 - If peer delivery is unavailable, send to parent. If parent routing is
   unavailable, submit a blocked final report. Never wait silently.
-- submit_agent_report remains your one final task outcome.
 
 ## Coordination board
 
@@ -130,6 +130,11 @@ Platform: ${env.platform}`
 	if (contextBlock) extraSections.push(contextBlock)
 	if (hasCommunicationTools(extras?.activeToolNames)) {
 		extraSections.push(WORKER_COMMUNICATION_PROMPT)
+		// The report tool exists only for ferment-linked workers — mention it
+		// only when it is actually registered for this run.
+		if (uniqueToolNames(extras?.activeToolNames).includes(WORKER_REPORT_TOOL_NAME)) {
+			extraSections.push("- submit_agent_report remains your one final task outcome.")
+		}
 	}
 	const extrasSuffix = extraSections.length > 0 ? `\n\n${extraSections.join("\n\n")}` : ""
 	const availableToolsBlock = buildAvailableToolsBlock(extras?.activeToolNames)

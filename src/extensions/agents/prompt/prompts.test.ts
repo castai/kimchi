@@ -421,11 +421,17 @@ describe("worker communication prompt", () => {
 		const build = (activeToolNames: string[]) =>
 			buildAgentPrompt(agent, FIXED_CWD, FIXED_ENV, undefined, { activeToolNames })
 
-		const both = build(["read", "list_agent_contacts", "send_agent_message"])
+		const both = build(["read", "list_agent_contacts", "send_agent_message", "submit_agent_report"])
 		expect(both).toContain("## Communication")
 		expect(both).toContain("Call list_agent_contacts before sending to a peer")
 		expect(both).toContain("queued_for_parent is not an answer")
+		// The report-tool line renders only when the tool is actually registered
+		// (ferment-linked workers); a plain communicating worker must not be
+		// told about a tool it cannot call.
 		expect(both).toContain("submit_agent_report remains your one final task outcome")
+		const withoutReportTool = build(["read", "list_agent_contacts", "send_agent_message"])
+		expect(withoutReportTool).toContain("## Communication")
+		expect(withoutReportTool).not.toContain("submit_agent_report remains")
 
 		for (const activeToolNames of [["read", "list_agent_contacts"], ["read", "send_agent_message"], ["read"], []]) {
 			expect(build(activeToolNames), activeToolNames.join(", ")).not.toContain("## Communication")
