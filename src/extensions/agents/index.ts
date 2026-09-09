@@ -1106,11 +1106,13 @@ export default function (pi: ExtensionAPI) {
 			onSessionCreated: (session: AgentSession) => {
 				bgCallbacks.onSessionCreated?.(session)
 				const s = session as unknown as {
-					subscribe: (fn: (e: { type: string }) => void) => () => void
+					subscribe?: (fn: (e: { type: string }) => void) => () => void
 				}
-				s.subscribe((ev) => {
-					if (ev.type === "activity_reset") resetForReattach()
-				})
+				if (typeof s?.subscribe === "function") {
+					s.subscribe((ev) => {
+						if (ev.type === "activity_reset") resetForReattach()
+					})
+				}
 			},
 		}
 		const id = manager.spawn(pi, ctx, "Remote-Runner", promptText, spawnOpts)

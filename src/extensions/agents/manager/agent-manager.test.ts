@@ -40,6 +40,7 @@ vi.mock("../../teleport/provisioning/git-token.js", () => ({
 import type { AgentSession, ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
 import { resolveClonePlan } from "../../teleport/provisioning/clone-plan.js"
 import { resolveGitToken } from "../../teleport/provisioning/git-token.js"
+import type { AgentRecord } from "../personas/types.js"
 import { AgentManager, buildAgentOutcome } from "./agent-manager.js"
 import { resumeAgent, runAgent } from "./agent-runner.js"
 import { runRemoteAgent } from "./remote-agent-runner.js"
@@ -1026,7 +1027,6 @@ describe("AgentManager remote git credential resolution", () => {
 				wsUrl: "wss://worker.example.com",
 				host: "worker.example.com",
 				cwd: "/home/sandbox/acp-test",
-				apiKey: "test-api-key",
 			},
 		})
 	})
@@ -1139,7 +1139,6 @@ describe("AgentManager reconnecting lifecycle", () => {
 			wsUrl: "wss://worker.example.com",
 			host: "worker.example.com",
 			cwd: "/home/sandbox/acp-test",
-			apiKey: "test-api-key",
 		},
 	} satisfies Awaited<ReturnType<typeof runRemoteAgent>>
 
@@ -1207,5 +1206,35 @@ describe("AgentManager reconnecting lifecycle", () => {
 		// Let the parked runner settle so dispose doesn't see a mid-flight record.
 		resolveRun(remoteResult)
 		await done.catch(() => {})
+	})
+
+	it("a late onReconnecting callback never resurrects a stopped record", async () => {
+		const { opts, resolveRun, done } = await spawnParkedRemote()
+		const record = manager?.listAgents()[0]
+
+		opts.onReconnecting?.(true)
+		expect(record?.status).toBe("reconnecting")
+
+		// User aborts while the runner is mid-recovery, and the runner's
+		// reattach callback fires afterwards — it must not flip the record
+		// back to "running".
+		manager?.abortAll()
+		expect(record?.status).toBe("stopped")
+
+		opts.onReconnecting?.(false)
+		expect(record?.status).toBe("stopped")
+
+		resolveRun(remoteResult)
+		await done.catch(() => {})
+	})
+
+	it("buildAgentOutcome does not classify a reconnecting record as an error", () => {
+		const outcome = buildAgentOutcome({
+			status: "reconnecting",
+			startedAt: Date.now(),
+		} as unknown as AgentRecord)
+		// Reconnecting is live, recoverable work — not a failure.
+		expect(outcome.reason).not.toBe("error")
+		expect(outcome.reason).toBeUndefined()
 	})
 })

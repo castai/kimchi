@@ -445,7 +445,10 @@ export class AgentManager {
 			},
 			onReconnecting: (reconnecting) => {
 				remoteSession.setReconnecting(reconnecting)
-				record.status = reconnecting ? "reconnecting" : "running"
+				// Never resurrect a record the user already stopped or aborted.
+				if (isActiveStatus(record.status)) {
+					record.status = reconnecting ? "reconnecting" : "running"
+				}
 			},
 			callbacks: {
 				onTextDelta: (delta, fullText) => {
@@ -928,7 +931,7 @@ If the report is missing, call resume_subagent with purpose finalize_report befo
 
 export function buildAgentOutcome(record: AgentRecord): AgentOutcome {
 	const outcome = classifyAgentOutcome(record)
-	const reason = record.status === "error" || record.status === "reconnecting" ? "error" : record.abortReason
+	const reason = record.status === "error" ? "error" : record.abortReason
 	const durationMs = (record.completedAt ?? Date.now()) - record.startedAt
 	const text = record.result?.trim() || record.error?.trim()
 	const resumable =

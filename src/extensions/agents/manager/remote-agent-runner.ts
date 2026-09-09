@@ -54,10 +54,6 @@ export interface RemoteSessionMeta {
 	host: string
 	/** The unique remote working directory (e.g. /home/sandbox/acp-a1b2c3d4). */
 	cwd: string
-	/** Cloud API key retained in memory for re-auth during reconnect (never persisted). */
-	apiKey: string
-	/** Cloud API endpoint override retained for re-auth (never persisted). */
-	endpoint?: string
 }
 
 export interface RemoteRunOptions {
@@ -246,8 +242,15 @@ export async function runRemoteAgent(
 		wsUrl: creds.wsUrl,
 		host: creds.host,
 		cwd,
-		apiKey,
-		endpoint,
+	}
+
+	/** Applies freshly authenticated credentials — the creds handle AND the
+	 *  session meta stay in sync, so onReady/remoteSession consumers never see
+	 *  a stale endpoint after a revive or reattach moved the workspace. */
+	const applyCreds = (fresh: WorkspaceCredentials): void => {
+		creds = fresh
+		meta.wsUrl = fresh.wsUrl
+		meta.host = fresh.host
 	}
 
 	const backoffs = options.reconnectBackoffsMs ?? DEFAULT_RECONNECT_BACKOFFS_MS
@@ -337,7 +340,9 @@ export async function runRemoteAgent(
 			acpClient.forceDisconnect(disconnectReason)
 		}
 		if (terminal || signal?.aborted || stop) return
-		pollTimer = setTimeout(pollStatus, pollDelayMs())
+		pollTimer = setTimeout(() => {
+			void pollStatus().catch(() => {})
+		}, pollDelayMs())
 	}
 
 	// ---- recovery helpers (closures over the mutable handles above) --------
@@ -367,7 +372,7 @@ export async function runRemoteAgent(
 		for (let i = 0; i < REVIVE_MAX_ATTEMPTS; i++) {
 			if (signal?.aborted) throw makeAbortError()
 			try {
-				creds = await authenticateWorkspace(workspaceId, apiKey, workspaceName, { endpoint })
+				applyCreds(await authenticateWorkspace(workspaceId, apiKey, workspaceName, { endpoint }))
 				await waitForWorkspaceReady({ wsUrl: creds.wsUrl, connectToken: creds.connectToken, signal })
 				await client.close().catch(() => {})
 				client = new WorkerClient(creds)
@@ -427,7 +432,7 @@ export async function runRemoteAgent(
 		// stale token.
 		try {
 			if (!signal?.aborted) {
-				creds = await authenticateWorkspace(workspaceId, apiKey, workspaceName, { endpoint })
+				applyCreds(await authenticateWorkspace(workspaceId, apiKey, workspaceName, { endpoint }))
 				await client.close().catch(() => {})
 				client = new WorkerClient(creds)
 			}
@@ -489,7 +494,7 @@ export async function runRemoteAgent(
 				// route through it.)
 				if (pollAuthRejected || ++consecutivePollFailures >= POLL_FAILURES_BEFORE_REFRESH) {
 					try {
-						creds = await authenticateWorkspace(workspaceId, apiKey, workspaceName, { endpoint })
+						applyCreds(await authenticateWorkspace(workspaceId, apiKey, workspaceName, { endpoint }))
 						await client.close().catch(() => {})
 						client = new WorkerClient(creds)
 						consecutivePollFailures = 0
@@ -613,7 +618,7 @@ export async function runRemoteAgent(
 
 			// Re-authenticate (token may have expired during the disconnect).
 			try {
-				creds = await authenticateWorkspace(workspaceId, apiKey, workspaceName, { endpoint })
+				applyCreds(await authenticateWorkspace(workspaceId, apiKey, workspaceName, { endpoint }))
 			} catch {
 				if (signal?.aborted) throw makeAbortError()
 				reattachAttempts++
@@ -721,8 +726,14 @@ export async function runRemoteAgent(
 			})
 		}
 
-		// Start the status poll loop now that the session exists.
-		pollTimer = setTimeout(pollStatus, pollDelayMs())
+		// Start the status poll loop AFTER the WS is established. Starting it
+		// before initialize() risks force-disconnecting a still-handshaking
+		// client — the worker reports clientConnected=false until the first WS
+		// connection completes, and a poll in that window would kill a healthy run.
+		// Scheduling is wrapped so a throwing tick can never become an unhandled rejection.
+		pollTimer = setTimeout(() => {
+			void pollStatus().catch(() => {})
+		}, pollDelayMs())
 
 		await acpClient.initialize()
 		acpSessionId ??= acpClient.sessionId ?? undefined
@@ -752,6 +763,10 @@ export async function runRemoteAgent(
 			}
 		}
 
+		// The run is complete (or recovered) — stop the poller immediately so
+		// no scheduled tick fires between prompt() resolving and the finally
+		// block (e.g. during deleteSession).
+		terminal = true
 		stopReason = promptResult.stopReason
 		usage = promptResult.usage
 

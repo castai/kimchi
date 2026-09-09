@@ -190,7 +190,6 @@ describe("handleRemoteCompletion", () => {
 			wsUrl: "wss://worker.example.com",
 			host: "worker.example.com",
 			cwd: "/home/sandbox/kimchi-acp-a1b2c3d4",
-			apiKey: "test-api-key",
 		}
 
 		beforeEach(() => {
@@ -298,7 +297,6 @@ describe("handleRemoteCompletion", () => {
 					wsUrl: "wss://w",
 					host: "w",
 					cwd: "/home/sandbox/s1",
-					apiKey: "test-api-key",
 				},
 			})
 

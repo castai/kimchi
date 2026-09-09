@@ -609,8 +609,6 @@ describe("runRemoteAgent", () => {
 				wsUrl: "wss://worker.example.com",
 				host: "worker.example.com",
 				cwd: expect.stringMatching(/^\/home\/sandbox\/acp-[0-9a-f]{8}$/),
-				apiKey: "test-api-key",
-				endpoint: undefined,
 			})
 		})
 
