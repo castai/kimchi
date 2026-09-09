@@ -97,6 +97,16 @@ describe("resolveDefaultTags", () => {
 		expect(tierByTag.get("team:c")).toBe("project")
 	})
 
+	it("env replaces all same-key tags from both weaker tiers", () => {
+		writeGlobalConfig(["k:global", "other:1"])
+		writeProjectConfig(["k:project", "another:2"])
+		const { tags, tierByTag } = resolveDefaultTags({ cwd, homeDir: home, envTags: "k:env" })
+		expect(tags).toEqual(["another:2", "k:env", "other:1"])
+		expect(tierByTag.get("k:env")).toBe("env")
+		expect(tierByTag.has("k:global")).toBe(false)
+		expect(tierByTag.has("k:project")).toBe(false)
+	})
+
 	it("filters invalid tags from files and env", () => {
 		writeGlobalConfig(["valid:one", "invalid", ":bad", "key:"])
 		const { tags } = resolveDefaultTags({ cwd, homeDir: home, envTags: "env:prod,also invalid,key:" })
@@ -119,6 +129,24 @@ describe("resolveDefaultTags", () => {
 
 		expect(tags).toEqual(["repo:api"])
 		expect(warn).toHaveBeenCalledWith(expect.stringContaining(globalPath))
+	})
+
+	it("falls back to the other tiers when the working directory is unusable", () => {
+		writeGlobalConfig(["team:backend"])
+		const doomed = join(root, "doomed")
+		mkdirSync(doomed)
+		const originalCwd = process.cwd()
+		const warn = vi.spyOn(console, "warn").mockImplementation(() => {})
+		process.chdir(doomed)
+		rmSync(doomed, { recursive: true, force: true })
+		try {
+			const { tags } = resolveDefaultTags({ homeDir: home })
+			expect(tags).toEqual(["team:backend"])
+			expect(warn).toHaveBeenCalledWith(expect.stringContaining("project tag config discovery failed"))
+		} finally {
+			process.chdir(originalCwd)
+			warn.mockRestore()
+		}
 	})
 
 	it("ignores a non-array tags field", () => {

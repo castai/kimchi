@@ -10,16 +10,6 @@ import { findNearestAncestorPath } from "./utils/find-nearest-ancestor.js"
  * the result.
  */
 export function getKimchiProjectSkillPaths(cwd = process.cwd()): string[] {
-	const skillsDir = findNearestAncestorSkillDir(cwd, join(".kimchi", "skills"))
+	const skillsDir = findNearestAncestorPath(cwd, join(".kimchi", "skills"))
 	return skillsDir ? [skillsDir] : []
-}
-
-/**
- * Walk from `cwd` up to the filesystem root looking for `relativeSkillDir`.
- * Intentionally not gated on trust flags — project-local skill roots are
- * treated as part of the workspace, analogous to Pi's own project resource
- * discovery. Delegates to the shared ancestor walk.
- */
-export function findNearestAncestorSkillDir(cwd: string, relativeSkillDir: string): string | undefined {
-	return findNearestAncestorPath(cwd, relativeSkillDir)
 }

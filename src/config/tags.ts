@@ -36,6 +36,10 @@ interface TagsConfig {
 const GLOBAL_TAGS_FILE_REL = join(".config", "kimchi", "tags.json")
 const PROJECT_TAGS_FILE_REL = join(".kimchi", "tags.json")
 
+function errText(err: unknown): string {
+	return err instanceof Error ? err.message : String(err)
+}
+
 function readTagFile(path: string): string[] {
 	try {
 		const config = readJson(path) as TagsConfig
@@ -44,7 +48,7 @@ function readTagFile(path: string): string[] {
 	} catch (err) {
 		// Fail open — a broken tag config must not block the session — but
 		// surface it rather than silently ignoring it.
-		console.warn(`[tags] ignoring unreadable tag config ${path}: ${err}`)
+		console.warn(`[tags] ignoring unreadable tag config ${path}: ${errText(err)}`)
 		return []
 	}
 }
@@ -71,15 +75,23 @@ function parseEnvTags(envTags: string): string[] {
  * sorted for determinism.
  */
 export function resolveDefaultTags(options?: { cwd?: string; homeDir?: string; envTags?: string }): TagTierDefaults {
-	const cwd = options?.cwd ?? process.cwd()
 	const home = options?.homeDir ?? homedir()
 	const envTags = options?.envTags ?? process.env.KIMCHI_TAGS
 
 	const tiers: Array<{ tier: TagTier; tags: string[] }> = [
 		{ tier: "global", tags: readTagFile(join(home, GLOBAL_TAGS_FILE_REL)) },
 	]
-	const projectPath = findNearestAncestorPath(cwd, PROJECT_TAGS_FILE_REL)
-	if (projectPath) tiers.push({ tier: "project", tags: readTagFile(projectPath) })
+
+	// Project tier — nearest-ancestor lookup from cwd. An unusable cwd
+	// (deleted, unreadable parent) must not abort resolution; fall back to
+	// no project tags rather than failing the session.
+	try {
+		const projectPath = findNearestAncestorPath(options?.cwd ?? process.cwd(), PROJECT_TAGS_FILE_REL)
+		if (projectPath) tiers.push({ tier: "project", tags: readTagFile(projectPath) })
+	} catch (err) {
+		console.warn(`[tags] project tag config discovery failed: ${errText(err)}`)
+	}
+
 	const envTagList = envTags ? parseEnvTags(envTags) : []
 	if (envTagList.length > 0) tiers.push({ tier: "env", tags: envTagList })
 
@@ -89,10 +101,14 @@ export function resolveDefaultTags(options?: { cwd?: string; homeDir?: string; e
 			const key = parseTag(tag)?.key
 			if (key === undefined) continue
 			// A weaker tier's tag with the same key loses to this tier's value.
-			// Same-key tags within one tier coexist.
+			// Same-key tags within one tier coexist. Stale entries are collected
+			// first and deleted after the loop — deleting from a Map while
+			// iterating it can skip entries.
+			const stale: string[] = []
 			for (const [existing, existingTier] of tierByTag) {
-				if (existingTier !== tier && parseTag(existing)?.key === key) tierByTag.delete(existing)
+				if (existingTier !== tier && parseTag(existing)?.key === key) stale.push(existing)
 			}
+			for (const existing of stale) tierByTag.delete(existing)
 			tierByTag.set(tag, tier)
 		}
 	}
