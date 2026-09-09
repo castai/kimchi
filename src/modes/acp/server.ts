@@ -68,6 +68,8 @@ import { removePendingEntry, setCallerMcpServers } from "../../extensions/mcp-ad
 import type { McpServerManager } from "../../extensions/mcp-adapter/server-manager.js"
 import type { ProbeResult } from "../../extensions/mcp-adapter/types.js"
 import { refFromModel, splitModelRef } from "../../extensions/model-catalog/ref-utils.js"
+import { getMultiModelEnabled, setMultiModelEnabled } from "../../extensions/multi-model.js"
+import { getOrchestratorModel } from "../../extensions/orchestration/model-roles.js"
 import { loadConfig } from "../../extensions/permissions/config.js"
 import {
 	PERMISSION_MODES,
@@ -676,11 +678,31 @@ export class KimchiAcpAgent implements Agent {
 			throw RequestError.invalidParams(undefined, "modelId is required")
 		}
 		const { session } = record
+		const sessionId = session.sessionId
 		const modelRegistry = getSessionModelRegistry(session)
+		if (value === "multi-model") {
+			const { model: orchestrator, modelRef: orchRef } = getOrchestratorModel(session.sessionId, modelRegistry)
+			if (!orchestrator) {
+				throw RequestError.invalidParams(undefined, `multi-model orchestrator (${orchRef}) is not available`)
+			}
+			const previousMultiModelEnabled = getMultiModelEnabled(session.sessionManager)
+			setMultiModelEnabled(sessionId, true)
+			try {
+				await session.setModel(orchestrator)
+			} catch {
+				setMultiModelEnabled(sessionId, previousMultiModelEnabled)
+				// Pi's setModel only throws "if no auth is configured for the model"
+				throw RequestError.authRequired(undefined, `orchestrator model ${orchRef} is not available: auth required`)
+			}
+			return value
+		}
 
 		const { provider, modelId } = splitModelRef(value) || {}
 		if (!provider || !modelId) {
-			throw RequestError.invalidParams(undefined, `invalid model format: "${value}". expected "provider/modelId".`)
+			throw RequestError.invalidParams(
+				undefined,
+				`invalid model format: "${value}". expected "provider/modelId" or "multi-model".`,
+			)
 		}
 		const target = modelRegistry.find(provider, modelId)
 		if (!target) {
@@ -690,13 +712,16 @@ export class KimchiAcpAgent implements Agent {
 				.sort()
 			throw RequestError.invalidParams(
 				undefined,
-				`model not found: "${value}". available models: ${available.join(", ")}`,
+				`model not found: "${value}". available models: multi-model, ${available.join(", ")}`,
 			)
 		}
 
+		const previousMultiModelEnabled = getMultiModelEnabled(session.sessionManager)
+		setMultiModelEnabled(sessionId, false)
 		try {
 			await session.setModel(target)
 		} catch {
+			setMultiModelEnabled(sessionId, previousMultiModelEnabled)
 			// Pi's setModel only throws "if no auth is configured for the model"
 			throw RequestError.authRequired(undefined, `model ${refFromModel(target)} is not available: auth required`)
 		}
@@ -1684,10 +1709,10 @@ export function buildPermissionsConfigOption(currentMode: PermissionMode): Sessi
 
 /**
  * Builds a SessionConfigOption for the model setting.
- * Lists the concrete models available to the session in a single select UI.
+ * Combines the orchestrator model with multi-model support into a single select UI.
  * Exported for testing.
  */
-type AgentSessionModelConfig = Pick<AgentSession, "model" | "modelRuntime"> & {
+type AgentSessionModelConfig = Pick<AgentSession, "model" | "modelRuntime" | "sessionId" | "sessionManager"> & {
 	modelRegistry?: ModelRegistry
 }
 
@@ -1698,22 +1723,35 @@ function getSessionModelRegistry(
 }
 
 export function buildModelConfigOption(session: AgentSessionModelConfig): SessionConfigOption {
+	const multiModelEnabled = getMultiModelEnabled(session.sessionManager)
 	const modelRegistry = getSessionModelRegistry(session)
-	const options = modelRegistry
-		.getAvailable()
-		.map((m) => ({
-			value: refFromModel(m),
-			name: m.name,
-		}))
-		.sort((a, b) => a.value.localeCompare(b.value))
+	const {
+		model: orchestrator,
+		modelRef: orchRef,
+		modelId: orchId,
+	} = getOrchestratorModel(session.sessionId, modelRegistry)
+	const orchName = orchestrator?.name ?? orchId ?? orchRef
+	const options = [
+		{
+			value: "multi-model",
+			name: `Multi-model (${orchName})`,
+		},
+		...modelRegistry
+			.getAvailable()
+			.map((m) => ({
+				value: refFromModel(m),
+				name: m.name,
+			}))
+			.sort((a, b) => a.value.localeCompare(b.value)),
+	]
 	// biome-ignore lint/style/noNonNullAssertion: we assert model availability before session is created/loaded via assertSessionHasModel.
-	const currentValue = refFromModel(session.model!)
+	const currentValue = multiModelEnabled ? "multi-model" : refFromModel(session.model!)
 	return {
 		id: "model",
 		name: "Model",
 		type: "select",
 		category: "model",
-		description: "Select the active AI model.",
+		description: "Select the active AI model: single-model or multi-model (orchestrator + workers).",
 		currentValue,
 		options,
 	}
