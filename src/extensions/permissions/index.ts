@@ -43,7 +43,6 @@ import { FERMENT_V2_RESOURCE_ID, FERMENT_V2_TOOL_NAMES } from "../ferment-v2/con
 import { buildApprovedPlanObjective, getFermentV2PlanExecutor } from "../ferment-v2/plan-executor.js"
 import { withBlocked } from "../herdr-events.js"
 import { isIdeConnected } from "../ide-adapter/index.js"
-import { getMultiModelEnabled } from "../multi-model.js"
 import { createSystemPromptBlocks } from "../prompt-construction/index.js"
 import type { SystemPromptBlock } from "../prompt-construction/system-prompt-blocks.js"
 import {
@@ -610,7 +609,7 @@ export default function permissionsExtension(pi: ExtensionAPI): void {
 		setActiveFermentAndApplyProfile(pi, defaultFermentRuntime, activated.ferment)
 		appendRefEntry(pi, activated.ferment.id)
 		const activePhase = activated.ferment.phases.find((p) => p.status === "active")
-		const nextActionHint = formatNextActionHint(activated.ferment, getMultiModelEnabled(ctx.sessionManager))
+		const nextActionHint = formatNextActionHint(activated.ferment)
 		await safeSendMessage(
 			pi,
 			{

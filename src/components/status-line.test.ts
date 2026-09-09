@@ -6,14 +6,12 @@ import type { StatusLineElementId } from "../config/status-line-config.js"
 import * as AGENTS from "../extensions/agents/index.js"
 import { setBillingStatusForTest } from "../extensions/billing/status.js"
 import * as FERMENT from "../extensions/ferment/index.js"
-import * as MULTI_MODEL from "../extensions/multi-model.js"
 import { clearAutoRoutingState, setAutoRoutingState } from "../extensions/router/state.js"
 import * as TAGS from "../extensions/tags.js"
 import type { Ferment } from "../ferment/types.js"
 import {
 	buildContextCompact,
 	buildControlsLineSegments,
-	buildModelAbbrev,
 	buildScriptPayload,
 	buildStatusLineSegments,
 	renderFittedLine,
@@ -204,7 +202,6 @@ function mockActiveFerment(): void {
 /** Shared setup for status-line behavioural tests. */
 function setupStatusLineTest(): { theme: Theme; restorePlatform: () => void } {
 	pinnedElements = []
-	vi.spyOn(MULTI_MODEL, "getMultiModelEnabled").mockReturnValue(true)
 	vi.spyOn(AGENTS, "getActiveAgentCount").mockReturnValue(0)
 	vi.spyOn(FERMENT, "getActiveFerment").mockReturnValue(undefined)
 	vi.spyOn(FERMENT, "getCurrentPhaseIndex").mockReturnValue(undefined)
@@ -321,38 +318,12 @@ describe("compact-form builders", () => {
 			expect(seg.raw).toEqual({ kind: "context", percent: 50, pctColor: undefined })
 		})
 	})
-
-	describe("buildModelAbbrev", () => {
-		it("abbreviates multi-model label", () => {
-			const seg = buildModelAbbrev(compactCtx, true, "kimi-k2.6")
-			expect(seg.id).toBe("model")
-			expect(seg.text).toBe("m-m (kimi-k2.6) → ctrl+p")
-			expect(seg.raw).toEqual({ kind: "model", multiModel: true, modelId: "kimi-k2.6" })
-		})
-
-		it("keeps model id when not multi-model", () => {
-			const seg = buildModelAbbrev(compactCtx, false, "claude-opus-4-7")
-			expect(seg.text).toBe("claude-opus-4-7 → ctrl+p")
-			expect(seg.raw).toEqual({ kind: "model", multiModel: false, modelId: "claude-opus-4-7" })
-		})
-
-		it("keeps the routed model next to auto in the compact form", () => {
-			const seg = buildModelAbbrev(compactCtx, false, "auto", "kimi-k2.6")
-			expect(seg.text).toBe("auto (kimi-k2.6) → ctrl+p")
-			expect(seg.raw).toEqual({
-				kind: "model",
-				multiModel: false,
-				modelId: "auto",
-				routedModelId: "kimi-k2.6",
-			})
-		})
-	})
 })
 
 describe("SHORTCUT_TAIL regex", () => {
 	// Real ANSI from the production code paths.
 	//   permissions: this.theme.fg("dim", "→ shift+tab")
-	//   multi-model: this.dim(`→ ${shortcut}`)
+	//   model: this.dim(`→ ${shortcut}`)
 	// Both end up as `<ANSI-open>→ <key><ANSI-close>` preceded by a space.
 
 	it("matches the permissions-extension trailing shortcut", () => {
@@ -362,9 +333,9 @@ describe("SHORTCUT_TAIL regex", () => {
 	})
 
 	it("matches the model segment trailing shortcut", () => {
-		const text = "multi-model (kimi-k2.6) \x1b[38;5;242m→ ctrl+p\x1b[39m"
+		const text = "auto (kimi-k2.6) \x1b[38;5;242m→ ctrl+p\x1b[39m"
 		expect(SHORTCUT_TAIL.test(text)).toBe(true)
-		expect(text.replace(SHORTCUT_TAIL, "")).toBe("multi-model (kimi-k2.6)")
+		expect(text.replace(SHORTCUT_TAIL, "")).toBe("auto (kimi-k2.6)")
 	})
 
 	it("matches the ferment trailing shortcut", () => {
@@ -396,7 +367,6 @@ describe("StatusLine behavioural acceptance at representative widths", () => {
 		// shape so the SHORTCUT_TAIL regex can find it.
 		const permissionsMode = "● default \x1b[2m→ shift+tab\x1b[0m"
 		statusLineData = createMockStatusLineData({ permissionsMode })
-		vi.spyOn(MULTI_MODEL, "getMultiModelEnabled").mockReturnValue(true)
 		vi.spyOn(AGENTS, "getActiveAgentCount").mockReturnValue(0)
 		vi.spyOn(FERMENT, "getActiveFerment").mockReturnValue(undefined)
 		vi.spyOn(FERMENT, "getCurrentPhaseIndex").mockReturnValue(undefined)
@@ -424,7 +394,7 @@ describe("StatusLine behavioural acceptance at representative widths", () => {
 	it("width 160: no pinned elements — hint is padded to far right", () => {
 		const { raw, visible } = renderAt(160)
 		expect(visible).toContain("● default → shift+tab")
-		expect(visible).toContain("multi-model (claude-opus-4-6) → ctrl+p")
+		expect(visible).toContain("claude-opus-4-6 → ctrl+p")
 		expect(visible).toContain("/ for commands")
 		expect(visibleWidth(raw)).toBe(160)
 		expect(visible.endsWith("/ for commands")).toBe(true)
@@ -461,7 +431,7 @@ describe("StatusLine behavioural acceptance at representative widths", () => {
 			expect(visibleWidth(raw)).toBeLessThanOrEqual(60)
 			// Core trio survives in compact form.
 			expect(visible).toContain("● default")
-			expect(visible).toContain("m-m (claude-opus-4-6)")
+			expect(visible).toContain("claude-opus-4-6")
 			expect(visible).toContain("50% ctx")
 			// Shortcut hints are gone at compact width (hardcoded priority wins).
 			expect(visible).not.toContain("ctrl+p")
@@ -514,7 +484,7 @@ describe("StatusLine behavioural acceptance at representative widths", () => {
 		withPinned(["permissions", "model"], () => {
 			const { visible } = renderAt(200)
 			const permIdx = visible.indexOf("● default")
-			const modelIdx = visible.indexOf("multi-model (claude-opus-4-6)")
+			const modelIdx = visible.indexOf("claude-opus-4-6")
 			const fermentIdx = visible.indexOf("Ferment: my-ferment")
 
 			expect(permIdx).toBe(0)
@@ -530,7 +500,6 @@ describe("StatusLine segment coverage", () => {
 
 	beforeEach(() => {
 		theme = createMockTheme()
-		vi.spyOn(MULTI_MODEL, "getMultiModelEnabled").mockReturnValue(true)
 		vi.spyOn(AGENTS, "getActiveAgentCount").mockReturnValue(0)
 		vi.spyOn(FERMENT, "getActiveFerment").mockReturnValue(undefined)
 		vi.spyOn(FERMENT, "getCurrentPhaseIndex").mockReturnValue(undefined)
@@ -682,7 +651,7 @@ describe("StatusLine segment coverage", () => {
 			expect(compact).not.toContain("$274.59/$2k")
 			// … and sheds entirely before the core trio is touched.
 			expect(shed).not.toContain("Budget:")
-			expect(shed).toContain("m-m (claude-opus-4-6)")
+			expect(shed).toContain("claude-opus-4-6")
 		})
 	})
 
@@ -717,7 +686,6 @@ describe("StatusLine info line", () => {
 
 	beforeEach(() => {
 		theme = createMockTheme()
-		vi.spyOn(MULTI_MODEL, "getMultiModelEnabled").mockReturnValue(true)
 		vi.spyOn(AGENTS, "getActiveAgentCount").mockReturnValue(0)
 		vi.spyOn(FERMENT, "getActiveFerment").mockReturnValue(undefined)
 		vi.spyOn(FERMENT, "getCurrentPhaseIndex").mockReturnValue(undefined)
@@ -790,7 +758,6 @@ describe("StatusLine regression tests", () => {
 
 	beforeEach(() => {
 		theme = createMockTheme()
-		vi.spyOn(MULTI_MODEL, "getMultiModelEnabled").mockReturnValue(true)
 		vi.spyOn(AGENTS, "getActiveAgentCount").mockReturnValue(0)
 		vi.spyOn(FERMENT, "getActiveFerment").mockReturnValue(undefined)
 		vi.spyOn(FERMENT, "getCurrentPhaseIndex").mockReturnValue(undefined)
@@ -837,7 +804,6 @@ describe("status line pinning", () => {
 	beforeEach(() => {
 		theme = createMockTheme()
 		pinnedElements = []
-		vi.spyOn(MULTI_MODEL, "getMultiModelEnabled").mockReturnValue(false)
 		vi.spyOn(AGENTS, "getActiveAgentCount").mockReturnValue(0)
 		vi.spyOn(FERMENT, "getActiveFerment").mockReturnValue(undefined)
 		vi.spyOn(FERMENT, "getCurrentPhaseIndex").mockReturnValue(undefined)
@@ -884,15 +850,6 @@ describe("status line pinning", () => {
 		const afterClear = stripAnsi(makeStatusLine({ modelId: "auto" }).render(200)[0])
 		expect(afterClear).toContain("auto → ctrl+p")
 		expect(afterClear).not.toContain("kimi-k2.6")
-	})
-
-	it("keeps the multi-model label unchanged when the active model is Auto", () => {
-		vi.spyOn(MULTI_MODEL, "getMultiModelEnabled").mockReturnValue(true)
-		setAutoRoutingState("test-session", { status: "resolved", model: concreteModel("kimi-k2.6") })
-
-		const visible = stripAnsi(makeStatusLine({ modelId: "auto" }).render(200)[0])
-
-		expect(visible).toContain("multi-model (auto) → ctrl+p")
 	})
 
 	it("keeps the routed suffix through compaction at narrow width", () => {
@@ -981,7 +938,6 @@ describe("status line pinning", () => {
 	it("pinned-first ordering: permissions pinned, agents not → unpinned agents appear left of pinned permissions", () => {
 		withPinned(["permissions"], () => {
 			vi.spyOn(AGENTS, "getActiveAgentCount").mockReturnValue(2) // agents now visible
-			vi.spyOn(MULTI_MODEL, "getMultiModelEnabled").mockReturnValue(true)
 			vi.spyOn(FERMENT, "getActiveFerment").mockReturnValue(undefined)
 			const permissionsMode = "● default \x1b[2m→ shift+tab\x1b[0m"
 			const sl = new StatusLine(createMockContext(), theme, createMockStatusLineData({ permissionsMode }))
@@ -995,7 +951,6 @@ describe("status line pinning", () => {
 	it("pinned and unpinned segments are separated by ' · '", () => {
 		withPinned(["permissions"], () => {
 			vi.spyOn(AGENTS, "getActiveAgentCount").mockReturnValue(2)
-			vi.spyOn(MULTI_MODEL, "getMultiModelEnabled").mockReturnValue(false)
 			vi.spyOn(FERMENT, "getActiveFerment").mockReturnValue(undefined)
 			const sl = new StatusLine(createMockContext(), theme, createMockStatusLineData({ permissionsMode: "● default" }))
 			const visible = stripAnsi(sl.render(200)[0])
@@ -1076,7 +1031,7 @@ describe("status line priority shedding", () => {
 	it("sheds usage first", () => {
 		withPinned(["context", "agents", "usage"], () => {
 			vi.spyOn(AGENTS, "getActiveAgentCount").mockReturnValue(2)
-			const visible = renderVisible(75, { percent: 50 })
+			const visible = renderVisible(65, { percent: 50 })
 			expect(visible).not.toContain("↑0 ↓0")
 			expect(visible).toContain("2 agents")
 		})
@@ -1091,7 +1046,7 @@ describe("status line priority shedding", () => {
 			expect(visible).not.toContain("↑0")
 			// … while permissions, model and context survive compact.
 			expect(visible).toContain("● default")
-			expect(visible).toContain("m-m (claude-opus-4-6)")
+			expect(visible).toContain("claude-opus-4-6")
 			expect(visible).toContain("50% ctx")
 		})
 	})
@@ -1100,7 +1055,7 @@ describe("status line priority shedding", () => {
 		withPinned(["context"], () => {
 			const visible = renderVisible(45, { percent: 50 })
 			expect(visible).toContain("● default")
-			expect(visible).toContain("m-m (claude-opus-4-6)")
+			expect(visible).toContain("claude-opus-4-6")
 			expect(visible).toContain("50% ctx")
 			expect(visibleWidth(visible)).toBeLessThanOrEqual(45)
 		})
@@ -1110,7 +1065,7 @@ describe("status line priority shedding", () => {
 		mockActiveFerment()
 		const visible = renderVisible(200)
 		const permIdx = visible.indexOf("● default")
-		const modelIdx = visible.indexOf("multi-model (claude-opus-4-6)")
+		const modelIdx = visible.indexOf("claude-opus-4-6")
 		const fermentIdx = visible.indexOf("Ferment: my-ferment")
 		expect(permIdx).toBeGreaterThanOrEqual(0)
 		expect(modelIdx).toBeGreaterThan(permIdx)
@@ -1121,7 +1076,7 @@ describe("status line priority shedding", () => {
 		mockActiveFerment()
 		const visible = renderVisible(60)
 		expect(visible).not.toContain("my-ferment")
-		expect(visible).toContain("m-m (claude-opus-4-6)")
+		expect(visible).toContain("claude-opus-4-6")
 		expect(visible).toContain("● default")
 	})
 
@@ -1132,7 +1087,7 @@ describe("status line priority shedding", () => {
 
 		const narrow = renderVisibleWith(data, 70)
 		expect(narrow).not.toContain("typescript-language-server")
-		expect(narrow).toContain("m-m (claude-opus-4-6)")
+		expect(narrow).toContain("claude-opus-4-6")
 		expect(narrow).toContain("● default")
 	})
 })
@@ -1169,13 +1124,13 @@ describe("script controls line (statusLine.command path)", () => {
 		const { visible } = controlsLine(200)
 
 		expect(visible).toContain("● default → shift+tab")
-		expect(visible).toContain("multi-model (claude-opus-4-6)")
+		expect(visible).toContain("claude-opus-4-6")
 		expect(visible).toContain("Ferment: my-ferment")
 		expect(visible).toContain("Credits: $5.00")
 		expect(visible).toContain("Budget: 13.73% ($274.59/$2k)")
 
 		const permIdx = visible.indexOf("● default")
-		const modelIdx = visible.indexOf("multi-model (claude-opus-4-6)")
+		const modelIdx = visible.indexOf("claude-opus-4-6")
 		const fermentIdx = visible.indexOf("Ferment: my-ferment")
 		expect(modelIdx).toBeGreaterThan(permIdx)
 		expect(fermentIdx).toBeGreaterThan(modelIdx)
@@ -1197,7 +1152,7 @@ describe("script controls line (statusLine.command path)", () => {
 
 		expect(visibleWidth(raw)).toBeLessThanOrEqual(60)
 		expect(visible).toContain("● default")
-		expect(visible).toContain("m-m (claude-opus-4-6)")
+		expect(visible).toContain("claude-opus-4-6")
 		expect(visible).not.toContain("my-ferment")
 		expect(visible).not.toContain("Credits")
 		expect(visible).not.toContain("Budget:")
@@ -1205,7 +1160,7 @@ describe("script controls line (statusLine.command path)", () => {
 
 	it("budget shrinks to the percentage-only form before shedding", () => {
 		setTestBilling()
-		const { visible } = controlsLine(80)
+		const { visible } = controlsLine(70)
 		expect(visible).toContain("Budget: 13.73%")
 		expect(visible).not.toContain("$274.59/$2k")
 	})

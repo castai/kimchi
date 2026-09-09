@@ -1,21 +1,11 @@
 /**
  * Generic system prompt assembler.
  *
- * Mode-aware: drives intro selection, tool filtering, and which mode-specific
- * instruction payload to embed (orchestrator / subagent / single-model).
- * Orchestration content lives in `orchestration/orchestration-instructions.ts`;
- * subagent and single-model content lives in this file.
+ * Builds main-session and ordinary subagent prompts.
  */
 
 import { formatSkillsForPrompt, type Skill } from "@earendil-works/pi-coding-agent"
-import type { ModelCustomMetadata } from "../orchestration/model-metadata.js"
-import { resolveRoleGuideline } from "../orchestration/model-registry/guidelines/guidelines-resolver.js"
-import type { ModelRegistry } from "../orchestration/model-registry/index.js"
-import type { ModelRoles } from "../orchestration/model-roles.js"
-import { resolveOrchestrationInstructions } from "../orchestration/orchestration-instructions.js"
-import { orchestratorShouldReceiveRoleGuidelines, ROLE_ORDER } from "../orchestration/orchestrator-roles.js"
 import type { ContextFile } from "./context-files.js"
-import { ORCHESTRATOR_SUPPRESSED_SKILL_NAMES } from "./orchestrator-suppressed-skills.js"
 import { renderSystemPromptBlocks, type SuppressibleSection } from "./system-prompt-blocks.js"
 
 export interface EnvironmentInfo {
@@ -39,7 +29,7 @@ export interface ToolInfo {
 	description: string
 }
 
-export type PromptMode = "orchestrator" | "subagent" | "single"
+export type PromptMode = "subagent" | "single"
 
 export interface SystemPromptBuildOptions {
 	tools: readonly ToolInfo[]
@@ -47,12 +37,7 @@ export interface SystemPromptBuildOptions {
 	contextFiles?: readonly ContextFile[]
 	skills?: readonly Skill[]
 	currentModelId?: string
-	registry?: ModelRegistry
 	mode: PromptMode
-	/** Role-based model assignments for orchestrator mode. */
-	roles?: ModelRoles
-	/** Custom model metadata for non-registry models. */
-	customConfigs?: ReadonlyMap<string, ModelCustomMetadata>
 	/** Session ID for the active pi-mono session. Used to scope extension prompt blocks
 	 *  to this session so an in-process subagent's blocks don't leak into the parent's
 	 *  prompt and vice versa. Omit only in unit tests or before any session has started. */
@@ -62,22 +47,15 @@ export interface SystemPromptBuildOptions {
 export const DELEGATION_TOOL_NAMES = new Set(["Agent", "resume_subagent", "get_subagent_result", "steer_subagent"])
 
 export function buildSystemPrompt(options: SystemPromptBuildOptions): string {
-	const { tools, env, contextFiles, skills, currentModelId, registry, mode, roles, sessionId } = options
+	const { tools, env, contextFiles, skills, currentModelId, mode, sessionId } = options
 
 	const effectiveTools = mode === "subagent" ? tools.filter((t) => !DELEGATION_TOOL_NAMES.has(t.name)) : tools
 
 	const toolsSection = formatToolsSection(effectiveTools)
 	const environmentSection = formatEnvironmentSection(env)
 	const projectContext = formatProjectContext(contextFiles)
-	const filteredSkills = filterSkillsForMode(skills, mode)
 
-	const orchestrationSection = resolveModeInstructions({
-		mode,
-		currentModelId,
-		registry,
-		roles,
-		customConfigs: options.customConfigs,
-	})
+	const modeInstructions = mode === "subagent" ? SUBAGENT_INSTRUCTIONS : buildSingleModelInstructions(currentModelId)
 
 	const blocks = sessionId ? renderSystemPromptBlocks(sessionId, { mode }) : []
 	const suppressed = new Set<SuppressibleSection>()
@@ -91,13 +69,10 @@ export function buildSystemPrompt(options: SystemPromptBuildOptions): string {
 		toolsSection,
 		environmentSection,
 		projectContext,
-		skillsSection: formatSkills(filteredSkills),
-		orchestrationSection,
+		skillsSection: formatSkills(skills),
+		modeInstructions,
 		systemPromptBlocks: blocks.map((block) => block.content).join("\n\n"),
 		suppressed,
-		currentModelId,
-		registry,
-		roles,
 	})
 }
 
@@ -112,49 +87,15 @@ interface PromptParts {
 	environmentSection: string
 	projectContext: string
 	skillsSection: string
-	orchestrationSection: string
+	modeInstructions: string
 	systemPromptBlocks: string
 	suppressed: ReadonlySet<SuppressibleSection>
-	currentModelId?: string
-	registry?: ModelRegistry
-	roles?: ModelRoles
 }
 
 const BASE_INSTRUCTIONS =
 	"You are Kimchi, an AI coding agent. Your goal is to help users with software engineering tasks using the tools available to you. Your available tools are listed under **Available Tools** below — use only those, never guess or invent tool names."
 
 const SINGLE_INTRO = BASE_INSTRUCTIONS
-
-const ORCHESTRATOR_INTRO = BASE_INSTRUCTIONS
-
-/**
- * Resolve the mode-specific instruction payload for the system prompt.
- *
- * Only the orchestrator branch touches `roles`/`registry`/`customConfigs` —
- * subagent and single-model payloads are mode-shaped but orchestration-free.
- * Lives here (not in `orchestration-instructions.ts`) because mode selection
- * is the assembler's concern.
- */
-function resolveModeInstructions(args: {
-	mode: PromptMode
-	currentModelId?: string
-	registry?: ModelRegistry
-	roles?: ModelRoles
-	customConfigs?: ReadonlyMap<string, ModelCustomMetadata>
-}): string {
-	if (args.mode === "orchestrator") {
-		return resolveOrchestrationInstructions({
-			currentModelId: args.currentModelId,
-			registry: args.registry,
-			roles: args.roles,
-			customConfigs: args.customConfigs,
-		}).instructionsSection
-	}
-	if (args.mode === "subagent") {
-		return SUBAGENT_INSTRUCTIONS
-	}
-	return buildSingleModelInstructions(args.currentModelId)
-}
 
 // ---------------------------------------------------------------------------
 // Subagent instructions
@@ -203,25 +144,6 @@ export const CORE_GUIDELINES = `- Be concise in your responses. Do not repeat wh
 - Always wrap shell commands with a timeout (default 60s) — e.g. \`timeout 60 <cmd>\` — to prevent hangs.
 - Never run interactive commands (e.g. \`git rebase\`, \`npm init\`): use non-interactive flags (\`--yes\`, \`GIT_EDITOR=true\`) or redirect stdin from \`/dev/null\`.
 - **Git commits**: end every commit message with a blank line, then \`Co-Authored-By: Kimchi <noreply@kimchi.dev>\`.`
-
-const ORCHESTRATOR_GUIDELINES = `- Be concise in your responses. Do not repeat what you just did or summarize completed steps — act and move on.
-- Follow **Orchestration** for what to do yourself vs delegate. Do not read implementation files, write or edit source code, run tests, or review diffs unless Orchestration **Role responsibilities** explicitly says DO for your current role.
-- Before starting, orient the user per Orchestration — use the delegation workflow instead of ad-hoc exploration or inline implementation.
-- Adhere to existing code conventions and patterns. Use only libraries and frameworks confirmed to be present in the codebase. Never introduce new dependencies without explicit instruction.
-- Show file paths clearly when working with files. Always use absolute paths.
-- Do NOT introduce security vulnerabilities.
-- After every tool result, ALWAYS produce text — either the next tool call with explicit reasoning, or a final summary. Never re-issue the same tool call after a successful result.
-- Never emit tool calls with empty names, blank IDs, or malformed arguments. If a tool call fails to advance the task after 3 attempts, stop calling tools, summarize what is not working, and reassess in plain text before continuing.
-- At the end of a task, summarize from delegated artifacts (spec, review, verification files). Do not re-verify implementation yourself unless Orchestration assigns that step to you.`
-
-function filterSkillsForMode(skills: readonly Skill[] | undefined, mode: PromptMode): readonly Skill[] | undefined {
-	if (!skills || mode !== "orchestrator") return skills
-	return skills.filter((skill) => !ORCHESTRATOR_SUPPRESSED_SKILL_NAMES.has(skill.name))
-}
-
-function resolveCoreGuidelines(mode: PromptMode): string {
-	return mode === "orchestrator" ? ORCHESTRATOR_GUIDELINES : CORE_GUIDELINES
-}
 
 export const FACTUAL_ACCURACY = `- Never guess, assume, or fabricate information. Every claim you make must be backed by data you concretely obtained during this session. Do not over-escalate minor issues or blame the user for poor request phrasing.
 - Never invent people's names, roles, or contact details. If human input is needed, ask the user — do not fabricate who that person should be.
@@ -346,38 +268,6 @@ export const WORKING_PRACTICES = `## Working Practices
 - Stay in scope: do NOT add features, refactors, or "improvements" beyond what the spec asks for.
 - If the same code pattern is needed >2 times, extract an abstraction first instead of duplicating.`
 
-/**
- * Build the ## Working Practices section.
- *
- * Single-model and subagent modes receive a static set of genuinely universal
- * engineering rules (~500 tokens) — extracted from the role guidelines but
- * stripped of role-conditional prohibitions (e.g. explore's "Do NOT modify
- * files", review's "Do NOT modify source files") that contradict build
- * guidance when no role selector exists. The static constant keeps the
- * section byte-stable within a session (prompt cache).
- *
- * Orchestrator mode preserves the role filter: the orchestrator receives only
- * guideline blocks for roles it owns (build excluded unconditionally), so it
- * is not handed editing guidance that would encourage self-implementation.
- */
-export function buildWorkingPracticesSection(
-	modelId?: string,
-	registry?: ModelRegistry,
-	mode: PromptMode = "single",
-	roles?: ModelRoles,
-): string {
-	if (mode === "orchestrator") {
-		const applicableRoles = ROLE_ORDER.filter((role) => orchestratorShouldReceiveRoleGuidelines(role, modelId, roles))
-		const guidelines = applicableRoles
-			.map((role) => resolveRoleGuideline(role, modelId, registry))
-			.filter(Boolean)
-			.join("\n\n")
-		if (!guidelines) return ""
-		return `## Working Practices\n\n${guidelines}`
-	}
-	return WORKING_PRACTICES
-}
-
 export const CONSENT_AND_IRREVERSIBLE_ACTIONS = `## Consent & Irreversible Actions
 
 Ask before unrequested actions that publish externally, mutate remote state, or are irreversible. A user's request to change code authorizes ordinary local workspace edits and verification commands; it does not authorize publishing or remote state changes. Internal planning artifacts such as todo lists never grant approval, even when they describe external or irreversible actions.
@@ -398,16 +288,16 @@ function buildPrompt(parts: PromptParts): string {
 	const sections: string[] = []
 
 	// 1. Intro
-	const intro = parts.mode === "orchestrator" ? ORCHESTRATOR_INTRO : SINGLE_INTRO
+	const intro = SINGLE_INTRO
 	sections.push(intro)
 
-	// 2. Orchestration (team, roles, workflow, delegation — orchestrator mode only)
-	if (!parts.suppressed.has("orchestration") && parts.orchestrationSection) {
-		sections.push(parts.orchestrationSection)
+	// Keep the public orchestration suppression key for existing prompt-block consumers.
+	if (!parts.suppressed.has("orchestration") && parts.modeInstructions) {
+		sections.push(parts.modeInstructions)
 	}
 
 	// 4. Guidelines
-	sections.push(`## Guidelines\n\n${resolveCoreGuidelines(parts.mode)}`)
+	sections.push(`## Guidelines\n\n${CORE_GUIDELINES}`)
 	sections.push(`## Factual Accuracy\n\n${FACTUAL_ACCURACY}`)
 
 	// 5. Documents
@@ -416,7 +306,7 @@ function buildPrompt(parts: PromptParts): string {
 	// 6. Consolidated core sections: output, tool selection, working practices, consent
 	sections.push(buildOutputAndTruncationSection(parts.toolNames))
 	sections.push(buildToolSelectionSection(parts.toolNames))
-	sections.push(buildWorkingPracticesSection(parts.currentModelId, parts.registry, parts.mode, parts.roles))
+	sections.push(WORKING_PRACTICES)
 	sections.push(CONSENT_AND_IRREVERSIBLE_ACTIONS)
 	sections.push(HARNESS_NOTES_AND_APPROVAL)
 
