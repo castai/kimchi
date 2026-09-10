@@ -1,6 +1,6 @@
 import type { ExtensionFactory } from "@earendil-works/pi-coding-agent"
 import { loadConfig } from "../config.js"
-import { isKimchiProvider } from "../pi-auth.js"
+import { isKimchiProvider } from "../kimchi-provider.js"
 
 /** Preserve auth.json after a 401 without silently using another Kimchi account. */
 export default function createRejectedApiKeyExtension(rejectedKey: string | undefined): ExtensionFactory {

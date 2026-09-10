@@ -1,5 +1,6 @@
 import { InMemoryModelsStore } from "@earendil-works/pi-ai"
 import { ModelRuntime, type ProviderConfig } from "@earendil-works/pi-coding-agent"
+import { isKimchiProvider } from "./kimchi-provider.js"
 import {
 	autoModelConfig,
 	buildModelsConfig,
@@ -8,7 +9,6 @@ import {
 	type ModelMetadata,
 } from "./models.js"
 import { discoverOllamaProvider, ollamaModelsToMetadata, resolveOllamaHost } from "./ollama.js"
-import { isKimchiProvider } from "./pi-auth.js"
 
 export async function discoverEnvironmentModels(
 	modelsPath: string,
