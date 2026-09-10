@@ -1,0 +1,247 @@
+# Kimchi Hooks
+
+Kimchi supports Pi-native extension package hooks and user-owned Bash hooks.
+
+## Native Pi Packages
+
+Use Pi packages when a package ships native Pi hooks:
+
+```bash
+kimchi install npm:<package-name>
+kimchi list
+```
+
+Pi package extensions subscribe to native Pi events such as `tool_call`, `tool_result`, `session_start`, `session_before_compact`, `session_compact`, and `session_shutdown`. Kimchi includes a narrow Pi compatibility shim for packages that expect older field names, including `tool_result.output`, `tool_result.params`, and the legacy `before_provider_response` event name.
+
+## Core Bash Hooks
+
+Kimchi core still supports local Bash command hooks for commands executed through the `bash` tool and interactive `!` / `!!` shell commands.
+
+Global hooks:
+
+```bash
+~/.config/kimchi/harness/hooks/bash/*.sh
+~/.config/kimchi/harness/hooks/bash/*.bash
+```
+
+Project hooks:
+
+```bash
+.kimchi/hooks/bash/*.sh
+.kimchi/hooks/bash/*.bash
+```
+
+Global Bash hooks are enabled by default. Project Bash hooks are discovered but disabled by default.
+
+Manage hook resources from:
+
+```text
+/resources
+/hooks
+```
+
+or from the CLI:
+
+```bash
+kimchi resources list
+kimchi resources disable hooks.bash
+kimchi resources enable hooks.bash.project.my-hook-sh
+kimchi resources disable hooks.bash.global.my-hook-sh
+```
+
+Each Bash hook runs as `bash <hook-path>`. Kimchi passes the current command in environment variables:
+
+```bash
+KIMCHI_HOOK_EVENT=tool_call
+KIMCHI_TOOL_NAME=bash
+KIMCHI_TOOL_INPUT_COMMAND='git status'
+CRUSH_TOOL_INPUT_COMMAND='git status'
+```
+
+Kimchi also writes JSON to stdin:
+
+```json
+{
+  "tool_name": "bash",
+  "input": {
+    "command": "git status"
+  },
+  "cwd": "/path/to/project"
+}
+```
+
+No output means "allow unchanged":
+
+```bash
+exit 0
+```
+
+Plain stdout rewrites the command:
+
+```bash
+echo "git status --short"
+```
+
+JSON stdout can rewrite the command:
+
+```bash
+printf '%s\n' '{"decision":"allow","command":"git status --short"}'
+```
+
+Block by returning JSON:
+
+```bash
+printf '%s\n' '{"decision":"block","reason":"Use pnpm, not npm"}'
+```
+
+or by exiting with status `2` and writing a reason:
+
+```bash
+echo "Use pnpm, not npm" >&2
+exit 2
+```
+
+Any other failure is treated as allow unchanged. This keeps a broken local hook from breaking the agent session.
+
+## Claude Code Adapter
+
+Claude Code hook format is not part of the kimchi core hook contract. Kimchi can run existing Claude Code command hooks through a disabled-by-default compatibility extension.
+
+Enable the adapter:
+
+```bash
+kimchi resources enable extensions.claude-code-hook-adapter
+```
+
+Restart Kimchi after enabling the adapter. Discovered Claude Code hook commands also appear under the Hooks tab in `/resources`, where they can be enabled or disabled individually.
+
+If those hooks depend on Claude Code skills, enable the separate skill compatibility extension:
+
+```bash
+kimchi resources enable extensions.claude-code-skills
+```
+
+That extension loads `~/.claude/skills` and the nearest project `.claude/skills` directory into Kimchi's native available-skills prompt, contributes them through Pi resource discovery so `/skill:name` works, and provides a Claude-compatible `Skill` tool for hooks that ask the model to invoke `Skill("name")`.
+
+The adapter reads hooks from the user config and the nearest ancestor project config:
+
+```bash
+~/.claude/settings.json       # user
+.claude/settings.json         # project
+.claude/settings.local.json   # local project
+```
+
+It honors top-level `disableAllHooks: true`.
+
+Supported events:
+
+- `PreToolUse`
+- `PostToolUse`
+- `PostToolUseFailure` — runs only when a tool result is an error (`PostToolUse` still runs for all results)
+- `PostToolBatch` — synthesized once per turn after all tool executions in that turn finish
+- `SessionStart`
+- `PreCompact`
+- `PostCompact`
+- `UserPromptSubmit`
+- `Stop` — fires once when the agent finishes responding (pi `agent_end`); a `{"decision":"block","reason":"..."}` result continues the run, with `stop_hook_active` set on re-entry. Payload includes `stop_reason` and `error_message` from the final assistant message
+- `StopFail` — fires in addition to `Stop` only when the run ends with `stop_reason` `error` or `aborted` (`Stop` still fires for all runs). Same payload and block/continuation semantics as `Stop`, plus `is_error: true`; use `stop_reason` to distinguish provider errors from user aborts
+- `TaskCompleted` — fires at the end of each turn (pi `turn_end`); observer-only, block decisions are ignored. ⚠️ Note: this diverges from Claude Code, where `TaskCompleted` fires when a task-list item is marked completed (via the `TaskUpdate` tool) and can block; kimchi has no task-list tool, so this name is bound to per-turn semantics instead
+- `TurnStart`, `MessageStart`, `MessageEnd`, `ModelSelect`, `UserBash` — kimchi-specific observer hooks for pi events with no Claude Code equivalent
+- `SubagentStart` — fires when an `Agent` tool subagent spawns (kimchi `subagents:started` bus event); observer-only. Payload adds `subagent_id`, `subagent_type`, `description`, `visibility`
+- `SubagentStop` — fires when a subagent completes or fails (`subagents:completed` / `subagents:failed`); observer-only. Payload adds the `SubagentStart` fields plus `status`, `result`, `error`, `abort_reason`, `duration_ms`, `tool_uses`, `tokens`, and `is_error` (`true` on the failed path: status `error`, `stopped`, or `aborted`). Both hooks also fire for `visibility: "system"` agents, which are hidden from the subagent widget for UI reasons only — filter on the `visibility` field if you want user-visible agents only
+- `SessionEnd`
+
+Plugin packages installed via `kimchi install` may ship a `hooks/hooks.json` (or `.claude-plugin/hooks/hooks.json`). Those hooks honor the same full event set as the adapter above; `SessionStart` context from packages is injected into the system prompt.
+
+Example:
+
+```json
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 ~/.claude/hooks/pre_tool_use.py"
+          }
+        ]
+      }
+    ]
+  }
+}
+```
+
+## Examples
+
+### Rewrite `git status`
+
+Create a global hook:
+
+```bash
+mkdir -p ~/.config/kimchi/harness/hooks/bash
+cat > ~/.config/kimchi/harness/hooks/bash/git-status-short.sh <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+
+if [ "${KIMCHI_TOOL_INPUT_COMMAND:-}" = "git status" ]; then
+  echo "git status --short --branch"
+fi
+SH
+```
+
+Start Kimchi and ask it to run `git status`. The displayed Bash command should show the rewritten command.
+
+### Block `npm install`
+
+```bash
+mkdir -p ~/.config/kimchi/harness/hooks/bash
+cat > ~/.config/kimchi/harness/hooks/bash/pnpm-only.sh <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+
+case "${KIMCHI_TOOL_INPUT_COMMAND:-}" in
+  npm\ install*|npm\ i*)
+    printf '%s\n' '{"decision":"block","reason":"Use pnpm install in this repository."}'
+    ;;
+esac
+SH
+```
+
+### Read JSON From Stdin
+
+Use stdin when you need the project cwd or want to avoid shell parsing.
+
+```bash
+mkdir -p .kimchi/hooks/bash
+cat > .kimchi/hooks/bash/block-rm-root.sh <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+
+payload="$(cat)"
+command="$(node -e 'const p=JSON.parse(process.argv[1]); console.log(p.input.command)' "$payload")"
+
+if [ "$command" = "rm -rf /" ]; then
+  printf '%s\n' '{"decision":"block","reason":"Refusing to remove root."}'
+fi
+SH
+```
+
+Then enable the project hook:
+
+```bash
+kimchi resources enable hooks.bash.project.block-rm-root-sh
+```
+
+## References
+
+- Pi packages: `https://pi.dev/packages`
+
+## Notes
+
+- Hooks run synchronously before command execution.
+- Hook timeout is 5 seconds.
+- Hook output is interpreted as a command rewrite unless it is recognized JSON.
+- Use `/resources` to see discovered hook IDs.
+- Restart is not required for hook enable/disable changes, but adding or removing hook files is easiest to verify by restarting Kimchi.

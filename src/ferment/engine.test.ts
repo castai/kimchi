@@ -1,0 +1,279 @@
+import { describe, expect, it } from "vitest"
+import { determineNextAction, whatNext as maybeWhatNext } from "./engine.js"
+import type { Ferment, FermentAction, Phase, Step } from "./types.js"
+
+const whatNext = maybeWhatNext as (ferment: Ferment) => FermentAction
+
+function makeF(overrides?: Partial<Ferment>): Ferment {
+	return {
+		id: "fefefefe-fefe-fefe-fefe-fefefefefefe",
+		name: "Build Tetris",
+		status: "draft",
+		worktree: { path: "/test" },
+		scoping: {},
+		phases: [],
+		decisions: [],
+		memories: [],
+		createdAt: "2024-01-01T00:00:00Z",
+		updatedAt: "2024-01-01T00:00:00Z",
+		...overrides,
+	}
+}
+
+function makeP(overrides?: Partial<Phase>): Phase {
+	return { id: "p1", index: 1, name: "Setup", goal: "G1", status: "planned", steps: [], ...overrides }
+}
+
+function makeS(overrides?: Partial<Step>): Step {
+	return { id: "s1", index: 1, description: "Do X", status: "pending", ...overrides }
+}
+
+describe("whatNext", () => {
+	describe("mode-independent defaults", () => {
+		it("draft → scope action", () => {
+			const a = whatNext(makeF())
+			expect(a.kind).toBe("scope")
+			expect(a.message).toContain("Collect") // simplified message
+		})
+
+		it("planned → activate first phase", () => {
+			const a = whatNext(makeF({ status: "planned", phases: [makeP(), makeP({ id: "p2", index: 2, name: "P2" })] }))
+			expect(a.kind).toBe("activate_phase")
+			if (a.kind === "activate_phase") {
+				expect(a.phaseId).toBe("p1")
+				expect(a.message).toContain("Activate") // simplified message
+			}
+		})
+
+		it("planned between phases → activate next planned phase", () => {
+			const a = whatNext(
+				makeF({
+					status: "planned",
+					phases: [makeP({ status: "completed" }), makeP({ id: "p2", index: 2, name: "P2" })],
+				}),
+			)
+			expect(a.kind).toBe("activate_phase")
+			if (a.kind === "activate_phase") {
+				expect(a.phaseId).toBe("p2")
+			}
+		})
+
+		it("planned after a failed phase → recover failed phase", () => {
+			const a = whatNext(
+				makeF({
+					status: "planned",
+					activePhaseId: "p1",
+					phases: [makeP({ status: "failed" }), makeP({ id: "p2", index: 2, name: "P2" })],
+				}),
+			)
+			expect(a.kind).toBe("recover_phase")
+			if (a.kind === "recover_phase") {
+				expect(a.phaseId).toBe("p1")
+				expect(a.message).toContain("activate_ferment_phase")
+				expect(a.message).toContain("skip_ferment_phase")
+			}
+		})
+
+		it("running with no steps → refine", () => {
+			const a = whatNext(makeF({ status: "running", activePhaseId: "p1", phases: [makeP({ status: "active" })] }))
+			expect(a.kind).toBe("refine")
+			expect(a.message).toContain("Break") // simplified message
+		})
+
+		it("running with pending step → start_step", () => {
+			const phase = makeP({ status: "active", steps: [makeS()] })
+			const a = whatNext(makeF({ status: "running", activePhaseId: "p1", phases: [phase] }))
+			expect(a.kind).toBe("start_step")
+			expect(a.message).toContain("Start") // simplified message
+		})
+
+		it("all steps terminal → complete_phase", () => {
+			const phase = makeP({
+				status: "active",
+				steps: [makeS({ status: "done" }), makeS({ id: "s2", index: 2, status: "verified" })],
+			})
+			const a = whatNext(makeF({ status: "running", activePhaseId: "p1", phases: [phase] }))
+			expect(a.kind).toBe("complete_phase")
+			expect(a.message).toContain("Mark") // simplified message
+		})
+	})
+
+	describe("planned/manual-style states", () => {
+		it("draft → scope", () => {
+			const a = whatNext(makeF())
+			expect(a.kind).toBe("scope")
+			expect(a.message).toContain("Collect") // simplified message
+		})
+
+		it("planned → activate_phase", () => {
+			const a = whatNext(makeF({ status: "planned", phases: [makeP(), makeP({ id: "p2", index: 2 })] }))
+			expect(a.kind).toBe("activate_phase")
+			if (a.kind === "activate_phase") {
+				expect(a.phaseId).toBe("p1")
+				expect(a.message).toContain("Activate") // simplified message
+			}
+		})
+
+		it("running with no steps → refine", () => {
+			const a = whatNext(makeF({ status: "running", activePhaseId: "p1", phases: [makeP({ status: "active" })] }))
+			expect(a.kind).toBe("refine")
+			expect(a.message).toContain("Break") // simplified message
+		})
+
+		it("running with pending step → start_step", () => {
+			const phase = makeP({ status: "active", steps: [makeS()] })
+			const a = whatNext(makeF({ status: "running", activePhaseId: "p1", phases: [phase] }))
+			expect(a.kind).toBe("start_step")
+			expect(a.message).toContain("Start") // simplified message
+		})
+
+		it("running all terminal → complete_phase", () => {
+			const phase = makeP({ status: "active", steps: [makeS({ status: "done" })] })
+			const a = whatNext(makeF({ status: "running", activePhaseId: "p1", phases: [phase] }))
+			expect(a.kind).toBe("complete_phase")
+			expect(a.message).toContain("Mark") // simplified message
+		})
+
+		it("complete → no next action", () => {
+			const action = determineNextAction(makeF({ status: "complete" }))
+			expect(action).toBeUndefined()
+			expect(maybeWhatNext(makeF({ status: "complete" }))).toBeUndefined()
+		})
+
+		it("running with failed step → recover_step", () => {
+			const phase = makeP({ status: "active", steps: [makeS({ status: "failed" })] })
+			const a = whatNext(makeF({ status: "running", activePhaseId: "p1", phases: [phase] }))
+			expect(a.kind).toBe("recover_step")
+		})
+
+		it("running with failed phase and all phases terminal → recover_phase", () => {
+			const a = whatNext(makeF({ status: "running", activePhaseId: "p1", phases: [makeP({ status: "failed" })] }))
+			expect(a.kind).toBe("recover_phase")
+		})
+	})
+
+	describe("automated-style states", () => {
+		it("draft → scope", () => {
+			const a = whatNext(makeF())
+			expect(a.kind).toBe("scope")
+			expect(a.message).toContain("Collect") // simplified message
+		})
+
+		it("planned → activate", () => {
+			const a = whatNext(makeF({ status: "planned", phases: [makeP()] }))
+			expect(a.kind).toBe("activate_phase")
+			if (a.kind === "activate_phase") {
+				expect(a.message).toContain("Activate") // simplified message
+			}
+		})
+
+		it("running with no steps → refine", () => {
+			const a = whatNext(makeF({ status: "running", activePhaseId: "p1", phases: [makeP({ status: "active" })] }))
+			expect(a.kind).toBe("refine")
+			expect(a.message).toContain("Break") // simplified message
+		})
+
+		it("running with pending → start_step", () => {
+			const phase = makeP({ status: "active", steps: [makeS()] })
+			const a = whatNext(makeF({ status: "running", activePhaseId: "p1", phases: [phase] }))
+			expect(a.kind).toBe("start_step")
+			expect(a.message).toContain("Start") // simplified message
+		})
+
+		it("running all terminal → complete_phase", () => {
+			const phase = makeP({ status: "active", steps: [makeS({ status: "done" })] })
+			const a = whatNext(makeF({ status: "running", activePhaseId: "p1", phases: [phase] }))
+			expect(a.kind).toBe("complete_phase")
+			expect(a.message).toContain("Mark") // simplified message
+		})
+	})
+
+	describe("status edge cases", () => {
+		it("paused → pause action", () => {
+			const a = whatNext(makeF({ status: "paused" }))
+			expect(a.kind).toBe("paused")
+		})
+
+		it("no active phase but running → pause", () => {
+			const a = whatNext(makeF({ status: "running", phases: [makeP({ status: "planned" })] }))
+			expect(a.kind).toBe("paused")
+			expect(a.message).toContain("paused") // simplified message
+		})
+
+		it("planned with all phases terminal → complete_ferment", () => {
+			const a = whatNext(makeF({ status: "planned", phases: [makeP({ status: "completed" })] }))
+			expect(a.kind).toBe("complete_ferment")
+		})
+
+		it("complete → no next action", () => {
+			const action = determineNextAction(makeF({ status: "complete" }))
+			expect(action).toBeUndefined()
+			expect(maybeWhatNext(makeF({ status: "complete" }))).toBeUndefined()
+		})
+
+		it("abandoned → no next action", () => {
+			const action = determineNextAction(makeF({ status: "abandoned" }))
+			expect(action).toBeUndefined()
+			expect(maybeWhatNext(makeF({ status: "abandoned" }))).toBeUndefined()
+		})
+
+		it("running with failed step → recover_step", () => {
+			const phase = makeP({ status: "active", steps: [makeS({ status: "failed" })] })
+			const a = whatNext(makeF({ status: "running", activePhaseId: "p1", phases: [phase] }))
+			expect(a.kind).toBe("recover_step")
+		})
+
+		it("running with failed phase and all phases terminal → recover_phase", () => {
+			const a = whatNext(makeF({ status: "running", activePhaseId: "p1", phases: [makeP({ status: "failed" })] }))
+			expect(a.kind).toBe("recover_phase")
+		})
+
+		it("all non-failed steps terminal → complete_phase", () => {
+			const phase = makeP({
+				status: "active",
+				steps: [makeS({ status: "skipped" }), makeS({ id: "s2", index: 2, status: "done" })],
+			})
+			const a = whatNext(makeF({ status: "running", activePhaseId: "p1", phases: [phase] }))
+			expect(a.kind).toBe("complete_phase")
+		})
+
+		it("only-running-step phase → complete_step (not start_step)", () => {
+			// Regression: findNextStep used to return a running step, causing the engine to
+			// suggest start_step instead of falling through to the runningStep branch.
+			const phase = makeP({ status: "active", steps: [makeS({ status: "running" })] })
+			const a = whatNext(makeF({ status: "running", activePhaseId: "p1", phases: [phase] }))
+			expect(a.kind).toBe("complete_step")
+		})
+
+		it("running step + later pending non-parallel step → complete_step on the running one", () => {
+			// Regression: the engine used to return start_step for the pending
+			// sibling, but the FSM rejects non-parallel concurrent starts. This
+			// caused a delegation deadlock — the agent-spawn-guard blocked Agent
+			// dispatch on start_step, while the FSM rejected the start call.
+			// Now the engine returns complete_step for the running step.
+			const phase = makeP({
+				status: "active",
+				steps: [makeS({ id: "s1", index: 1, status: "running" }), makeS({ id: "s2", index: 2, status: "pending" })],
+			})
+			const a = whatNext(makeF({ status: "running", activePhaseId: "p1", phases: [phase] }))
+			expect(a.kind).toBe("complete_step")
+			if (a.kind === "complete_step") expect(a.stepId).toBe("s1")
+		})
+
+		it("running step + pending parallel-cohort sibling → start_step on the sibling", () => {
+			const phase = makeP({
+				status: "active",
+				steps: [
+					makeS({ id: "s1", index: 1, status: "running", parallel: true, groupIndex: 1 }),
+					makeS({ id: "s2", index: 2, status: "pending", parallel: true, groupIndex: 1 }),
+				],
+			})
+			const a = determineNextAction(makeF({ status: "running", activePhaseId: "p1", phases: [phase] }))
+			expect(a?.kind).toBe("start_step")
+			if (a?.kind === "start_step") {
+				expect(a.stepId).toBe("s2")
+				expect(a.canParallel).toBe(true)
+			}
+		})
+	})
+})

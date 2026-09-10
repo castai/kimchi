@@ -1,0 +1,495 @@
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs"
+import { dirname } from "node:path"
+import type { AnthropicMessagesCompat, Model, OpenAICompletionsCompat, ThinkingLevelMap } from "@earendil-works/pi-ai"
+import { ANTHROPIC_MODELS } from "@earendil-works/pi-ai/providers/anthropic.models"
+import { clearCredentialStale, isAuthRejectedMessage, markCredentialStale } from "./credential-staleness.js"
+import { AUTO_MODEL_API, AUTO_MODEL_ID, AUTO_MODEL_NAME } from "./extensions/router/constants.js"
+import { KIMCHI_PROVIDER_ID } from "./kimchi-provider.js"
+import { getVersion } from "./utils.js"
+
+// Upstream catalog keyed by exact model id, used to inherit anthropic-messages
+// compat flags (adaptive thinking, strict tools) and effort-level maps.
+const ANTHROPIC_MODELS_BY_ID = ANTHROPIC_MODELS as Record<string, Model<"anthropic-messages">>
+
+const KIMCHI_API = "https://llm.kimchi.dev"
+const FETCH_TIMEOUT_MS = 20000
+
+function normalizeKimchiEndpoint(endpoint?: string): string {
+	const trimmed = endpoint?.trim()
+	if (!trimmed) return KIMCHI_API
+	// A scheme-less value like "example.com" produces an invalid request URL that the HTTP
+	// layer silently drops (falling back to the gateway), so default it to https://.
+	const withScheme = /^[a-z][a-z0-9+.-]*:\/\//i.test(trimmed) ? trimmed : `https://${trimmed}`
+	return withScheme.replace(/\/+$/, "")
+}
+
+function modelsMetadataApi(endpoint?: string): string {
+	return `${normalizeKimchiEndpoint(endpoint)}/v1/models/metadata?include_in_cli=true`
+}
+
+export function chatCompletionsApi(endpoint?: string): string {
+	return `${normalizeKimchiEndpoint(endpoint)}/openai/v1`
+}
+
+export function anthropicMessagesApi(endpoint?: string): string {
+	return `${normalizeKimchiEndpoint(endpoint)}/anthropic`
+}
+
+// HTTP statuses worth retrying: rate limiting and transient gateway/server errors.
+const RETRYABLE_STATUSES = new Set([429, 500, 502, 503, 504])
+const MAX_FETCH_ATTEMPTS = 3
+const BASE_RETRY_DELAY_MS = 500
+const MAX_RETRY_DELAY_MS = 4000
+
+/**
+ * Error raised when the model metadata API cannot be reached. `transient` marks
+ * failures that are expected to clear on their own (rate limiting, gateway/server
+ * errors, network blips) so callers can offer "try again" instead of treating the
+ * user's saved API key as invalid.
+ */
+export class ModelsFetchError extends Error {
+	readonly status?: number
+	readonly transient: boolean
+	constructor(message: string, options: { status?: number; transient: boolean }) {
+		super(message)
+		this.name = "ModelsFetchError"
+		this.status = options.status
+		this.transient = options.transient
+	}
+}
+
+/** True when `error` is a transient (retryable) model-refresh failure. */
+export function isTransientModelsError(error: unknown): boolean {
+	return error instanceof ModelsFetchError && error.transient
+}
+
+export interface FetchModelsOptions {
+	/** Injected sleep for deterministic tests; defaults to a setTimeout-based delay. */
+	sleep?: (ms: number) => Promise<void>
+	/** Base Kimchi service endpoint; defaults to https://llm.kimchi.dev. */
+	endpoint?: string
+	/** When false, fetch failures throw even if models.json contains cached models. */
+	allowCachedFallback?: boolean
+	/** When true, an API response with no active models throws instead of writing an empty kimchi-dev block. */
+	requireActiveModels?: boolean
+}
+
+const defaultSleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms))
+
+// Delay before the next retry, honoring a `Retry-After` header when present.
+function retryDelayMs(retryAfterHeader: string | null, attempt: number): number {
+	if (retryAfterHeader) {
+		const seconds = Number(retryAfterHeader)
+		if (Number.isFinite(seconds) && seconds >= 0) return Math.min(seconds * 1000, MAX_RETRY_DELAY_MS)
+		const dateMs = Date.parse(retryAfterHeader)
+		if (!Number.isNaN(dateMs)) return Math.min(Math.max(dateMs - Date.now(), 0), MAX_RETRY_DELAY_MS)
+	}
+	return Math.min(BASE_RETRY_DELAY_MS * 2 ** (attempt - 1), MAX_RETRY_DELAY_MS)
+}
+
+export interface ModelMetadata {
+	slug: string
+	display_name: string
+	provider: string
+	reasoning: boolean
+	input_modalities: ("text" | "image")[]
+	is_serverless: boolean
+	limits: {
+		context_window: number
+		max_output_tokens: number
+	}
+	status?: "active" | "sunset" | "deprecated"
+	replacement?: string
+}
+
+interface ModelsMetadataResponse {
+	models: ModelMetadata[]
+}
+
+function sortModels(models: ModelMetadata[]): ModelMetadata[] {
+	const serverless = models.filter((m) => m.is_serverless)
+	const rest = models.filter((m) => !m.is_serverless)
+	return [...serverless, ...rest]
+}
+
+async function fetchAvailableModels(apiKey: string, options: FetchModelsOptions = {}): Promise<ModelMetadata[]> {
+	const sleep = options.sleep ?? defaultSleep
+	const metadataUrl = modelsMetadataApi(options.endpoint)
+	let lastError: ModelsFetchError | undefined
+
+	for (let attempt = 1; attempt <= MAX_FETCH_ATTEMPTS; attempt += 1) {
+		let response: Response
+		try {
+			response = await fetch(metadataUrl, {
+				headers: { Authorization: `Bearer ${apiKey}` },
+				signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
+			})
+		} catch (err) {
+			if (attempt === MAX_FETCH_ATTEMPTS) {
+				throw new ModelsFetchError(`Failed to fetch models: ${err instanceof Error ? err.message : String(err)}`, {
+					transient: true,
+				})
+			}
+			await sleep(retryDelayMs(null, attempt))
+			continue
+		}
+
+		if (response.ok) {
+			let body: ModelsMetadataResponse
+			try {
+				body = (await response.json()) as ModelsMetadataResponse
+			} catch (err) {
+				// A 200 with a body that fails to parse (truncated/interrupted response, an
+				// HTML error page from an intermediary, etc.) is treated as a transient
+				// failure so it flows through the retry/cache logic instead of escaping
+				// as an uncaught rejection.
+				lastError = new ModelsFetchError(
+					`Failed to parse models response: ${err instanceof Error ? err.message : String(err)}`,
+					{ transient: true },
+				)
+				if (attempt === MAX_FETCH_ATTEMPTS) throw lastError
+				await sleep(retryDelayMs(response.headers?.get?.("retry-after"), attempt))
+				continue
+			}
+			if (!Array.isArray(body?.models)) {
+				throw new ModelsFetchError("Unexpected response shape from models API", { transient: false })
+			}
+			if (body.models.length === 0) {
+				throw new ModelsFetchError("API returned empty model list", { transient: false })
+			}
+			return body.models
+		}
+
+		const transient = RETRYABLE_STATUSES.has(response.status)
+		lastError = new ModelsFetchError(`Failed to fetch models: ${response.status} ${response.statusText}`, {
+			status: response.status,
+			transient,
+		})
+		if (!transient || attempt === MAX_FETCH_ATTEMPTS) throw lastError
+		await sleep(retryDelayMs(response.headers?.get?.("retry-after"), attempt))
+	}
+
+	// Unreachable: the loop returns on success or throws on the final attempt.
+	throw lastError ?? new ModelsFetchError("Failed to fetch models", { transient: true })
+}
+
+export interface PiModelConfig {
+	id: string
+	name: string
+	reasoning: boolean
+	input: ("text" | "image")[]
+	contextWindow: number
+	maxTokens: number
+	cost: { input: number; output: number; cacheRead: number; cacheWrite: number }
+	// Persisted so telemetry can resolve the actual upstream provider after cache round-trip.
+	provider: string
+	compat?: OpenAICompletionsCompat | AnthropicMessagesCompat
+	/** Maps thinking levels to provider-specific values. `off: "none"` sends `reasoning_effort: "none"`. */
+	thinkingLevelMap?: ThinkingLevelMap
+	/** Model-level API type: upstream custom-provider parseModels falls through to this field. */
+	api?: string
+	/** Model-level base URL: upstream custom-provider parseModels falls through to this field. */
+	baseUrl?: string
+	/** Model-level headers merged into outgoing requests by pi's storeModelHeaders. */
+	headers?: Record<string, string>
+}
+
+function autoModelConfig(models: ModelMetadata[]): PiModelConfig {
+	const rootModels = models.filter((model) => model.provider === "ai-enabler")
+	const contextWindow = Math.min(...rootModels.map((model) => model.limits.context_window), 128_000)
+	const maxTokens = Math.min(...rootModels.map((model) => model.limits.max_output_tokens), 16_384)
+	return {
+		id: AUTO_MODEL_ID,
+		name: AUTO_MODEL_NAME,
+		api: AUTO_MODEL_API,
+		provider: "ai-enabler",
+		// Auto is virtual, but Pi reads this capability to expose the session's
+		// reasoning control. The Auto provider applies that preference only when
+		// the resolved concrete model supports it.
+		reasoning: true,
+		thinkingLevelMap: { off: "none", max: "max" },
+		input: ["text", "image"],
+		contextWindow,
+		maxTokens,
+		cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+	}
+}
+
+function metadataToModel(m: ModelMetadata): PiModelConfig {
+	// Anthropic models are routed through the native `/v1/messages` API. Inherit
+	// the upstream catalog's compat flags (adaptive thinking, strict tools) and
+	// thinking-level map so Pi picks the correct thinking mode and effort names
+	// per model. Models missing from the catalog get no compat, as before.
+	//
+	// claude-* models from non-anthropic providers still use openai-completions,
+	// so they keep the openai-completions compat flags.
+	//
+	// ai-enabler models don't support chat_template_kwargs, so we rely on the
+	// default `openai` thinkingFormat which sends `reasoning_effort`. The map
+	// disables thinking with `none` and advertises max to Pi's selector.
+	const upstream = m.provider === "anthropic" ? ANTHROPIC_MODELS_BY_ID[m.slug] : undefined
+	const compat = upstream
+		? upstream.compat
+		: m.provider !== "anthropic" && m.slug.startsWith("claude-")
+			? ({ supportsReasoningEffort: false, cacheControlFormat: "anthropic", supportsUsageInStreaming: true } as const)
+			: undefined
+	const thinkingLevelMap = m.provider === "ai-enabler" ? { off: "none", max: "max" } : upstream?.thinkingLevelMap
+	return {
+		id: m.slug,
+		name: m.display_name.trim().length > 0 ? m.display_name : m.slug,
+		reasoning: m.reasoning,
+		input: m.input_modalities,
+		contextWindow: m.limits.context_window,
+		maxTokens: m.limits.max_output_tokens,
+		cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+		// Store upstream provider for telemetry round-trip via models.json
+		provider: m.provider,
+		...(compat && { compat }),
+		...(thinkingLevelMap && { thinkingLevelMap }),
+	}
+}
+
+function buildModelsConfig(models: ModelMetadata[], endpoint?: string) {
+	const aiEnablerModels = models.filter((m) => m.provider === "ai-enabler")
+	const otherModels = models.filter((m) => m.provider !== "ai-enabler")
+
+	// Group non-ai-enabler models by upstream provider
+	const byProvider = new Map<string, ModelMetadata[]>()
+	for (const m of otherModels) {
+		const group = byProvider.get(m.provider) ?? []
+		group.push(m)
+		byProvider.set(m.provider, group)
+	}
+
+	const providerHeaders = (upstreamProvider: string) => ({
+		"User-Agent": `kimchi/${getVersion()}`,
+		"X-Provider-Type": upstreamProvider,
+	})
+
+	const providers: Record<string, unknown> = {
+		"kimchi-dev": {
+			baseUrl: chatCompletionsApi(endpoint),
+			apiKey: "$KIMCHI_API_KEY",
+			api: "openai-completions",
+			authHeader: true,
+			headers: { "User-Agent": `kimchi/${getVersion()}` },
+			models: aiEnablerModels.map(metadataToModel),
+		},
+	}
+
+	for (const [upstreamProvider, group] of byProvider) {
+		const subProviderId = `kimchi-dev/${upstreamProvider}`
+		const isAnthropic = upstreamProvider === "anthropic"
+		providers[subProviderId] = {
+			baseUrl: isAnthropic ? anthropicMessagesApi(endpoint) : chatCompletionsApi(endpoint),
+			apiKey: "$KIMCHI_API_KEY",
+			api: isAnthropic ? "anthropic-messages" : "openai-completions",
+			authHeader: true,
+			headers: providerHeaders(upstreamProvider),
+			models: group.map(metadataToModel),
+		}
+	}
+
+	return { providers }
+}
+
+export interface ModelsConfigResult {
+	models: ModelMetadata[]
+}
+
+function modelToMetadata(m: PiModelConfig): ModelMetadata {
+	return {
+		slug: m.id,
+		display_name: m.name,
+		// If `provider` was persisted by metadataToModel, use it. Fall back to the
+		// legacy compat heuristic for files written by older CLI versions.
+		provider: m.provider || (m.compat ? "anthropic" : ""),
+		reasoning: m.reasoning,
+		input_modalities: m.input,
+		is_serverless: true,
+		limits: { context_window: m.contextWindow, max_output_tokens: m.maxTokens },
+	}
+}
+
+function extractModelsFromProviders(providers: Record<string, { models?: PiModelConfig[] }>): ModelMetadata[] {
+	const result: ModelMetadata[] = []
+	for (const [, provider] of Object.entries(providers)) {
+		if (provider && typeof provider === "object" && Array.isArray(provider.models)) {
+			result.push(...provider.models.map(modelToMetadata))
+		}
+	}
+	return result
+}
+
+function readCachedMetadata(modelsJsonPath: string): ModelMetadata[] | undefined {
+	try {
+		const raw = readFileSync(modelsJsonPath, "utf-8")
+		const parsed = JSON.parse(raw)
+		const providers = parsed?.providers ?? {}
+		const result: ModelMetadata[] = []
+		for (const [name, provider] of Object.entries(providers)) {
+			if (!name.startsWith("kimchi-dev")) continue
+			const models = (provider as { models?: PiModelConfig[] }).models
+			if (!Array.isArray(models) || models.length === 0) continue
+			result.push(...models.filter((model) => model.id !== AUTO_MODEL_ID).map(modelToMetadata))
+		}
+		if (result.length === 0) return undefined
+		return result
+	} catch {
+		return undefined
+	}
+}
+
+function readExistingProviders(modelsJsonPath: string): Record<string, unknown> {
+	if (!existsSync(modelsJsonPath)) return {}
+	try {
+		const raw = readFileSync(modelsJsonPath, "utf-8")
+		const config = JSON.parse(raw)
+		const providers = config?.providers ?? {}
+		// Strip all kimchi-managed providers (kimchi-dev and kimchi-dev/* sub-providers)
+		// plus kimchi-experimental, so they get regenerated on refresh.
+		const rest: Record<string, unknown> = {}
+		for (const [name, value] of Object.entries(providers as Record<string, unknown>)) {
+			if (name.startsWith("kimchi-dev") || name === "kimchi-experimental") continue
+			rest[name] = value
+		}
+		return rest
+	} catch {
+		return {}
+	}
+}
+
+export async function validateApiKey(apiKey: string, options: FetchModelsOptions = {}): Promise<void> {
+	await fetchAvailableModels(apiKey, options)
+}
+
+/**
+ * Overwrite or insert a provider's models in models.json.
+ * Used after OAuth subscription login to persist upstream models into Kimchi's cache.
+ */
+export function syncProviderModels(
+	modelsJsonPath: string,
+	providerId: string,
+	models: PiModelConfig[],
+	providerConfig?: { api?: string; baseUrl?: string },
+): void {
+	let config: { providers?: Record<string, { api?: string; baseUrl?: string; models?: PiModelConfig[] }> } = {}
+	if (existsSync(modelsJsonPath)) {
+		config = JSON.parse(readFileSync(modelsJsonPath, "utf-8"))
+	}
+	if (!config.providers) config.providers = {}
+	config.providers[providerId] = { ...providerConfig, models }
+	writeFileSync(modelsJsonPath, JSON.stringify(config, null, "\t"), "utf-8")
+}
+
+export function injectExperimentalProvider(modelsJsonPath: string, apiKey: string): void {
+	if (!existsSync(modelsJsonPath)) return
+	let config: { providers?: Record<string, unknown> }
+	try {
+		config = JSON.parse(readFileSync(modelsJsonPath, "utf-8"))
+	} catch {
+		return
+	}
+	const kimchiDev = config.providers?.["kimchi-dev"]
+	if (!kimchiDev) return
+	const experimental = {
+		...(kimchiDev as Record<string, unknown>),
+		baseUrl: "https://llm.kimchi.dev/experimental/openai/v1",
+		apiKey,
+	}
+	config.providers = { ...config.providers, "kimchi-experimental": experimental }
+	writeFileSync(modelsJsonPath, JSON.stringify(config, null, "\t"), "utf-8")
+}
+
+/**
+ * Upsert the virtual kimchi-dev/auto model after the managed provider refresh.
+ * It is always present so saved sessions/defaults remain restorable; the
+ * experimental flag only controls whether Pi exposes it in discovery lists.
+ */
+export function injectAutoModel(modelsJsonPath: string): void {
+	if (!existsSync(modelsJsonPath)) return
+	let config: { providers?: Record<string, { models?: PiModelConfig[] }> }
+	try {
+		config = JSON.parse(readFileSync(modelsJsonPath, "utf-8"))
+	} catch {
+		return
+	}
+	const kimchiDev = config.providers?.["kimchi-dev"]
+	if (!kimchiDev || !Array.isArray(kimchiDev.models)) return
+	const concreteMetadata = kimchiDev.models.filter((model) => model.id !== AUTO_MODEL_ID).map(modelToMetadata)
+	kimchiDev.models = [
+		...kimchiDev.models.filter((model) => model.id !== AUTO_MODEL_ID),
+		autoModelConfig(concreteMetadata),
+	]
+	writeFileSync(modelsJsonPath, JSON.stringify(config, null, "\t"), "utf-8")
+}
+
+export function readExperimentalModels(modelsJsonPath: string): ModelMetadata[] {
+	try {
+		const raw = readFileSync(modelsJsonPath, "utf-8")
+		const parsed = JSON.parse(raw)
+		const models = parsed?.providers?.["kimchi-experimental"]?.models
+		if (!Array.isArray(models) || models.length === 0) return []
+		return (models as PiModelConfig[]).map(modelToMetadata)
+	} catch {
+		return []
+	}
+}
+
+/**
+ * Fetch available models from the kimchi metadata API and write the
+ * configuration to modelsJsonPath. If no API key is configured, returns
+ * cached models (if available) or an empty list without making a network call.
+ * If the fetch fails and the previous models.json is still on disk, returns
+ * the cached models with a warning. Throws only when a key is present but
+ * there is no cache to fall back on.
+ *
+ * User-added providers (anything other than "kimchi-dev") are preserved across
+ * updates so custom model configurations are not lost on startup.
+ */
+export async function updateModelsConfig(
+	modelsJsonPath: string,
+	apiKey: string,
+	options: FetchModelsOptions = {},
+): Promise<ModelsConfigResult> {
+	const dir = dirname(modelsJsonPath)
+	mkdirSync(dir, { recursive: true })
+
+	const otherProviders = readExistingProviders(modelsJsonPath)
+	const otherModels = extractModelsFromProviders(otherProviders as Record<string, { models?: PiModelConfig[] }>)
+
+	if (!apiKey) {
+		return { models: sortModels([...(readCachedMetadata(modelsJsonPath) ?? []), ...otherModels]) }
+	}
+
+	let fetched: ModelMetadata[]
+	try {
+		fetched = await fetchAvailableModels(apiKey, options)
+	} catch (err) {
+		const message = err instanceof Error ? err.message : String(err)
+		// Refresh is an authenticated call: a 401 means the on-disk key is
+		// dead, not absent. Mark before the rethrow decision so the mark
+		// survives the cached-fallback path too.
+		if (isAuthRejectedMessage(message)) {
+			markCredentialStale(apiKey, KIMCHI_PROVIDER_ID)
+		}
+		const cached = readCachedMetadata(modelsJsonPath) ?? []
+		if (options.allowCachedFallback === false || (cached.length === 0 && otherModels.length === 0)) throw err
+		console.warn(`Failed to refresh models from API, using cached list: ${message}`)
+		return { models: sortModels([...cached, ...otherModels]) }
+	}
+	// Authenticated success clears marks from earlier 401s.
+	clearCredentialStale(KIMCHI_PROVIDER_ID)
+
+	const activeModels = fetched.filter((m) => m.status !== "sunset" && m.limits.max_output_tokens > 0)
+	if (activeModels.length === 0 && fetched.length > 0) {
+		if (options.requireActiveModels) {
+			throw new ModelsFetchError("No active Kimchi models are available for this API key", { transient: false })
+		}
+		console.warn("All models from the API are sunset. No active models available.")
+	}
+	const models = sortModels(activeModels)
+	const merged = { providers: { ...otherProviders, ...buildModelsConfig(models, options.endpoint).providers } }
+	writeFileSync(modelsJsonPath, JSON.stringify(merged, null, "\t"), "utf-8")
+	return { models: sortModels([...activeModels, ...otherModels]) }
+}

@@ -1,0 +1,73 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`default agents — resolved invocation config snapshot > Explore 1`] = `
+{
+  "builtinToolNames": [
+    "read",
+    "bash",
+    "grep",
+    "find",
+    "ls",
+  ],
+  "maxTurns": undefined,
+  "modelId": undefined,
+  "name": "Explore",
+  "roles": [
+    "explore",
+  ],
+  "thinking": "low",
+  "tokenBudget": 120000,
+}
+`;
+
+exports[`default agents — resolved invocation config snapshot > General-Purpose 1`] = `
+{
+  "builtinToolNames": undefined,
+  "maxTurns": undefined,
+  "modelId": undefined,
+  "name": "General-Purpose",
+  "roles": undefined,
+  "thinking": undefined,
+  "tokenBudget": undefined,
+}
+`;
+
+exports[`default agents — resolved invocation config snapshot > Plan 1`] = `
+{
+  "builtinToolNames": [
+    "read",
+    "bash",
+    "grep",
+    "find",
+    "ls",
+  ],
+  "maxTurns": undefined,
+  "modelId": undefined,
+  "name": "Plan",
+  "roles": [
+    "plan",
+  ],
+  "thinking": "high",
+  "tokenBudget": 120000,
+}
+`;
+
+exports[`default agents — resolved invocation config snapshot > Researcher 1`] = `
+{
+  "builtinToolNames": [
+    "read",
+    "bash",
+    "grep",
+    "find",
+    "ls",
+  ],
+  "maxTurns": undefined,
+  "modelId": undefined,
+  "name": "Researcher",
+  "roles": [
+    "research",
+  ],
+  "thinking": "medium",
+  "tokenBudget": 80000,
+}
+`;

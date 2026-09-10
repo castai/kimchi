@@ -1,0 +1,770 @@
+import { initTheme, type Theme, ToolExecutionComponent, UserMessageComponent } from "@earendil-works/pi-coding-agent"
+import { ProcessTerminal, Text, TuiMainScreen, visibleWidth } from "@earendil-works/pi-tui"
+import { beforeAll, describe, expect, it, vi } from "vitest"
+import { createExtensionApi } from "./__mocks__/extension-api.js"
+import { createToolRenderContext } from "./__mocks__/tool-render-context.js"
+import { FERMENT_V2_TOOL_NAMES } from "./ferment-v2/constants.js"
+import toolRenderingExtension, {
+	createErrorTruncatingResultRenderer,
+	formatToolTimer,
+	getToolElapsedMs,
+	isMcpToolName,
+	mcpCallLabelAndSummary,
+	patchToolRenderCacheInvalidation,
+	patchUserMessageRender,
+	splitLeadingOsc133Markers,
+	summarizeMcpToolInvocationArgs,
+	summarizeOpenAiToolCall,
+	type ToolRenderContext,
+	toolHeader,
+	wrapMarkedLine,
+} from "./tool-rendering.js"
+
+const OSC133_A = "\x1b]133;A\x07"
+const OSC133_B = "\x1b]133;B\x07"
+const OSC133_C = "\x1b]133;C\x07"
+const SGR_RE = new RegExp(`${"\x1b"}\\[[0-9;]*m`, "g")
+
+const stripSgr = (line: string): string => line.replace(SGR_RE, "")
+const plainTheme = {
+	fg: (_name: string, value: string) => value,
+	bold: (value: string) => value,
+} as unknown as Theme
+
+describe("user message render patch", () => {
+	beforeAll(() => {
+		initTheme("default")
+		patchUserMessageRender()
+	})
+
+	it("splits all leading OSC 133 markers from one-line user messages", () => {
+		const line = `${OSC133_B}${OSC133_C}${OSC133_A}hello`
+
+		expect(splitLeadingOsc133Markers(line)).toEqual({
+			markers: `${OSC133_B}${OSC133_C}${OSC133_A}`,
+			rest: "hello",
+		})
+	})
+
+	it("keeps OSC 133 markers before the visible prompt prefix", () => {
+		const lines = new UserMessageComponent("do we have unpushed commits?").render(80)
+
+		expect(lines).toHaveLength(1)
+		const { markers, rest } = splitLeadingOsc133Markers(lines[0])
+		expect(markers).toBe(`${OSC133_B}${OSC133_C}${OSC133_A}`)
+		expect(stripSgr(rest).startsWith(" ❯ do we have unpushed commits?")).toBe(true)
+		expect(visibleWidth(lines[0])).toBe(80)
+	})
+
+	it("summarizes questionnaire calls from prompt fields", () => {
+		const summary = summarizeOpenAiToolCall(
+			"questionnaire",
+			{ questions: [{ prompt: "Which improvement areas should this ferment include?" }] },
+			plainTheme,
+			(path) => path,
+		)
+
+		expect(summary).toBe("Which improvement areas should this ferment include?")
+	})
+
+	it("renders Skill tool with skill name when skill arg is provided", () => {
+		const summary = summarizeOpenAiToolCall("Skill", { skill: "writing-plans" }, plainTheme, (path) => path)
+		expect(summary).toBe("writing-plans")
+	})
+
+	it("renders Skill tool with name arg as primary", () => {
+		const summary = summarizeOpenAiToolCall("Skill", { name: "test-skill" }, plainTheme, (path) => path)
+		expect(summary).toBe("test-skill")
+	})
+
+	it("renders Skill tool with fallback when no name or skill arg", () => {
+		const summary = summarizeOpenAiToolCall("Skill", {}, plainTheme, (path) => path)
+		expect(summary).toBe("run skill")
+	})
+})
+
+describe("execution timestamp tracking", () => {
+	beforeAll(() => {
+		patchToolRenderCacheInvalidation()
+	})
+
+	function createMockComponent(): ToolExecutionComponent {
+		return new ToolExecutionComponent(
+			"bash",
+			"tc-1",
+			{ command: "sleep 1" },
+			{},
+			undefined,
+			// biome-ignore lint/suspicious/noExplicitAny: mock property access
+			{ requestRender: () => {} } as any,
+			"/tmp",
+		)
+	}
+
+	it("records _executionStartedAt when markExecutionStarted is called", () => {
+		const component = createMockComponent()
+		// biome-ignore lint/suspicious/noExplicitAny: mock property access
+		expect((component as any).rendererState._executionStartedAt).toBeUndefined()
+		component.markExecutionStarted()
+		// biome-ignore lint/suspicious/noExplicitAny: mock property access
+		expect(typeof (component as any).rendererState._executionStartedAt).toBe("number")
+	})
+
+	it("records _executionEndedAt when updateResult is called with isPartial=false", () => {
+		const component = createMockComponent()
+		component.markExecutionStarted()
+		// biome-ignore lint/suspicious/noExplicitAny: mock property access
+		expect((component as any).rendererState._executionEndedAt).toBeUndefined()
+		component.updateResult({ content: [], isError: false }, false)
+		// biome-ignore lint/suspicious/noExplicitAny: mock property access
+		expect(typeof (component as any).rendererState._executionEndedAt).toBe("number")
+	})
+
+	it("does not overwrite _executionStartedAt on duplicate calls", () => {
+		const component = createMockComponent()
+		component.markExecutionStarted()
+		// biome-ignore lint/suspicious/noExplicitAny: mock property access
+		const first = (component as any).rendererState._executionStartedAt
+		component.markExecutionStarted()
+		// biome-ignore lint/suspicious/noExplicitAny: mock property access
+		expect((component as any).rendererState._executionStartedAt).toBe(first)
+	})
+
+	it("records _executionEndedAt when updateResult is called with one argument (default isPartial=false)", () => {
+		const component = createMockComponent()
+		component.markExecutionStarted()
+		// biome-ignore lint/suspicious/noExplicitAny: mock property access
+		expect((component as any).rendererState._executionEndedAt).toBeUndefined()
+		component.updateResult({ content: [], isError: false })
+		// biome-ignore lint/suspicious/noExplicitAny: mock property access
+		expect(typeof (component as any).rendererState._executionEndedAt).toBe("number")
+	})
+
+	it("does not record _executionEndedAt when isPartial is true", () => {
+		const component = createMockComponent()
+		component.markExecutionStarted()
+		component.updateResult({ content: [], isError: false }, true)
+		// biome-ignore lint/suspicious/noExplicitAny: mock property access
+		expect((component as any).rendererState._executionEndedAt).toBeUndefined()
+	})
+})
+
+describe("hidden tool block rendering", () => {
+	beforeAll(() => {
+		toolRenderingExtension(createExtensionApi().api)
+	})
+
+	it("hides legacy write_todos tool results", () => {
+		const component = new ToolExecutionComponent(
+			"write_todos",
+			"tc-legacy",
+			{ todos: [{ content: "legacy", status: "pending" }] },
+			{},
+			undefined,
+			// biome-ignore lint/suspicious/noExplicitAny: minimal ExtensionAPI test double
+			{ requestRender: () => {} } as any,
+			"/tmp",
+		)
+
+		expect(component.render(80)).toEqual([])
+	})
+
+	it.each(FERMENT_V2_TOOL_NAMES)("hides %s tool calls and results", (toolName) => {
+		const component = new ToolExecutionComponent(
+			toolName,
+			`tc-${toolName}`,
+			{},
+			{},
+			undefined,
+			// biome-ignore lint/suspicious/noExplicitAny: minimal ExtensionAPI test double
+			{ requestRender: () => {} } as any,
+			"/tmp",
+		)
+
+		expect(component.render(80)).toEqual([])
+	})
+
+	it("uses Agent's custom call renderer for streamed arguments", () => {
+		const component = new ToolExecutionComponent(
+			"Agent",
+			"tc-agent",
+			{ subagent_type: "Explore" },
+			{},
+			{
+				renderCall: (args: { subagent_type?: string }) => new Text(`custom Agent ${args.subagent_type}`, 0, 0),
+			} as never,
+			// biome-ignore lint/suspicious/noExplicitAny: minimal ExtensionAPI test double
+			{ requestRender: () => {} } as any,
+			"/tmp",
+		)
+
+		expect(component.render(80).map(stripSgr).join("\n")).toContain("custom Agent Explore")
+	})
+
+	it("keeps generic call rendering for non-Agent tools with custom renderers", () => {
+		const component = new ToolExecutionComponent(
+			"CustomTool",
+			"tc-custom",
+			{ value: "streamed" },
+			{},
+			{
+				renderCall: () => new Text("custom non-Agent renderer", 0, 0),
+			} as never,
+			// biome-ignore lint/suspicious/noExplicitAny: minimal ExtensionAPI test double
+			{ requestRender: () => {} } as any,
+			"/tmp",
+		)
+
+		const rendered = component.render(80).map(stripSgr).join("\n")
+		expect(rendered).toContain("Custom Tool")
+		expect(rendered).not.toContain("custom non-Agent renderer")
+	})
+
+	it("keeps complete submitted plans in the transcript before results and after replay or collapse", () => {
+		const plan = `# Cache migration\n\n${Array.from({ length: 80 }, (_, index) => `- Requirement ${index + 1}`).join("\n")}`
+		const args = { plan }
+		const tui = new TuiMainScreen(new ProcessTerminal())
+		vi.spyOn(tui, "requestRender").mockImplementation(() => {})
+		const create = (input: typeof args) =>
+			new ToolExecutionComponent("submit_plan", "tc-plan", input, {}, undefined, tui, "/tmp")
+		const component = create({ plan: "# Draft" })
+		component.updateArgs(args)
+		component.setArgsComplete()
+		for (const current of [component, create(JSON.parse(JSON.stringify(args)))]) {
+			for (const expanded of [false, true, false]) {
+				current.setExpanded(expanded)
+				const rendered = current.render(80).map(stripSgr).join("\n")
+				expect(rendered).toContain("Cache migration")
+				for (let index = 1; index <= 80; index++) expect(rendered).toContain(`Requirement ${index}`)
+			}
+			current.updateResult(
+				{ content: [{ type: "text", text: "Plan submitted for review. Waiting for user decision." }], isError: false },
+				false,
+			)
+			expect(current.render(80).map(stripSgr).join("\n")).toContain("Requirement 80")
+		}
+	})
+})
+
+describe("elapsed time helpers", () => {
+	it("returns 0 when no timestamps exist", () => {
+		expect(getToolElapsedMs({ state: {} } as ToolRenderContext)).toBe(0)
+		expect(getToolElapsedMs({} as ToolRenderContext)).toBe(0)
+		// @ts-expect-error
+		expect(getToolElapsedMs(null)).toBe(0)
+	})
+
+	it("returns elapsed time for a running tool (no end timestamp)", () => {
+		const startedAt = Date.now() - 5000
+		const elapsed = getToolElapsedMs({ state: { _executionStartedAt: startedAt } } as ToolRenderContext)
+		expect(elapsed).toBeGreaterThanOrEqual(5000)
+		expect(elapsed).toBeLessThan(6000)
+	})
+
+	it("returns exact elapsed time for a completed tool", () => {
+		const startedAt = 1000
+		const endedAt = 3500
+		const elapsed = getToolElapsedMs({
+			state: { _executionStartedAt: startedAt, _executionEndedAt: endedAt },
+		} as ToolRenderContext)
+		expect(elapsed).toBe(2500)
+	})
+
+	it("formatToolTimer returns undefined at zero or negative elapsed", () => {
+		expect(formatToolTimer(0)).toBeUndefined()
+		expect(formatToolTimer(-1)).toBeUndefined()
+	})
+
+	it("formatToolTimer returns formatted duration for any positive elapsed", () => {
+		expect(formatToolTimer(500)).toBe("500ms")
+		expect(formatToolTimer(1000)).toBe("1.0s")
+		expect(formatToolTimer(12345)).toBe("12.3s")
+		expect(formatToolTimer(120000)).toBe("120.0s")
+	})
+})
+
+describe("toolHeader", () => {
+	it("renders header with tool name and summary", () => {
+		const header = toolHeader("Read", "src/foo.ts", plainTheme, "○ ")
+		expect(header).toContain("Read")
+		expect(header).toContain("src/foo.ts")
+	})
+
+	it("appends timer when timer is provided", () => {
+		const header = toolHeader("Read", "src/foo.ts", plainTheme, "○ ", "1.5s")
+		expect(header).toContain("Read")
+		expect(header).toContain("src/foo.ts")
+		expect(header).toContain("1.5s")
+	})
+
+	it("omits timer when timer is undefined", () => {
+		const headerWith = toolHeader("Read", "src/foo.ts", plainTheme, "○ ", "1.5s")
+		const headerWithout = toolHeader("Read", "src/foo.ts", plainTheme, "○ ")
+		expect(headerWithout).not.toContain("1.5s")
+		expect(headerWith).toContain("1.5s")
+	})
+})
+
+describe("wrapMarkedLine", () => {
+	// Regression (pi-crash.log, terminal width 2): the collapsed header of an
+	// Edit tool call (` ● Edit <mark>/Users/...`) has a marked prefix wider
+	// than the terminal. wrapMarkedLine emitted `${prefix}${body-chunk}` lines
+	// of width prefixWidth + 1 = 9 regardless of the requested width, and
+	// pi-tui's doRender hard-crashed: "Rendered line N exceeds terminal
+	// width (9 > 2)".
+	const crashHeader = toolHeader("Edit", "/Users/vytautas/reps/some-project/file.ts", plainTheme, " ● ")
+
+	it("never emits a line wider than the requested width at narrow sizes", () => {
+		for (let width = 1; width <= 12; width++) {
+			for (const line of wrapMarkedLine(crashHeader, width)) {
+				expect(visibleWidth(line)).toBeLessThanOrEqual(width)
+			}
+		}
+	})
+
+	it("falls back to plain wrapping when the prefix fills the width", () => {
+		const lines = wrapMarkedLine(crashHeader, 2)
+		expect(lines.length).toBeGreaterThan(1)
+		// The full header text still shows, one fragment at a time.
+		expect(stripSgr(lines.join("")).replace(/\s/g, "")).toContain("/Users/vytautas")
+	})
+
+	it("keeps marked-prefix wrapping when the width fits", () => {
+		const lines = wrapMarkedLine(crashHeader, 40)
+		expect(stripSgr(lines[0]).startsWith(" ● Edit /")).toBe(true)
+	})
+})
+
+describe("isMcpToolName", () => {
+	it('returns true for bare "mcp"', () => {
+		expect(isMcpToolName("mcp")).toBe(true)
+	})
+
+	it("returns true for mcp_ prefixed names", () => {
+		expect(isMcpToolName("mcp_pal_chat")).toBe(true)
+	})
+
+	it("returns true for mcp- prefixed names", () => {
+		expect(isMcpToolName("mcp-search")).toBe(true)
+	})
+
+	it("returns true for mcp: prefixed names", () => {
+		expect(isMcpToolName("mcp:tool")).toBe(true)
+	})
+
+	it("returns true for names containing _mcp_", () => {
+		expect(isMcpToolName("foo_mcp_bar")).toBe(true)
+	})
+
+	it("returns false for non-mcp tool names", () => {
+		expect(isMcpToolName("read")).toBe(false)
+		expect(isMcpToolName("bash")).toBe(false)
+		expect(isMcpToolName("write")).toBe(false)
+	})
+
+	it("returns false for empty string", () => {
+		expect(isMcpToolName("")).toBe(false)
+	})
+
+	it("returns false for mcp as substring without separator (mcptool)", () => {
+		expect(isMcpToolName("mcptool")).toBe(false)
+	})
+
+	it("returns true for MCP_ prefix (case-insensitive)", () => {
+		expect(isMcpToolName("MCP_tool")).toBe(true)
+	})
+})
+
+describe("summarizeMcpToolInvocationArgs", () => {
+	it("returns empty string when args field is missing", () => {
+		expect(summarizeMcpToolInvocationArgs({})).toBe("")
+	})
+
+	it("returns empty string when args field is not valid JSON", () => {
+		expect(summarizeMcpToolInvocationArgs({ args: "not json" })).toBe("")
+	})
+
+	it("returns empty string when parsed args is an array", () => {
+		expect(summarizeMcpToolInvocationArgs({ args: '["a","b"]' })).toBe("")
+	})
+
+	it("formats simple key=value pairs", () => {
+		expect(summarizeMcpToolInvocationArgs({ args: '{"model":"gpt-4","temperature":0.7}' })).toBe(
+			"(model=gpt-4, temperature=0.7)",
+		)
+	})
+
+	it("truncates long values in collapsed mode", () => {
+		const longVal = "a".repeat(100)
+		const result = summarizeMcpToolInvocationArgs({ args: JSON.stringify({ prompt: longVal }) })
+		expect(result.length).toBeLessThan(longVal.length + 20)
+		expect(result.startsWith("(prompt=")).toBe(true)
+	})
+
+	it("shows full values in expanded mode", () => {
+		const longVal = "a".repeat(100)
+		const result = summarizeMcpToolInvocationArgs({ args: JSON.stringify({ prompt: longVal }) }, true)
+		expect(result).toBe(`(prompt=${longVal})`)
+	})
+
+	it("skips null and undefined values", () => {
+		expect(summarizeMcpToolInvocationArgs({ args: '{"a":null,"b":"hello"}' })).toBe("(b=hello)")
+	})
+
+	it("skips empty arrays", () => {
+		expect(summarizeMcpToolInvocationArgs({ args: '{"tags":[],"name":"foo"}' })).toBe("(name=foo)")
+	})
+
+	it("skips nested objects", () => {
+		expect(summarizeMcpToolInvocationArgs({ args: '{"a":{"nested":1},"b":"hi"}' })).toBe("(b=hi)")
+	})
+
+	it("formats arrays as first-elem +N in collapsed mode", () => {
+		expect(summarizeMcpToolInvocationArgs({ args: '{"tags":["foo","bar","baz"]}' })).toBe("(tags=foo +2)")
+	})
+
+	it("formats arrays as comma-joined in expanded mode", () => {
+		expect(summarizeMcpToolInvocationArgs({ args: '{"tags":["foo","bar","baz"]}' }, true)).toBe("(tags=foo, bar, baz)")
+	})
+
+	it("caps total suffix at 120 chars in collapsed mode", () => {
+		const manyKeys: Record<string, string> = {}
+		for (let i = 0; i < 20; i++) manyKeys[`key${i}`] = "val".repeat(5)
+		const result = summarizeMcpToolInvocationArgs({ args: JSON.stringify(manyKeys) })
+		const inner = result.slice(1, -1)
+		expect(inner.length).toBeLessThanOrEqual(120)
+	})
+})
+
+describe("mcpCallLabelAndSummary", () => {
+	it("returns humanized tool label for tool invocations", () => {
+		const result = mcpCallLabelAndSummary({ tool: "pal_chat" }, plainTheme)
+		expect(result.label).toBe("pal chat")
+	})
+
+	it("prefixes label with server name when server is present", () => {
+		const result = mcpCallLabelAndSummary({ tool: "pal_chat", server: "pal" }, plainTheme)
+		expect(result.label).toBe("pal - pal chat")
+	})
+
+	it("includes args summary in summary for tool invocations", () => {
+		const result = mcpCallLabelAndSummary({ tool: "pal_chat", args: '{"model":"gpt-4"}' }, plainTheme)
+		expect(result.summary).toBe("(model=gpt-4)")
+	})
+
+	it('returns "Tool search" label for search calls', () => {
+		const result = mcpCallLabelAndSummary({ search: "pal chat" }, plainTheme)
+		expect(result.label).toBe("Tool search")
+		expect(result.summary).toBe("(query=pal chat)")
+	})
+
+	it('returns "Tool search" label for server calls', () => {
+		const result = mcpCallLabelAndSummary({ server: "pal" }, plainTheme)
+		expect(result.label).toBe("Tool search")
+		expect(result.summary).toBe("(server=pal)")
+	})
+
+	it('returns "Tool describe" label for describe calls', () => {
+		const result = mcpCallLabelAndSummary({ describe: "pal_chat" }, plainTheme)
+		expect(result.label).toBe("Tool describe")
+		expect(result.summary).toBe("(tool=pal_chat)")
+	})
+
+	it('returns "Tool connect" label for connect calls', () => {
+		const result = mcpCallLabelAndSummary({ connect: "my-server" }, plainTheme)
+		expect(result.label).toBe("Tool connect")
+		expect(result.summary).toBe("(server=my-server)")
+	})
+
+	it('returns "Tool action" label for action calls', () => {
+		const result = mcpCallLabelAndSummary({ action: "restart" }, plainTheme)
+		expect(result.label).toBe("Tool action")
+		expect(result.summary).toBe("(action=restart)")
+	})
+
+	it('falls back to "MCP" label for empty args', () => {
+		const result = mcpCallLabelAndSummary({}, plainTheme)
+		expect(result.label).toBe("MCP")
+		expect(result.summary).toBe("(status)")
+	})
+
+	it("shows full arg values in expanded mode", () => {
+		const longVal = "x".repeat(100)
+		const result = mcpCallLabelAndSummary(
+			{ tool: "pal_chat", args: JSON.stringify({ prompt: longVal }) },
+			plainTheme,
+			true,
+		)
+		expect(result.summary).toContain(longVal)
+	})
+})
+
+describe("set_phase tool summary", () => {
+	it("summarizes set_phase calls with the phase value", () => {
+		const summary = summarizeOpenAiToolCall("set_phase", { phase: "plan" }, plainTheme, (path) => path)
+		expect(summary).toBe("plan")
+	})
+
+	it("summarizes set_phase calls with unknown phase fallback", () => {
+		const summary = summarizeOpenAiToolCall("set_phase", {}, plainTheme, (path) => path)
+		expect(summary).toBe("set phase")
+	})
+})
+
+describe("validation error display truncation", () => {
+	const validationErrorFor = (toolName: string, schemaError = "arguments: must match the tool schema") =>
+		[
+			`Validation failed for tool "${toolName}":`,
+			`  - ${schemaError}`,
+			"",
+			"Received arguments:",
+			JSON.stringify({ path: "a.py", edits: [{ oldText: "x".repeat(200), newText: "y" }] }, null, 2),
+		].join("\n")
+
+	const validationError = validationErrorFor("edit", "edits.0: must not have additional properties")
+
+	const truncationCases = [
+		{ toolName: "edit", schemaError: "edits.0: must not have additional properties" },
+		{ toolName: "write", schemaError: "content: must be a string" },
+		{ toolName: "read", schemaError: "path: must be a string" },
+	]
+
+	const errorResult = (text: string) => ({ content: [{ type: "text" as const, text }], details: undefined })
+	const makeErrorCtx = () => createToolRenderContext({ isError: true })
+	const upstreamTextRenderer = () => new Text(validationError, 0, 0)
+
+	const renderToString = (component: ReturnType<ReturnType<typeof createErrorTruncatingResultRenderer>>) =>
+		stripSgr(component.render(120).join("\n"))
+
+	it.each(truncationCases)("keeps $toolName schema errors but drops the args dump when collapsed", ({
+		toolName,
+		schemaError,
+	}) => {
+		const toolValidationError = validationErrorFor(toolName, schemaError)
+		const errorCtx = makeErrorCtx()
+		const renderer = createErrorTruncatingResultRenderer(toolName, () => new Text(toolValidationError, 0, 0))
+		const component = renderer(
+			errorResult(toolValidationError),
+			{ expanded: false, isPartial: false },
+			plainTheme,
+			errorCtx,
+		)
+		const rendered = renderToString(component)
+
+		expect(rendered).toContain(`Validation failed for tool "${toolName}":`)
+		expect(rendered).toContain(schemaError)
+		expect(rendered).not.toContain("Received arguments")
+		expect(rendered).toContain("ctrl+o to expand")
+	})
+
+	it("drops the args dump for conversion-failure errors (the second pi-ai throw site)", () => {
+		const conversionError = [
+			`Validation failed for tool "edit": argument conversion failed: edits: expected array`,
+			"",
+			"Received arguments:",
+			JSON.stringify({ path: "a.py", edits: "oops" }, null, 2),
+		].join("\n")
+		const errorCtx = makeErrorCtx()
+		const renderer = createErrorTruncatingResultRenderer("edit", () => new Text(conversionError, 0, 0))
+		const component = renderer(
+			errorResult(conversionError),
+			{ expanded: false, isPartial: false },
+			plainTheme,
+			errorCtx,
+		)
+		const rendered = renderToString(component)
+
+		expect(rendered).toContain(`Validation failed for tool "edit": argument conversion failed`)
+		expect(rendered).not.toContain("Received arguments")
+		expect(rendered).toContain("ctrl+o to expand")
+	})
+
+	it("defers to the upstream renderer when expanded, showing the full error", () => {
+		let called = 0
+		const errorCtx = makeErrorCtx()
+		const renderer = createErrorTruncatingResultRenderer("edit", () => {
+			called++
+			return new Text(validationError, 0, 0)
+		})
+		const component = renderer(errorResult(validationError), { expanded: true, isPartial: false }, plainTheme, errorCtx)
+
+		expect(called).toBe(1)
+		const rendered = renderToString(component)
+		expect(rendered).toContain("Received arguments")
+		expect(rendered).not.toContain("ctrl+o to expand")
+	})
+
+	it("passes through non-error results to the upstream renderer", () => {
+		let called = 0
+		const renderer = createErrorTruncatingResultRenderer("edit", () => {
+			called++
+			return new Text("upstream ok", 0, 0)
+		})
+		const component = renderer(
+			errorResult("ok"),
+			{ expanded: false, isPartial: false },
+			plainTheme,
+			createToolRenderContext(),
+		)
+
+		expect(called).toBe(1)
+		expect(renderToString(component).trim()).toBe("upstream ok")
+	})
+
+	it("runs the upstream renderer for its side effects on errors but tolerates its failures", () => {
+		let called = 0
+		const errorCtx = makeErrorCtx()
+		const renderer = createErrorTruncatingResultRenderer("edit", () => {
+			called++
+			throw new Error("stale lastComponent")
+		})
+		const component = renderer(
+			errorResult(validationError),
+			{ expanded: false, isPartial: false },
+			plainTheme,
+			errorCtx,
+		)
+
+		expect(called).toBe(1)
+		const rendered = renderToString(component)
+		expect(rendered).toContain('Validation failed for tool "edit":')
+		expect(rendered).not.toContain("Received arguments")
+	})
+
+	it("defers short non-validation errors to the upstream renderer", () => {
+		let called = 0
+		const errorCtx = makeErrorCtx()
+		const upstreamText = "Could not edit file: foo.py. Error code: ENOENT."
+		const renderer = createErrorTruncatingResultRenderer("edit", () => {
+			called++
+			return new Text(upstreamText, 0, 0)
+		})
+		const component = renderer(errorResult(upstreamText), { expanded: false, isPartial: false }, plainTheme, errorCtx)
+
+		expect(called).toBe(1)
+		const rendered = renderToString(component)
+		expect(rendered).toContain("Could not edit file: foo.py.")
+		expect(rendered).not.toContain("ctrl+o to expand")
+	})
+
+	it("defers non-validation errors containing the received-arguments marker to upstream", () => {
+		const errorCtx = makeErrorCtx()
+		const operationalError = [
+			"Edit failed while processing diagnostics.",
+			"",
+			"Received arguments:",
+			'{ "diagnostic": "must remain visible" }',
+		].join("\n")
+		const renderer = createErrorTruncatingResultRenderer("edit", () => new Text(operationalError, 0, 0))
+		const component = renderer(
+			errorResult(operationalError),
+			{ expanded: false, isPartial: false },
+			plainTheme,
+			errorCtx,
+		)
+		const rendered = renderToString(component)
+
+		expect(rendered).toContain("must remain visible")
+		expect(rendered).not.toContain("ctrl+o to expand")
+	})
+
+	it("does not truncate a validation error for a different tool", () => {
+		const errorCtx = makeErrorCtx()
+		const renderer = createErrorTruncatingResultRenderer("read", () => new Text(validationError, 0, 0))
+		const component = renderer(
+			errorResult(validationError),
+			{ expanded: false, isPartial: false },
+			plainTheme,
+			errorCtx,
+		)
+
+		expect(renderToString(component)).toContain("Received arguments")
+	})
+
+	it("never hands our component to upstream across fresh wrapper instances (production render cycle)", () => {
+		const seenLastComponents: unknown[] = []
+		const errorCtx = makeErrorCtx()
+		// Upstream calls getResultRenderer() on every render, so each render gets
+		// a fresh wrapper — ownership must survive across wrapper instances.
+		const makeWrapper = () =>
+			createErrorTruncatingResultRenderer("edit", (_result, _options, _theme, ctx) => {
+				seenLastComponents.push(ctx.lastComponent)
+				return new Text("upstream full", 0, 0)
+			})
+
+		// Render 1 (collapsed): we take over; the host stores our component and
+		// hands it back as ctx.lastComponent on the next render.
+		const collapsed = makeWrapper()(
+			errorResult(validationError),
+			{ expanded: false, isPartial: false },
+			plainTheme,
+			errorCtx,
+		)
+		expect(collapsed).toBeDefined()
+		errorCtx.lastComponent = collapsed
+
+		// Render 2 (expanded, e.g. after ctrl+o): upstream takes over and must
+		// not receive our component as lastComponent.
+		makeWrapper()(errorResult(validationError), { expanded: true, isPartial: false }, plainTheme, errorCtx)
+
+		expect(seenLastComponents).toHaveLength(2)
+		expect(seenLastComponents[0]).toBeUndefined()
+		expect(seenLastComponents[1]).toBeUndefined()
+		expect(errorCtx.lastComponent).toBeUndefined()
+	})
+
+	describe("patch installation on ToolExecutionComponent", () => {
+		beforeAll(() => {
+			toolRenderingExtension(createExtensionApi().api)
+		})
+
+		// biome-ignore lint/suspicious/noExplicitAny: invoking patched prototype method with a minimal `this`
+		const resolveResultRenderer = (self: any) =>
+			// biome-ignore lint/suspicious/noExplicitAny: invoking patched prototype method with a minimal `this`
+			(ToolExecutionComponent.prototype as any).getResultRenderer.call(self)
+
+		it("falls back to upstream's no-renderer path when none resolved for a truncating tool", () => {
+			// e.g. an extension-registered 'edit' override without renderResult
+			const renderer = resolveResultRenderer({
+				toolName: "edit",
+				builtInToolDefinition: undefined,
+				toolDefinition: { name: "edit", renderResult: undefined },
+			})
+
+			expect(renderer).toBeUndefined()
+		})
+
+		it.each(["edit", "write", "read"])("wraps the resolved renderer for %s", (toolName) => {
+			const upstream = () => new Text("upstream", 0, 0)
+			const renderer = resolveResultRenderer({
+				toolName,
+				builtInToolDefinition: undefined,
+				toolDefinition: { name: toolName, renderResult: upstream },
+			})
+
+			expect(typeof renderer).toBe("function")
+			expect(renderer).not.toBe(upstream)
+		})
+
+		it("does not wrap renderers for tools outside the truncating set", () => {
+			const upstream = () => new Text("upstream", 0, 0)
+			const renderer = resolveResultRenderer({
+				toolName: "bash",
+				builtInToolDefinition: undefined,
+				toolDefinition: { name: "bash", renderResult: upstream },
+			})
+
+			expect(renderer).toBe(upstream)
+		})
+	})
+
+	it("reuses our own component between collapsed renders", () => {
+		const errorCtx = makeErrorCtx()
+		const renderer = createErrorTruncatingResultRenderer("edit", upstreamTextRenderer)
+		const first = renderer(errorResult(validationError), { expanded: false, isPartial: false }, plainTheme, errorCtx)
+		errorCtx.lastComponent = first
+		const second = renderer(errorResult(validationError), { expanded: false, isPartial: false }, plainTheme, errorCtx)
+
+		expect(second).toBe(first)
+	})
+})

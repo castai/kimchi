@@ -1,0 +1,273 @@
+import type { ExtensionUIContext, Theme } from "@earendil-works/pi-coding-agent"
+import { type Component, visibleWidth } from "@earendil-works/pi-tui"
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+import { createTeleportProgress } from "./progress.js"
+
+interface CustomCall {
+	factory: (
+		tui: { requestRender: ReturnType<typeof vi.fn>; terminal: { rows: number; cols: number } },
+		theme: Theme,
+		kb: unknown,
+		done: ReturnType<typeof vi.fn>,
+	) => Component & { dispose?(): void }
+	options: { overlay?: boolean; overlayOptions?: unknown }
+	done: ReturnType<typeof vi.fn>
+	tui: { requestRender: ReturnType<typeof vi.fn>; terminal: { rows: number; cols: number } }
+	theme: Theme
+	component?: Component & { dispose?(): void }
+}
+
+type DeferredMount = "immediate" | "manual"
+
+function makeTheme(): Theme {
+	return {
+		fg: (_color: unknown, text: string) => text,
+		bg: (_color: unknown, text: string) => text,
+		bold: (text: string) => text,
+		italic: (text: string) => text,
+		underline: (text: string) => text,
+		inverse: (text: string) => text,
+		strikethrough: (text: string) => text,
+	} as unknown as Theme
+}
+
+function makeUi(mount: DeferredMount = "immediate"): {
+	ui: ExtensionUIContext
+	customCalls: CustomCall[]
+	mountPending(): void
+} {
+	const customCalls: CustomCall[] = []
+	const pendingMounts: Array<() => void> = []
+	const custom = vi.fn((factory: CustomCall["factory"], options: CustomCall["options"]) => {
+		const tui = { requestRender: vi.fn(), terminal: { rows: 30, cols: 80 } }
+		const theme = makeTheme()
+		const done = vi.fn()
+		const call: CustomCall = { factory, options, done, tui, theme }
+		customCalls.push(call)
+		const mountFn = () => {
+			call.component = factory(tui, theme, {}, done)
+		}
+		if (mount === "immediate") mountFn()
+		else pendingMounts.push(mountFn)
+		return Promise.resolve(undefined as unknown)
+	})
+	const ui = { custom } as unknown as ExtensionUIContext
+	return {
+		ui,
+		customCalls,
+		mountPending() {
+			for (const fn of pendingMounts.splice(0)) fn()
+		},
+	}
+}
+
+beforeEach(() => {
+	vi.useFakeTimers()
+})
+
+afterEach(() => {
+	vi.useRealTimers()
+})
+
+describe("createTeleportProgress", () => {
+	it("opens a centered 80% overlay via ui.custom on construction", () => {
+		const h = makeUi()
+		createTeleportProgress(h.ui)
+		expect(h.customCalls).toHaveLength(1)
+		expect(h.customCalls[0].options).toEqual({
+			overlay: true,
+			overlayOptions: { anchor: "center", width: "80%", maxHeight: "80%" },
+		})
+	})
+
+	it("step + complete updates the panel and the rendered body contains the completed label", () => {
+		const h = makeUi()
+		const progress = createTeleportProgress(h.ui)
+		progress.step("Authenticating")
+		progress.complete("Authenticated")
+		const lines = h.customCalls[0].component?.render(80) ?? []
+		const joined = lines.join("\n")
+		expect(joined).toContain("Authenticated")
+		expect(joined).toContain("✓")
+	})
+
+	it("finish calls done exactly once", () => {
+		const h = makeUi()
+		const progress = createTeleportProgress(h.ui)
+		progress.finish({ id: "ws1", url: "wss://x", description: "test" })
+		expect(h.customCalls[0].done).toHaveBeenCalledTimes(1)
+		expect(h.customCalls[0].done).toHaveBeenCalledWith(undefined)
+	})
+
+	it("stop after finish is a no-op (done called only once)", () => {
+		const h = makeUi()
+		const progress = createTeleportProgress(h.ui)
+		progress.finish({ id: "ws1", url: "wss://x", description: "test" })
+		progress.stop()
+		expect(h.customCalls[0].done).toHaveBeenCalledTimes(1)
+	})
+
+	it("stop closes the overlay", () => {
+		const h = makeUi()
+		const progress = createTeleportProgress(h.ui)
+		progress.stop()
+		expect(h.customCalls[0].done).toHaveBeenCalledTimes(1)
+	})
+
+	it("promptGitToken switches the panel to git-token mode and renders the host", async () => {
+		const h = makeUi()
+		const progress = createTeleportProgress(h.ui)
+		const promise = progress.promptGitToken("github.com")
+		// Render after entering git-token mode.
+		const joined = (h.customCalls[0].component?.render(80) ?? []).join("\n")
+		expect(joined).toContain("github.com")
+		// Don't leak the unresolved promise.
+		progress.stop()
+		const result = await promise
+		expect(result).toEqual({ outcome: "skipped" })
+	})
+
+	it("promptGitToken resolves with submitted token after typing + Enter", async () => {
+		const h = makeUi()
+		const progress = createTeleportProgress(h.ui)
+		const promise = progress.promptGitToken("github.com")
+		const component = h.customCalls[0].component
+		expect(component).toBeDefined()
+		component?.handleInput?.("a")
+		component?.handleInput?.("b")
+		component?.handleInput?.("c")
+		component?.handleInput?.("\r")
+		const result = await promise
+		expect(result).toEqual({ outcome: "submitted", token: "abc", save: true })
+	})
+
+	it("stop while a git-token prompt is mid-flight resolves it as skipped and closes once", async () => {
+		const h = makeUi()
+		const progress = createTeleportProgress(h.ui)
+		const promise = progress.promptGitToken("github.com")
+		progress.stop()
+		const result = await promise
+		expect(result).toEqual({ outcome: "skipped" })
+		expect(h.customCalls[0].done).toHaveBeenCalledTimes(1)
+	})
+
+	it("promptGitToken after finish resolves immediately to skipped", async () => {
+		const h = makeUi()
+		const progress = createTeleportProgress(h.ui)
+		progress.finish({ id: "ws1", url: "wss://x", description: "test" })
+		const result = await progress.promptGitToken("github.com")
+		expect(result).toEqual({ outcome: "skipped" })
+	})
+
+	it("setStepDetail renders a dim suffix on the active step", () => {
+		const h = makeUi()
+		const progress = createTeleportProgress(h.ui)
+		progress.step("Syncing workspace")
+		progress.setStepDetail("12.3 MB / 30.0 MB (41%)")
+		const joined = (h.customCalls[0].component?.render(80) ?? []).join("\n")
+		expect(joined).toContain("Syncing workspace")
+		expect(joined).toContain("12.3 MB / 30.0 MB (41%)")
+	})
+
+	it("fires onCancel on Esc while in progress mode", () => {
+		const h = makeUi()
+		const onCancel = vi.fn()
+		createTeleportProgress(h.ui, { onCancel })
+		h.customCalls[0].component?.handleInput?.("\x1b") // Esc
+		expect(onCancel).toHaveBeenCalledTimes(1)
+	})
+
+	it("fires onCancel on Ctrl+C while in progress mode", () => {
+		const h = makeUi()
+		const onCancel = vi.fn()
+		createTeleportProgress(h.ui, { onCancel })
+		h.customCalls[0].component?.handleInput?.("\x03") // Ctrl+C
+		expect(onCancel).toHaveBeenCalledTimes(1)
+	})
+
+	it("does not fire onCancel for Esc while in git-token mode (prompt handles it as skip)", async () => {
+		const h = makeUi()
+		const onCancel = vi.fn()
+		const progress = createTeleportProgress(h.ui, { onCancel })
+		const promise = progress.promptGitToken("github.com")
+		h.customCalls[0].component?.handleInput?.("\x1b") // Esc — prompt should consume as skip
+		const result = await promise
+		expect(result).toEqual({ outcome: "skipped" })
+		expect(onCancel).not.toHaveBeenCalled()
+	})
+
+	it("setCancelling renders a 'Cancelling…' header in place of the fun-phase spinner", () => {
+		const h = makeUi()
+		const progress = createTeleportProgress(h.ui)
+		progress.step("Syncing workspace")
+		progress.setCancelling()
+		const joined = (h.customCalls[0].component?.render(80) ?? []).join("\n")
+		expect(joined).toContain("Cancelling…")
+		expect(joined).toContain("Syncing workspace")
+	})
+
+	it("complete clears the step detail so it does not leak to the next step", () => {
+		const h = makeUi()
+		const progress = createTeleportProgress(h.ui)
+		progress.step("Syncing workspace")
+		progress.setStepDetail("12.3 MB / 30.0 MB (41%)")
+		progress.complete("Workspace synced")
+		progress.step("Opening session")
+		const joined = (h.customCalls[0].component?.render(80) ?? []).join("\n")
+		expect(joined).toContain("Workspace synced")
+		expect(joined).toContain("Opening session")
+		expect(joined).not.toContain("12.3 MB / 30.0 MB (41%)")
+	})
+
+	it("buffers early step calls until the factory mounts the panel", () => {
+		const h = makeUi("manual")
+		const progress = createTeleportProgress(h.ui)
+		// Factory hasn't run yet; mutations should buffer without throwing.
+		progress.step("Authenticating")
+		progress.complete("Authenticated")
+		progress.step("Preparing sandbox")
+		// Mount the panel — buffered ops should flush.
+		h.mountPending()
+		const lines = h.customCalls[0].component?.render(80) ?? []
+		const joined = lines.join("\n")
+		expect(joined).toContain("Authenticated")
+		expect(joined).toContain("Preparing sandbox")
+	})
+})
+
+describe("teleport progress — narrow terminals", () => {
+	// Regression: at widths ≤ 3 innerW clamped to 1 and contentW went negative,
+	// crashing on "─".repeat(contentW) in the git-token branch.
+	for (const width of [1, 2, 3, 4, 5]) {
+		it(`renders every mode without crashing or overflowing at width ${width}`, async () => {
+			const h = makeUi()
+			const progress = createTeleportProgress(h.ui)
+			progress.step("Authenticating")
+			progress.complete("Authenticated")
+			progress.step("Syncing workspace")
+			const component = h.customCalls[0].component
+			expect(component).toBeDefined()
+
+			const expectFits = () => {
+				let lines: string[] = []
+				expect(() => {
+					lines = component?.render(width) ?? []
+				}).not.toThrow()
+				for (const line of lines) {
+					expect(visibleWidth(line)).toBeLessThanOrEqual(width)
+				}
+			}
+
+			expectFits() // in-progress mode
+
+			const promptPromise = progress.promptGitToken("github.com")
+			expectFits() // git-token mode (the branch that used to crash here)
+
+			progress.stop() // settles the pending git-token promise as skipped
+			await promptPromise
+
+			progress.finish({ id: "ws1", url: "wss://x", description: "test session" })
+			expectFits() // finished mode with session info
+		})
+	}
+})

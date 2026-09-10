@@ -1,0 +1,351 @@
+import { DefaultPackageManager, type LoadExtensionsResult } from "@earendil-works/pi-coding-agent"
+import { beforeEach, describe, expect, it, vi } from "vitest"
+import type { ResolvedPaths } from "./index.js"
+import {
+	consumePackageInstallFailures,
+	filterDisabledPackageExtensions,
+	filterDisabledPackageResolvedPaths,
+	installPiNativeCompatibilityShim,
+	normalizePiNativeExtensions,
+} from "./native-compat.js"
+
+describe("pi native compatibility", () => {
+	it("adds legacy aliases to tool_result events for package adapters", async () => {
+		const handler = vi.fn(async () => undefined)
+		const result = loadResultWithHandlers("tool_result", [handler])
+
+		const normalized = normalizePiNativeExtensions(result)
+		await normalized.extensions[0].handlers.get("tool_result")?.[0](
+			{
+				type: "tool_result",
+				toolName: "bash",
+				input: { command: "pwd" },
+				content: [{ type: "text", text: "/tmp" }],
+				isError: false,
+			},
+			{},
+		)
+
+		expect(normalized.extensions[0]).not.toBe(result.extensions[0])
+		expect(result.extensions[0].handlers.get("tool_result")?.[0]).toBe(handler)
+		expect(handler).toHaveBeenCalledWith(
+			expect.objectContaining({
+				params: { command: "pwd" },
+				output: "/tmp",
+				result: "/tmp",
+			}),
+			{},
+		)
+	})
+
+	it("aliases before_provider_response handlers to after_provider_response", async () => {
+		const legacy = vi.fn(async () => undefined)
+		const result = loadResultWithHandlers("before_provider_response", [legacy])
+
+		const normalized = normalizePiNativeExtensions(result)
+		await normalized.extensions[0].handlers.get("after_provider_response")?.[0](
+			{
+				type: "after_provider_response",
+				status: 200,
+				headers: { "x-test": "1" },
+			},
+			{},
+		)
+
+		expect(result.extensions[0].handlers.has("after_provider_response")).toBe(false)
+		expect(legacy).toHaveBeenCalledWith(
+			expect.objectContaining({
+				type: "before_provider_response",
+				status: 200,
+				headers: { "x-test": "1" },
+			}),
+			{},
+		)
+	})
+
+	it("normalizes loaded extensions only once", () => {
+		const handler = vi.fn(async () => undefined)
+		const result = loadResultWithHandlers("tool_result", [handler])
+
+		const normalized = normalizePiNativeExtensions(result)
+		const wrapped = normalized.extensions[0].handlers.get("tool_result")?.[0]
+		const normalizedAgain = normalizePiNativeExtensions(normalized)
+
+		expect(normalizedAgain.extensions[0].handlers.get("tool_result")?.[0]).toBe(wrapped)
+	})
+
+	it("filters disabled package extensions and provider registrations", () => {
+		const result = loadResultWithExtensions([
+			extensionFixture("/packages/context-mode/extensions/index.js", "npm:context-mode"),
+			extensionFixture("/packages/other/extensions/index.js", "npm:other"),
+		])
+		result.errors.push({ path: "/packages/context-mode/extensions/broken.js", error: "boom" })
+		result.runtime.pendingProviderRegistrations.push(
+			{ name: "ctx", config: {} as never, extensionPath: "/packages/context-mode/extensions/index.js" },
+			{ name: "other", config: {} as never, extensionPath: "/packages/other/extensions/index.js" },
+		)
+
+		const filtered = filterDisabledPackageExtensions(
+			result,
+			[
+				{
+					id: "plugins.package.npm-context-mode",
+					source: "npm:context-mode",
+					scope: "user",
+					origin: "kimchi",
+					installedPath: "/packages/context-mode",
+				},
+			],
+			() => false,
+		)
+
+		expect(filtered.extensions.map((extension) => extension.path)).toEqual(["/packages/other/extensions/index.js"])
+		expect(filtered.errors).toEqual([])
+		expect(filtered.runtime).toBe(result.runtime)
+		expect(filtered.runtime.pendingProviderRegistrations.map((registration) => registration.name)).toEqual(["other"])
+		expect(result.runtime.pendingProviderRegistrations.map((registration) => registration.name)).toEqual(["other"])
+	})
+
+	it("filters disabled package provider registrations by disabled extension path when no package root is known", () => {
+		const result = loadResultWithExtensions([extensionFixture("/somewhere/context-mode.js", "npm:context-mode")])
+		result.runtime.pendingProviderRegistrations.push({
+			name: "ctx",
+			config: {} as never,
+			extensionPath: "/somewhere/context-mode.js",
+		})
+
+		const filtered = filterDisabledPackageExtensions(
+			result,
+			[{ id: "plugins.package.npm-context-mode", source: "npm:context-mode", scope: "user", origin: "kimchi" }],
+			() => false,
+		)
+
+		expect(filtered.runtime).toBe(result.runtime)
+		expect(filtered.runtime.pendingProviderRegistrations).toEqual([])
+		expect(result.runtime.pendingProviderRegistrations).toEqual([])
+	})
+
+	it("filters disabled package resolved paths before extension modules load", () => {
+		const paths = resolvedPathsFixture({
+			extensions: [
+				resolvedResourceFixture(
+					"/packages/zero-pi/extensions/zero-banner.ts",
+					"npm:@gonrocca/zero-pi",
+					"/packages/zero-pi",
+				),
+				resolvedResourceFixture("/packages/other/extensions/index.js", "npm:other", "/packages/other"),
+			],
+			prompts: [resolvedResourceFixture("/packages/zero-pi/prompts/zero.md", "@gonrocca/zero-pi")],
+		})
+
+		const filtered = filterDisabledPackageResolvedPaths(
+			paths,
+			[
+				{
+					id: "plugins.package.npm-gonrocca-zero-pi",
+					source: "npm:@gonrocca/zero-pi",
+					scope: "user",
+					origin: "kimchi",
+					installedPath: "/packages/zero-pi",
+				},
+			],
+			() => false,
+		)
+
+		expect(filtered.extensions.map((resource) => resource.path)).toEqual(["/packages/other/extensions/index.js"])
+		expect(filtered.prompts).toEqual([])
+		expect(paths.extensions).toHaveLength(2)
+	})
+
+	it("filters disabled package extensions when source metadata omits npm prefix", () => {
+		const result = loadResultWithExtensions([extensionFixture("/somewhere/zero-banner.ts", "@gonrocca/zero-pi")])
+
+		const filtered = filterDisabledPackageExtensions(
+			result,
+			[
+				{
+					id: "plugins.package.npm-gonrocca-zero-pi",
+					source: "npm:@gonrocca/zero-pi",
+					scope: "user",
+					origin: "kimchi",
+				},
+			],
+			() => false,
+		)
+
+		expect(filtered.extensions).toEqual([])
+	})
+})
+
+describe("robust installParsedSource", () => {
+	const ROBUST_RESOLVE = Symbol.for("kimchi.piNativeCompat.robustResolve")
+	const ORIGINAL_INSTALL_PARSED_SOURCE = Symbol.for("kimchi.piNativeCompat.originalInstallParsedSource")
+
+	beforeEach(() => {
+		installPiNativeCompatibilityShim()
+		consumePackageInstallFailures()
+	})
+
+	function makePackageManager(overrides: Record<string, unknown> = {}): DefaultPackageManager {
+		const pm = Object.create(DefaultPackageManager.prototype) as DefaultPackageManager
+		Object.assign(pm, overrides)
+		return pm
+	}
+
+	function callInstallParsedSource(pm: DefaultPackageManager, parsed: unknown, scope = "user"): Promise<void> {
+		return (pm as unknown as { installParsedSource: (p: unknown, s: string) => Promise<void> }).installParsedSource(
+			parsed,
+			scope,
+		)
+	}
+
+	it("swallows install failure in robust mode and records it", async () => {
+		const originalInstall = vi.fn().mockRejectedValue(new Error("npm install failed with code 1"))
+		const pm = makePackageManager({
+			[ORIGINAL_INSTALL_PARSED_SOURCE]: originalInstall,
+			[ROBUST_RESOLVE]: true,
+		})
+
+		await callInstallParsedSource(pm, { type: "npm", name: "@kimchi-dev/kimchi-workflows" })
+
+		const failures = consumePackageInstallFailures()
+		expect(failures).toHaveLength(1)
+		expect(failures[0].source).toBe("npm:@kimchi-dev/kimchi-workflows")
+	})
+
+	it("swallows ENOENT error in robust mode", async () => {
+		const originalInstall = vi.fn().mockRejectedValue(new Error("spawn npm ENOENT"))
+		const pm = makePackageManager({
+			[ORIGINAL_INSTALL_PARSED_SOURCE]: originalInstall,
+			[ROBUST_RESOLVE]: true,
+		})
+
+		await callInstallParsedSource(pm, { type: "npm", name: "some-package" })
+
+		const failures = consumePackageInstallFailures()
+		expect(failures).toHaveLength(1)
+		expect(failures[0].source).toBe("npm:some-package")
+	})
+
+	it("propagates errors when not in robust mode (CLI path)", async () => {
+		const originalInstall = vi.fn().mockRejectedValue(new Error("npm install failed with code 1"))
+		const pm = makePackageManager({
+			[ORIGINAL_INSTALL_PARSED_SOURCE]: originalInstall,
+			[ROBUST_RESOLVE]: false,
+		})
+
+		await expect(callInstallParsedSource(pm, { type: "npm", name: "some-package" })).rejects.toThrow(
+			"npm install failed with code 1",
+		)
+
+		expect(consumePackageInstallFailures()).toHaveLength(0)
+	})
+
+	it("reconstructs git source from parsed", async () => {
+		const originalInstall = vi.fn().mockRejectedValue(new Error("git clone failed"))
+		const pm = makePackageManager({
+			[ORIGINAL_INSTALL_PARSED_SOURCE]: originalInstall,
+			[ROBUST_RESOLVE]: true,
+		})
+
+		await callInstallParsedSource(pm, { type: "git", host: "github.com", path: "user/repo" })
+
+		const failures = consumePackageInstallFailures()
+		expect(failures).toHaveLength(1)
+		expect(failures[0].source).toBe("git:github.com/user/repo")
+	})
+
+	it("deduplicates failures by source", async () => {
+		const originalInstall = vi.fn().mockRejectedValue(new Error("failed"))
+		const pm = makePackageManager({
+			[ORIGINAL_INSTALL_PARSED_SOURCE]: originalInstall,
+			[ROBUST_RESOLVE]: true,
+		})
+
+		await callInstallParsedSource(pm, { type: "npm", name: "dup-package" }, "user")
+		await callInstallParsedSource(pm, { type: "npm", name: "dup-package" }, "project")
+
+		const failures = consumePackageInstallFailures()
+		expect(failures).toHaveLength(1)
+		expect(failures[0].source).toBe("npm:dup-package")
+	})
+
+	it("consumePackageInstallFailures clears the collection", async () => {
+		const originalInstall = vi.fn().mockRejectedValue(new Error("failed"))
+		const pm = makePackageManager({
+			[ORIGINAL_INSTALL_PARSED_SOURCE]: originalInstall,
+			[ROBUST_RESOLVE]: true,
+		})
+
+		await callInstallParsedSource(pm, { type: "npm", name: "clearable-package" })
+
+		expect(consumePackageInstallFailures()).toHaveLength(1)
+		expect(consumePackageInstallFailures()).toHaveLength(0)
+	})
+
+	it("does not record failures outside robust mode (CLI path)", async () => {
+		const originalInstall = vi.fn().mockRejectedValue(new Error("install error"))
+		const pm = makePackageManager({
+			[ORIGINAL_INSTALL_PARSED_SOURCE]: originalInstall,
+			[ROBUST_RESOLVE]: false,
+		})
+
+		await expect(callInstallParsedSource(pm, { type: "npm", name: "outside-resolve" })).rejects.toThrow()
+
+		expect(consumePackageInstallFailures()).toHaveLength(0)
+	})
+})
+
+function loadResultWithHandlers(
+	event: string,
+	handlers: Array<(event: unknown, ctx: unknown) => Promise<unknown>>,
+): LoadExtensionsResult {
+	return loadResultWithExtensions([
+		{
+			...extensionFixture("/pkg/extension.js", "package"),
+			handlers: new Map([[event, handlers]]),
+		},
+	])
+}
+
+function loadResultWithExtensions(extensions: LoadExtensionsResult["extensions"]): LoadExtensionsResult {
+	return {
+		extensions,
+		errors: [],
+		runtime: {
+			pendingProviderRegistrations: [],
+		} as never,
+	}
+}
+
+function resolvedPathsFixture(overrides: Partial<ResolvedPaths> = {}): ResolvedPaths {
+	return {
+		extensions: [],
+		skills: [],
+		prompts: [],
+		themes: [],
+		...overrides,
+	}
+}
+
+function resolvedResourceFixture(path: string, source: string, baseDir?: string): ResolvedPaths["extensions"][number] {
+	return {
+		path,
+		enabled: true,
+		metadata: { path, source, scope: "user", origin: "package", baseDir } as never,
+	}
+}
+
+function extensionFixture(path: string, source: string): LoadExtensionsResult["extensions"][number] {
+	return {
+		path,
+		resolvedPath: path,
+		sourceInfo: { path, source, scope: "user", origin: "package", baseDir: path } as never,
+		handlers: new Map(),
+		tools: new Map(),
+		messageRenderers: new Map(),
+		commands: new Map(),
+		flags: new Map(),
+		shortcuts: new Map(),
+	}
+}

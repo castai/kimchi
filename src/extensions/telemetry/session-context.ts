@@ -1,0 +1,353 @@
+import crypto from "node:crypto"
+import type { ExtensionContext } from "@earendil-works/pi-coding-agent"
+import { getMe } from "../../api/me.js"
+import type { TelemetryConfig } from "../../config.js"
+import { IS_ACP_MODE } from "../../modes/acp/state.js"
+import { getOsMetadata } from "../../utils/os-metadata.js"
+import { getVersion } from "../../utils.js"
+import { isAgentWorker } from "../agent-worker-context.js"
+import { PARENT_SESSION_ID_ENV_KEY } from "../agents/manager/constants.js"
+import { getActiveFerment } from "../ferment/index.js"
+import { type CumulativeState, collectMetrics, createCumulativeState } from "./accumulator.js"
+import { getTelemetryFermentV2Context, resetTelemetryFermentV2Context } from "./ferment-v2-context.js"
+import { getAcpAttributes, getPiSessionAttributes } from "./handlers/utils.js"
+import { toAttrs } from "./helpers.js"
+import { getSessionType } from "./session-type.js"
+import { buildLogRecord, type LogRecord, sendLogBatch, sendMetrics } from "./transport.js"
+
+export type TelemetryAttributes = Record<string, string | number | boolean>
+
+// ---------------------------------------------------------------------------
+// Constants
+// ---------------------------------------------------------------------------
+
+export const TELEMETRY_DRAIN_TIMEOUT_MS = 5_000
+export const METRICS_FLUSH_INTERVAL_MS = 30_000
+export const LOG_BATCH_FLUSH_INTERVAL_MS = 5_000
+export const LOG_BATCH_MAX_SIZE = 20
+const V2_AMBIENT_ERROR_MESSAGE_ATTRIBUTES = new Set(["error_message", "error.message"])
+
+// ---------------------------------------------------------------------------
+// Process-level ID + shared accumulators
+//
+// All agents (main + sub-agents) in the same process share telemetryId so
+// that telemetry rolls up under one session in the backend.
+//
+// Accumulators are keyed by telemetryId (not per-session) so that every
+// flush sends the monotonically increasing total across ALL agents. This is
+// required because the backend uses ReplacingMergeTree: rows with the same
+// ORDER BY key are deduplicated and the latest write wins.
+// ---------------------------------------------------------------------------
+
+let telemetryId: string | undefined
+const sharedAccumulators = new Map<string, CumulativeState>()
+
+function getOrCreateAccumulator(telemetryId: string): CumulativeState {
+	let acc = sharedAccumulators.get(telemetryId)
+	if (!acc) {
+		acc = createCumulativeState()
+		sharedAccumulators.set(telemetryId, acc)
+	}
+	return acc
+}
+
+/** @internal — exposed for testing only */
+export function _resetSharedAccumulators(): void {
+	if (telemetryId) sharedAccumulators.delete(telemetryId)
+	telemetryId = undefined
+	resetTelemetryFermentV2Context()
+}
+
+// ---------------------------------------------------------------------------
+// SessionContext — process-level telemetry state
+// ---------------------------------------------------------------------------
+
+export class TelemetryContext {
+	config: TelemetryConfig
+	telemetryId: string
+	telemetryStartMs: number
+	/**
+	 * Current model, updated from message events; used for domain events that lack a pi context.
+	 */
+	currentModel = "unknown"
+	/**
+	 * Current turn index, updated on each turn_start event.
+	 * `0` is a sentinel meaning "before the first turn" (e.g. a provider call
+	 * made during session warmup before any user message). Backends should treat
+	 * `0` as "unknown / pre-turn" rather than a valid 1-based turn number.
+	 */
+	turnIndex = 0
+	sentMessages = new Set<string>()
+	pendingArgs = new Map<string, { toolName: string; args: unknown }>()
+	messageStartTimes = new Map<string, number>()
+	toolStartTimes = new Map<string, number>()
+	cumulative: CumulativeState
+	inFlight = new Set<Promise<void>>()
+	shuttingDown = false
+	flushTimer: NodeJS.Timeout | undefined
+	logBuffer: LogRecord[] = []
+	private logFlushTimer: NodeJS.Timeout | undefined
+	lastSessionType: string | undefined
+	/** Number of context compactions in the current session. */
+	compactionCount = 0
+	/** Cached OS metadata — computed once per SessionContext instance. */
+	private osMetadata: ReturnType<typeof getOsMetadata>
+
+	/** Cached user email from /v1/me — populated once in the background. */
+	userEmail: string | undefined
+	/** Cached user ID (uuid) from /v1/me — populated once in the background. */
+	userId: string | undefined
+	/** Resolves when the userEmail has been fetched (or the fetch failed). */
+	userEmailReady: Promise<void>
+	private resolveUserEmailReady!: () => void
+
+	constructor(config: TelemetryConfig) {
+		this.config = config
+		this.osMetadata = getOsMetadata()
+		if (!telemetryId) telemetryId = crypto.randomUUID()
+		this.telemetryId = telemetryId
+		this.telemetryStartMs = Date.now()
+		this.cumulative = getOrCreateAccumulator(this.telemetryId)
+		this.userEmailReady = new Promise<void>((resolve) => {
+			this.resolveUserEmailReady = resolve
+		})
+		this.fetchUserEmail()
+	}
+
+	get sessionStartNano(): string {
+		return this.cumulative.sessionStartNano
+	}
+
+	reset(): void {
+		if (!telemetryId) telemetryId = crypto.randomUUID()
+		this.telemetryId = telemetryId
+		this.telemetryStartMs = Date.now()
+		this.currentModel = "unknown"
+		this.turnIndex = 0
+		this.sentMessages.clear()
+		this.pendingArgs.clear()
+		this.messageStartTimes.clear()
+		this.toolStartTimes.clear()
+		this.lastSessionType = undefined
+		this.compactionCount = 0
+		this.cumulative = getOrCreateAccumulator(this.telemetryId)
+		this.inFlight.clear()
+		this.shuttingDown = false
+		this.logBuffer = []
+		this.stopLogFlushTimer()
+	}
+
+	track(p: Promise<void>): void {
+		if (this.shuttingDown) return
+		this.inFlight.add(p)
+		p.finally(() => this.inFlight.delete(p))
+	}
+
+	/**
+	 * Emit a ferment lifecycle event with explicit identifiers that cannot be
+	 * clobbered by the auto-inject in `emit()`.
+	 *
+	 * Use this for all ferment.* events where the active ferment may already
+	 * have been cleared by the time the event fires (e.g. ferment.completed
+	 * fires after runtime.setActive(undefined)).
+	 *
+	 * Deliberately skips the session.type_changed side-effect — that is for
+	 * ambient session events, not explicit lifecycle events.
+	 */
+	emitWithIds(
+		eventName: string,
+		attrs: TelemetryAttributes & { ferment_id: string; phase_id?: string; step_id?: string },
+		ctx?: ExtensionContext,
+	): void {
+		const { session_type, source, ...commonAttrs } = this.getCommonAttributes(ctx)
+		const parentAttr = this.getParentSessionAttribute()
+		const merged: TelemetryAttributes = {
+			source,
+			session_type,
+			...this.osMetadata,
+			...attrs,
+			"user.account_uuid": this.userId ?? "",
+			...commonAttrs,
+			...(parentAttr ?? {}),
+		}
+		this.enqueueLogRecord(buildLogRecord(this.telemetryId, eventName, toAttrs(merged)))
+	}
+
+	emit(eventName: string, attrs?: TelemetryAttributes, ctx?: ExtensionContext): void {
+		const ferment = getActiveFerment()
+		const fermentV2 = getTelemetryFermentV2Context()
+		const eventAttrs: TelemetryAttributes =
+			fermentV2 && attrs
+				? Object.fromEntries(Object.entries(attrs).filter(([key]) => !V2_AMBIENT_ERROR_MESSAGE_ATTRIBUTES.has(key)))
+				: { ...(attrs ?? {}) }
+		const { session_type, source, ...commonAttrs } = this.getCommonAttributes(ctx)
+		const parentAttr = this.getParentSessionAttribute()
+
+		// Detect and emit session.type_changed when the type transitions
+		if (this.lastSessionType !== undefined && session_type !== this.lastSessionType) {
+			const changeAttrs = toAttrs({
+				session_type,
+				previous_session_type: this.lastSessionType,
+				source,
+				...fermentTelemetryAttributes(ferment?.id, fermentV2),
+				"telemetry.cli_version": getVersion(),
+				...(parentAttr ?? {}),
+			})
+			this.logBuffer.push(buildLogRecord(this.telemetryId, "session.type_changed", changeAttrs))
+		}
+		this.lastSessionType = session_type
+
+		const merged: TelemetryAttributes = {
+			...eventAttrs,
+			...this.osMetadata,
+			source,
+			session_type,
+			...fermentTelemetryAttributes(ferment?.id, fermentV2),
+			"user.account_uuid": this.userId ?? "",
+			...commonAttrs,
+			...(parentAttr ?? {}),
+		}
+		this.enqueueLogRecord(buildLogRecord(this.telemetryId, eventName, toAttrs(merged)))
+	}
+
+	/**
+	 * Returns the spawning (parent) session's pi session id when this process is
+	 * inside an Agent-subagent run, undefined otherwise. The Agent runner sets
+	 * KIMCHI_PARENT_SESSION_ID for the whole subagent run; the Agent-worker async
+	 * context (or KIMCHI_SUBAGENT=1) gates the check so parent-session events are
+	 * never attributed a parent.
+	 *
+	 * Used for both the `session.parent_id` telemetry attribute and the
+	 * X-Parent-Session-Id provider header (chat_completions pipeline).
+	 */
+	getParentSessionId(): string | undefined {
+		if (!isAgentWorker()) return undefined
+		return process.env[PARENT_SESSION_ID_ENV_KEY]
+	}
+
+	private getParentSessionAttribute(): TelemetryAttributes | undefined {
+		const parentSessionId = this.getParentSessionId()
+		return parentSessionId ? { "session.parent_id": parentSessionId } : undefined
+	}
+
+	private getCommonAttributes(
+		ctx?: ExtensionContext,
+	): TelemetryAttributes & { session_type: "ferment" | "coding"; source: "cli" | "acp"; model: string } {
+		return {
+			source: IS_ACP_MODE ? "acp" : "cli",
+			session_type: getSessionType(),
+			model: this.currentModel,
+			"telemetry.cli_version": getVersion(),
+			...getAcpAttributes(),
+			...(ctx ? getPiSessionAttributes(ctx) : {}),
+		}
+	}
+
+	/** Append a pre-built log record to the buffer and schedule/trigger a flush. */
+	private enqueueLogRecord(record: LogRecord): void {
+		this.logBuffer.push(record)
+		if (this.logBuffer.length >= LOG_BATCH_MAX_SIZE) {
+			this.flushLogBuffer()
+		} else if (this.logFlushTimer === undefined) {
+			this.logFlushTimer = setTimeout(() => this.flushLogBuffer(), LOG_BATCH_FLUSH_INTERVAL_MS)
+		}
+	}
+
+	flushLogBuffer(): void {
+		this.stopLogFlushTimer()
+		if (this.logBuffer.length === 0) return
+		const records = this.logBuffer.splice(0)
+		this.track(this.userEmailReady.then(() => sendLogBatch(this.config, records, this.userEmail)))
+	}
+
+	private stopLogFlushTimer(): void {
+		if (this.logFlushTimer !== undefined) {
+			clearTimeout(this.logFlushTimer)
+			this.logFlushTimer = undefined
+		}
+	}
+
+	flushMetrics(): void {
+		const metrics = collectMetrics(this.cumulative)
+		if (metrics.length > 0) {
+			this.track(
+				this.userEmailReady.then(() =>
+					sendMetrics(
+						this.config,
+						this.telemetryId,
+						metrics.map((m) => ({
+							...m,
+							attrs: {
+								...m.attrs,
+								"user.account_uuid": this.userId ?? "",
+							},
+						})),
+						this.sessionStartNano,
+					),
+				),
+			)
+		}
+	}
+
+	startFlushTimer(): void {
+		this.stopFlushTimer()
+		this.flushTimer = setInterval(() => this.flushMetrics(), METRICS_FLUSH_INTERVAL_MS)
+	}
+
+	stopFlushTimer(): void {
+		if (this.flushTimer !== undefined) {
+			clearInterval(this.flushTimer)
+			this.flushTimer = undefined
+		}
+	}
+
+	private fetchUserEmail(): void {
+		const { apiKey } = this.config
+		if (!apiKey) {
+			this.resolveUserEmailReady()
+			return
+		}
+		getMe(apiKey)
+			.then((me) => {
+				this.userId = me.id
+				this.userEmail = me.email
+			})
+			.catch(() => {
+				// best effort — telemetry continues without email
+			})
+			.finally(() => {
+				this.resolveUserEmailReady()
+			})
+	}
+
+	async drain(): Promise<void> {
+		this.messageStartTimes.clear()
+		this.toolStartTimes.clear()
+		this.stopFlushTimer()
+		this.flushLogBuffer()
+		this.flushMetrics()
+		this.shuttingDown = true
+		if (this.inFlight.size > 0) {
+			await Promise.race([
+				Promise.allSettled([...this.inFlight]),
+				new Promise<void>((resolve) => setTimeout(resolve, TELEMETRY_DRAIN_TIMEOUT_MS)),
+			])
+		}
+	}
+}
+
+function fermentTelemetryAttributes(
+	fermentId: string | undefined,
+	fermentV2: ReturnType<typeof getTelemetryFermentV2Context>,
+): TelemetryAttributes {
+	if (fermentV2) {
+		return {
+			ferment_id: fermentV2.id,
+			ferment_v2_id: fermentV2.id,
+			ferment_version: "v2",
+			ferment_revision: fermentV2.revision,
+			status: fermentV2.status,
+		}
+	}
+	return { ferment_id: fermentId ?? "" }
+}

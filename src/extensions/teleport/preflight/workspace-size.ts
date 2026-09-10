@@ -1,0 +1,2 @@
+export const SIZE_WARN_BYTES = 500_000_000
+export const SIZE_REFUSE_BYTES = 5_000_000_000

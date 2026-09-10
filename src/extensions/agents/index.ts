@@ -1,0 +1,2875 @@
+/**
+ * kimchi sub-agents.
+ *
+ * Tools:
+ *   Agent             - LLM-callable: spawn a sub-agent
+ *   resume_subagent   - LLM-callable: continue an existing sub-agent session
+ *   get_subagent_result  - LLM-callable: check background agent status/result
+ *   steer_subagent       - LLM-callable: send a steering message to a running agent
+ *
+ * Commands:
+ *   /agents                 - Interactive agent management menu
+ */
+
+import { existsSync, mkdirSync, readFileSync, unlinkSync } from "node:fs"
+import { join } from "node:path"
+import {
+	type AgentSession,
+	defineTool,
+	type ExtensionAPI,
+	type ExtensionCommandContext,
+	type ExtensionContext,
+	type ExtensionUIContext,
+	getAgentDir,
+} from "@earendil-works/pi-coding-agent"
+import { isKeyRelease, Key, matchesKey, Text } from "@earendil-works/pi-tui"
+import { Type } from "typebox"
+import { isToolExpanded, registerToolCall } from "../../expand-state.js"
+import { filterThinkingForDisplay } from "../hide-thinking.js"
+import { sessionHasImages } from "../model-guard.js"
+import { getMultiModelEnabled } from "../multi-model.js"
+import { KIMCHI_DEV_PROVIDER, MODEL_CAPABILITIES } from "../orchestration/model-registry/index.js"
+import {
+	type DEFAULT_MODEL_ROLES,
+	getAllowedMultiModelRefs,
+	getModelRoles,
+	normalizeRoleModels,
+} from "../orchestration/model-roles.js"
+import { handleRemoteCompletion, handleRemoteFailure } from "../remote-run/post-completion.js"
+import { isAutoModel } from "../router/constants.js"
+import { isRawInputCaptureActive } from "../shared-input.js"
+import { isStaleCtxError } from "../stale-ctx.js"
+import { type RemoteExecutionStats, trackRemoteExecution, trackSubagentSpawned } from "../telemetry/index.js"
+import { AgentManager, buildAgentOutcome } from "./manager/agent-manager.js"
+import {
+	getAgentConversation,
+	getDefaultMaxTurns,
+	getGraceTurns,
+	normalizeMaxTurns,
+	setDefaultMaxTurns,
+	setGraceTurns,
+	steerAgent,
+} from "./manager/agent-runner.js"
+import {
+	type BudgetRetryBlock,
+	type BudgetRetryCandidate,
+	createBudgetRetryBlockFromCompletion,
+	shouldBlockBudgetRetry,
+} from "./manager/budget-retry-guard.js"
+import { GroupJoinManager } from "./manager/group-join.js"
+import { createOutputFilePath, streamToOutputFile, writeInitialEntry } from "./manager/output-file.js"
+import { streamRemoteToOutputFile } from "./manager/remote-output-file.js"
+import { prepareAgentSessionFile } from "./manager/session-file.js"
+import { addUsage, getLifetimeTotal, getSessionContextPercent, type LifetimeUsage } from "./manager/usage.js"
+import { NudgeScheduler } from "./nudge-scheduler.js"
+import {
+	BUILTIN_TOOL_NAMES,
+	getAgentConfig,
+	getAllTypes,
+	getDefaultAgentNames,
+	getUserAgentNames,
+	registerAgents,
+	resolveType,
+} from "./personas/agent-types.js"
+import { loadCustomAgents } from "./personas/custom-agents.js"
+import {
+	AGENT_GENERAL_PURPOSE,
+	type AgentAbortReason,
+	type AgentConfig,
+	type AgentOutcome,
+	type AgentRecord,
+	type AgentTaskRef,
+	type AgentVisibility,
+	type JoinMode,
+	type NotificationDetails,
+	type SubagentType,
+} from "./personas/types.js"
+import { resolveAgentInvocationConfig, resolveJoinMode } from "./resolution/invocation-config.js"
+import { type ModelRegistry, resolveModel } from "./resolution/model-resolver.js"
+import { registerResumeSubagentTool } from "./resume-tool.js"
+import { applyAndEmitLoaded, type SubagentsSettings, saveAndEmitChanged } from "./settings.js"
+import {
+	type AgentActivity,
+	type AgentDetails,
+	AgentWidget,
+	describeActivity,
+	formatDuration,
+	formatMs,
+	formatTokens,
+	formatTurns,
+	getDisplayName,
+	SPINNER,
+	type Theme,
+	type UICtx,
+} from "./ui/agent-widget.js"
+
+// ---- Shared helpers ----
+
+/**
+ * Maps an agent persona type to its model-roles key.
+ * Returns null for types that don't have a configured role.
+ */
+export function agentTypeToRoleKey(subagentType: string): keyof typeof DEFAULT_MODEL_ROLES | null {
+	const map: Record<string, keyof typeof DEFAULT_MODEL_ROLES> = {
+		Builder: "builder",
+		Reviewer: "reviewer",
+		Explore: "explorer",
+		Plan: "planner",
+		Researcher: "researcher",
+		Fixer: "builder", // Fixer uses the builder model pool
+		"General-Purpose": "builder", // GP defaults to builder model pool
+	}
+	return map[subagentType] ?? null
+}
+
+/**
+ * When multi-model is enabled and the caller did not specify a model,
+ * resolve the default model ref string from the role config based on
+ * the agent type. Returns the first model ref (e.g. "kimchi-dev/minimax-m3")
+ * or undefined if no role mapping exists.
+ */
+export function resolveRoleModelRef(subagentType: string): string | undefined {
+	const roleKey = agentTypeToRoleKey(subagentType)
+	if (!roleKey) return undefined
+	const roles = getModelRoles()
+	const assignment = roles[roleKey]
+	if (!assignment) return undefined
+	const modelRefs = normalizeRoleModels(assignment)
+	return modelRefs[0]
+}
+
+// Give aborted sub-agents a bounded chance to reach runner finally blocks.
+// If they do not settle, manager.dispose() still runs hard-fallback cleanup.
+const SUBAGENT_SHUTDOWN_WAIT_MS = 5_000
+
+export const AGENT_TOOL_GUIDELINES = `Guidelines:
+- Follow the **Orchestration** section (workflow, delegation, models, budgets, Explore-agent prompt shaping).
+- One call per task, detailed prompt; run_in_background for parallelism.
+- Follow-ups: resume_subagent (continue), get_subagent_result (poll), steer_subagent (redirect).`
+
+export const AGENT_MODEL_PARAMETER_DESCRIPTION =
+	'Model identifier for the spawned agent. If omitted, the agent uses the current session model. Follow your system prompt\'s delegation rules when deciding whether to provide this. Format "provider/modelId". Partial model IDs (e.g. "kimi") are accepted when unambiguous; specify the full versioned model ID when the exact version matters. In multi-model mode, only role-configured models may be used.'
+
+function textResult<T = AgentDetails>(msg: string, details?: T) {
+	return { content: [{ type: "text" as const, text: msg }], details: details as unknown }
+}
+
+interface GetSubagentResultDetails {
+	agentId: string
+	displayName: string
+	description: string
+	status: string
+	visibility?: AgentVisibility
+	abortReason?: AgentAbortReason
+	toolUses: number
+	tokens: string
+	contextPercent: number | null
+	compactionCount?: number
+	durationMs?: number
+	error?: string
+	bodyText: string
+	agentOutcome?: AgentOutcome
+}
+
+function formatAgentOutcomeBlock(outcome: AgentOutcome | undefined): string {
+	if (!outcome) return ""
+	return `\n\nagent_outcome:\n${JSON.stringify(outcome, null, 2)}`
+}
+
+function formatAgentBodyForDisplay(raw: string): string {
+	const cleaned = filterThinkingForDisplay(raw)
+	return cleaned.replace(/\n{3,}/g, "\n\n").trimEnd()
+}
+
+function getSubagentResultIcon(status: string, theme: Theme): string {
+	switch (status) {
+		case "running":
+		case "queued":
+			return theme.fg("accent", SPINNER[0])
+		case "error":
+		case "aborted":
+			return theme.fg("error", "✗")
+		case "stopped":
+			return theme.fg("dim", "■")
+		case "steered":
+			return theme.fg("warning", "✓")
+		default:
+			return theme.fg("success", "✓")
+	}
+}
+
+function extractImagePathsFromSession(ctx: ExtensionContext): string[] {
+	const entries = ctx.sessionManager.getBranch()
+	const imagePaths = new Set<string>()
+	const readPathsByToolCallId = new Map<string, string>()
+
+	for (const entry of entries) {
+		if (entry.type !== "message") continue
+		const msg = entry.message
+
+		if (msg.role === "assistant") {
+			const content = msg.content
+			if (Array.isArray(content)) {
+				for (const block of content) {
+					if (block.type !== "toolCall") continue
+					const toolBlock = block as { id?: string; name?: string; arguments?: Record<string, unknown> }
+					if (toolBlock.name === "read" && toolBlock.id && typeof toolBlock.arguments?.path === "string") {
+						readPathsByToolCallId.set(toolBlock.id, toolBlock.arguments.path)
+					}
+				}
+			}
+		} else if (msg.role === "toolResult") {
+			const toolResultMsg = msg as { toolCallId?: string; content?: unknown[] }
+			const content = toolResultMsg.content
+			if (Array.isArray(content)) {
+				const hasImage = content.some((block) => (block as { type?: string }).type === "image")
+				const path = toolResultMsg.toolCallId ? readPathsByToolCallId.get(toolResultMsg.toolCallId) : undefined
+				if (hasImage && path) {
+					imagePaths.add(path)
+				}
+			}
+			if (toolResultMsg.toolCallId) {
+				readPathsByToolCallId.delete(toolResultMsg.toolCallId)
+			}
+		}
+	}
+
+	return Array.from(imagePaths)
+}
+
+export function summaryForStatus(status: string, error?: string, abortReason?: AgentAbortReason): string {
+	switch (status) {
+		case "running":
+		case "queued":
+			return "Still running"
+		case "completed":
+			return "Done"
+		case "steered":
+			return "Wrapped up (turn limit)"
+		case "aborted":
+			return getAbortLabel(abortReason)
+		case "stopped":
+			return "Stopped"
+		case "error":
+			return `Error: ${error?.split("\n")[0]?.trim() || "unknown"}`
+		default:
+			return status
+	}
+}
+
+function formatLifetimeTokens(o: { lifetimeUsage: LifetimeUsage }): string {
+	const t = getLifetimeTotal(o.lifetimeUsage)
+	return t > 0 ? formatTokens(t) : ""
+}
+
+function createActivityTracker(maxTurns?: number, onStreamUpdate?: () => void) {
+	const state: AgentActivity = {
+		activeTools: new Map(),
+		toolUses: 0,
+		turnCount: 1,
+		maxTurns,
+		responseText: "",
+		session: undefined,
+		lifetimeUsage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+	}
+
+	const callbacks = {
+		onToolActivity: (activity: { toolName: string; status?: "pending" | "in_progress" | "completed" | "failed" }) => {
+			if (activity.status === "in_progress") {
+				state.activeTools.set(`${activity.toolName}_${Date.now()}`, activity.toolName)
+			} else {
+				for (const [key, name] of state.activeTools) {
+					if (name === activity.toolName) {
+						state.activeTools.delete(key)
+						break
+					}
+				}
+				state.toolUses++
+			}
+			onStreamUpdate?.()
+		},
+		onTextDelta: (_delta: string, fullText: string) => {
+			state.responseText = fullText
+			onStreamUpdate?.()
+		},
+		onTurnEnd: (turnCount: number) => {
+			state.turnCount = turnCount
+			onStreamUpdate?.()
+		},
+		onSessionCreated: (session: unknown) => {
+			state.session = session as AgentActivity["session"]
+		},
+		onAssistantUsage: (usage: LifetimeUsage) => {
+			addUsage(state.lifetimeUsage, usage)
+			onStreamUpdate?.()
+		},
+	}
+
+	return { state, callbacks }
+}
+
+function getAbortLabel(reason?: AgentAbortReason): string {
+	switch (reason) {
+		case "max_turns":
+			return "Aborted (max turns exceeded)"
+		case "token_budget":
+			return "Aborted (token budget exceeded)"
+		case "inactivity":
+			return "Aborted (inactivity timeout)"
+		case "max_duration":
+			return "Aborted (duration limit exceeded)"
+		default:
+			return "Aborted"
+	}
+}
+
+function getStatusLabel(status: string, error?: string, abortReason?: AgentAbortReason): string {
+	switch (status) {
+		case "error":
+			return `Error: ${error ?? "unknown"}`
+		case "aborted":
+			return getAbortLabel(abortReason)
+		case "steered":
+			return "Wrapped up (turn limit)"
+		case "stopped":
+			return "Stopped"
+		default:
+			return "Done"
+	}
+}
+
+function getStatusNote(status: string, abortReason?: AgentAbortReason): string {
+	if (status === "error")
+		return "\nThe agent encountered an error. Review the error message and partial results before deciding how to proceed."
+	if (status === "stopped") return "\nThe agent was manually stopped by the user."
+	if (status === "aborted" && abortReason === "token_budget")
+		return "\nThe agent ran out of its token budget. See agent_outcome.recovery_guidance for next steps."
+	if (status === "aborted" && abortReason === "inactivity")
+		return "\nThe agent stopped producing output and was terminated. See agent_outcome.recovery_guidance for next steps."
+	if (status === "aborted" && abortReason === "max_duration")
+		return "\nThe agent exceeded its maximum allowed duration. See agent_outcome.recovery_guidance for next steps."
+	if (status === "aborted" && abortReason === "max_turns")
+		return "\nThe agent exhausted its turn budget. See agent_outcome.recovery_guidance for next steps."
+	return ""
+}
+
+/** Continuation prompt used by the harness-side auto-resume for ferment step
+ * workers killed by their own budget. Bounded, finish-oriented, and bans
+ * re-reading (the worker already holds its context from attempt 1). */
+const FERMENT_WORKER_AUTO_RESUME_PROMPT =
+	"The harness resumed you with a fresh budget after your previous attempt was killed by its turn/duration limit mid-task. Continue the SAME assigned step immediately — do not restart, re-plan, or re-read files you already know. If the attempt stalled on a hanging or blocked command, avoid that specific operation and reach the goal differently. Finish the remaining work, run the declared verification, then call submit_agent_report and stop."
+
+export interface AutoResumeShape {
+	status: string
+	abortReason?: AgentAbortReason
+	session?: unknown
+	taskRef?: { kind: string }
+	resumeAttempts?: unknown[]
+}
+
+/** Builds the auto-resume note from the WORKER'S PRE-RESUME abort reason.
+ * The reason must be captured before `manager.resume` mutates the record
+ * (resume clears `abortReason` on success) — passing the post-resume reason
+ * yields `undefined` and silently drops the note. Exported for unit testing. */
+export function buildAutoResumeNote(beforeAbortReason: AgentAbortReason | undefined): string {
+	if (!beforeAbortReason) return ""
+	return `\nThe harness auto-resumed this worker once with a fresh budget after its attempt hit the ${beforeAbortReason === "max_turns" ? "turn" : "duration"} limit — the outcome below reflects the resumed attempt, so do NOT resume again on the same budget; if it is still incomplete, try a narrower replacement Agent or the complex tier.`
+}
+
+/** True when a ferment step worker was killed by its own budget on a first
+ * attempt and still holds a live session — the auto-resume gate. Exported for
+ * unit testing; the Agent tool handler uses it inline. */
+export function shouldAutoResumeFermentWorker(record: AutoResumeShape): boolean {
+	return (
+		record.status === "aborted" &&
+		(record.abortReason === "max_turns" || record.abortReason === "max_duration") &&
+		record.session != null &&
+		record.taskRef?.kind === "ferment_step" &&
+		(record.resumeAttempts ?? []).length === 0
+	)
+}
+
+function getStatusInstruction(status: string, multiModelEnabled: boolean, abortReason?: AgentAbortReason): string {
+	if (status === "aborted" && abortReason === "token_budget") {
+		return "\nThe agent ran out of its token budget. Inspect the worker report before acting. Use resume_subagent with a bounded steering prompt when remaining_steps are a direct continuation; spawn a narrower replacement Agent when remaining_steps have a clean task boundary; use resume_subagent with purpose finalize_report if the report is missing; or stop/report if blocked. Do not blindly retry the same prompt."
+	}
+	if (status === "aborted" && abortReason === "inactivity") {
+		return "\nThe agent stopped producing output and was terminated. Inspect the worker report before acting; this may indicate a stall. Resume only with a steering prompt that continues the same thread while avoiding the stalled operation, or spawn a narrower replacement Agent if remaining_steps have a clean task boundary."
+	}
+	if (status === "aborted" && abortReason === "max_duration") {
+		const relaxed = !multiModelEnabled
+		return relaxed
+			? "\nThe agent exceeded its maximum allowed wall-clock duration and was terminated. Inspect the worker report before acting; this may indicate a hang or blocked command. Resume only with a bounded steering prompt that avoids the stalled operation and directly continues the same thread, or spawn a follow-up Agent scoped to a narrower task boundary."
+			: '\nThe agent exceeded its maximum allowed wall-clock duration and was terminated. Inspect the worker report before acting; this may indicate a hang or blocked command. Resume only with a bounded steering prompt that avoids the stalled operation and directly continues the same thread, or spawn a follow-up Agent scoped to a narrower task boundary. Do NOT implement the remaining work yourself — the orchestrator must delegate, not build. If this is a ferment step that simply needs more wall-clock for builds/tests, restart it at budget_tier="complex" (max_duration "900", max_turns "45") — full multi-file builds do not fit the standard duration tier.'
+	}
+	if (status === "aborted" && abortReason === "max_turns") {
+		const relaxed = !multiModelEnabled
+		return relaxed
+			? "\nThe agent exhausted its turn budget. Do not mark delegated work complete from an aborted result. Inspect the worker report first: use resume_subagent with a bounded steering prompt when remaining_steps are a direct continuation; spawn a narrower linked replacement Agent when remaining_steps have a clean task boundary; use resume_subagent with purpose finalize_report if the report is missing; or stop/report if blocked."
+			: "\nThe agent exhausted its turn budget. Do not mark delegated work complete from an aborted result. Inspect the worker report first: use resume_subagent with a bounded steering prompt when remaining_steps are a direct continuation; spawn a narrower linked replacement Agent when remaining_steps have a clean task boundary; use resume_subagent with purpose finalize_report if the report is missing; or stop/report if blocked. Do NOT implement the remaining work yourself — the orchestrator must delegate, not build."
+	}
+	return ""
+}
+
+function escapeXml(s: string): string {
+	return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
+}
+
+function formatTaskNotification(record: AgentRecord, resultMaxLen: number): string {
+	const status = getStatusLabel(record.status, record.error, record.abortReason)
+	const durationMs = record.completedAt ? record.completedAt - record.startedAt : 0
+	const totalTokens = getLifetimeTotal(record.lifetimeUsage)
+	const contextPercent = getSessionContextPercent(record.session)
+	const ctxXml = contextPercent !== null ? `<context_percent>${Math.round(contextPercent)}</context_percent>` : ""
+	const compactXml = record.compactionCount ? `<compactions>${record.compactionCount}</compactions>` : ""
+
+	const resultPreview = record.result
+		? record.result.length > resultMaxLen
+			? `${record.result.slice(0, resultMaxLen)}\n...(truncated, use get_subagent_result for full output)`
+			: record.result
+		: "No output."
+
+	const note =
+		record.status === "stopped"
+			? "The user stopped this agent manually (Ctrl+X). Do not retry or reason about the stop — continue with other work or return control to the user."
+			: null
+
+	return [
+		"<task-notification>",
+		`<task-id>${record.id}</task-id>`,
+		record.toolCallId ? `<tool-use-id>${escapeXml(record.toolCallId)}</tool-use-id>` : null,
+		record.outputFile ? `<output-file>${escapeXml(record.outputFile)}</output-file>` : null,
+		note ? `<note>${escapeXml(note)}</note>` : null,
+		`<status>${escapeXml(status)}</status>`,
+		`<summary>Agent "${escapeXml(record.description)}" ${record.status}</summary>`,
+		`<result>${escapeXml(resultPreview)}</result>`,
+		`<usage><total_tokens>${totalTokens}</total_tokens><tool_uses>${record.toolUses}</tool_uses>${ctxXml}${compactXml}<duration_ms>${durationMs}</duration_ms></usage>`,
+		"</task-notification>",
+	]
+		.filter(Boolean)
+		.join("\n")
+}
+
+function buildDetails(
+	base: Pick<AgentDetails, "displayName" | "description" | "subagentType" | "modelName" | "tags" | "visibility">,
+	record: AgentRecord,
+	activity?: AgentActivity,
+	overrides?: Partial<AgentDetails>,
+): AgentDetails {
+	return {
+		...base,
+		toolUses: record.toolUses,
+		tokens: formatLifetimeTokens(record),
+		tokenUsage: {
+			input: record.lifetimeUsage.input,
+			output: record.lifetimeUsage.output,
+			cacheRead: record.lifetimeUsage.cacheRead,
+			cacheWrite: record.lifetimeUsage.cacheWrite,
+		},
+		turnCount: activity?.turnCount,
+		maxTurns: activity?.maxTurns,
+		durationMs: (record.completedAt ?? Date.now()) - record.startedAt,
+		status: record.status as AgentDetails["status"],
+		agentId: record.id,
+		sessionFile: record.sessionFile,
+		error: record.error,
+		abortReason: record.abortReason,
+		agentOutcome: record.latestOutcome,
+		...overrides,
+	}
+}
+
+function buildNotificationDetails(
+	record: AgentRecord,
+	resultMaxLen: number,
+	activity?: AgentActivity,
+): NotificationDetails {
+	const totalTokens = getLifetimeTotal(record.lifetimeUsage)
+
+	return {
+		id: record.id,
+		description: record.description,
+		status: record.status,
+		abortReason: record.abortReason,
+		toolUses: record.toolUses,
+		turnCount: activity?.turnCount ?? 0,
+		maxTurns: activity?.maxTurns,
+		totalTokens,
+		durationMs: record.completedAt ? record.completedAt - record.startedAt : 0,
+		outputFile: record.outputFile,
+		error: record.error,
+		resultPreview: record.result
+			? record.result.length > resultMaxLen
+				? `${record.result.slice(0, resultMaxLen)}...`
+				: record.result
+			: "No output.",
+	}
+}
+
+let activeManager: AgentManager | undefined
+
+/** Returns the active AgentManager (set during agents extension init). */
+export function getActiveManager(): AgentManager | undefined {
+	return activeManager
+}
+
+/** Options for spawnRemoteAgent. */
+export interface SpawnRemoteAgentOptions {
+	/** When true, spawn as a background agent — returns immediately with the agent ID.
+	 *  The caller will be notified on completion. Default: false (foreground). */
+	background?: boolean
+	/** Origin label for the remote completion steer message (e.g. "plan", "ferment plan"). Default: "plan". */
+	origin?: string
+	/** Ferment ID when the cloud agent is executing a ferment plan. Used to
+	 *  pause the ferment during cloud execution and complete/resume it on
+	 *  completion. */
+	fermentId?: string
+}
+
+/** Spawn function type — set during agents extension init. */
+let spawnRemoteAgentFn:
+	| ((
+			pi: ExtensionAPI,
+			ctx: ExtensionContext,
+			prompt: string,
+			description: string,
+			opts?: SpawnRemoteAgentOptions,
+	  ) => Promise<{ id: string; result: string; backgrounded?: boolean }>)
+	| undefined
+
+/** Build numeric stats for remote_execution.completed/failed telemetry from a finished record. */
+export function buildRemoteExecutionStats(record: AgentRecord): RemoteExecutionStats {
+	return {
+		duration_ms: record.completedAt != null ? record.completedAt - record.startedAt : 0,
+		tool_calls: record.toolUses,
+		turns: record.lastTurnCount,
+		input_tokens: record.lifetimeUsage.input,
+		output_tokens: record.lifetimeUsage.output,
+	}
+}
+
+/** Spawns a foreground remote agent with full UI streaming support.
+ *  Returns the agent id (for targeted abort) and the result text.
+ */
+export async function spawnRemoteAgent(
+	pi: ExtensionAPI,
+	ctx: ExtensionContext,
+	prompt: string,
+	description: string,
+	opts?: SpawnRemoteAgentOptions,
+): Promise<{ id: string; result: string; backgrounded?: boolean }> {
+	if (!spawnRemoteAgentFn) throw new Error("Agent manager not initialized")
+	return spawnRemoteAgentFn(pi, ctx, prompt, description, opts)
+}
+
+/** Test seam: inject a fake manager so spawnGraderAgent can be unit-tested
+ *  without booting the agents extension. */
+export function setActiveManagerForTest(manager: AgentManager | undefined): void {
+	activeManager = manager
+}
+let activeWidget: { ensureTimer: () => void; update: () => void; markFinished: (id: string) => void } | undefined
+let budgetRetryBlock: BudgetRetryBlock | undefined
+const budgetRetryCandidates = new Map<string, BudgetRetryCandidate>()
+
+function blockBudgetRetryIfNeeded(record: AgentRecord, candidate: BudgetRetryCandidate | undefined): void {
+	const block = createBudgetRetryBlockFromCompletion(candidate, record)
+	if (block) budgetRetryBlock = block
+}
+
+export function getActiveAgentCount(): number {
+	return activeManager?.getRunningCount() ?? 0
+}
+
+export function getActiveAgentModelIds(): string[] {
+	if (!activeManager) return []
+	return activeManager
+		.listAgents()
+		.filter((a) => a.status === "running" || a.status === "queued")
+		.map((a) => a.modelId)
+		.filter((id): id is string => id != null)
+}
+
+/**
+ * Returns a read-only snapshot of the agent record for task validation.
+ * The returned object is a shallow copy — nested objects (session, lifetimeUsage,
+ * etc.) are shared references. Callers MUST NOT mutate nested properties;
+ * doing so would corrupt the live agent's state in the manager.
+ */
+export function getAgentRecordForTaskValidation(id: string): Readonly<AgentRecord> | undefined {
+	const record = activeManager?.getRecord(id)
+	if (!record || record.visibility === "system") return undefined
+	return { ...record, latestOutcome: record.latestOutcome ?? buildAgentOutcome(record) }
+}
+
+/**
+ * Run an async function while showing a transient entry in the agent overlay.
+ * The description appears in the agents widget ("N running" footer + overlay)
+ * for the duration of the call — the same visual feedback as a real subagent.
+ *
+ * Falls back to calling fn() directly when no agent system is active
+ * (e.g. unit tests, non-TUI contexts).
+ */
+export async function runWithOverlay<T>(description: string, fn: () => Promise<T>): Promise<T> {
+	if (!activeManager) return fn()
+	const id = activeManager.registerTransient(description)
+	activeWidget?.ensureTimer()
+	activeWidget?.update()
+	try {
+		return await fn()
+	} finally {
+		activeManager.completeTransient(id)
+		activeWidget?.markFinished(id)
+		activeWidget?.update()
+	}
+}
+
+/** Resolve the model the Grader subagent should grade with: the configured
+ *  `modelRoles.judge` ref resolved against the session registry — the same
+ *  resolution the ferment judge uses for single-shot grades and for its
+ *  `gradedBy` provenance label. Only applies in multi-model mode: in
+ *  single-model mode the judge IS the current session model, so this returns
+ *  undefined and the agent runner falls back to ctx.model. Also undefined
+ *  when the role does not resolve in the registry, which matches the judge's
+ *  own session-model fallback. */
+function resolveGraderModel(ctx: ExtensionContext): typeof ctx.model | undefined {
+	if (!getMultiModelEnabled(ctx.sessionManager)) return undefined
+	const judgeAssignment = getModelRoles().judge
+	const judgeModelStr = Array.isArray(judgeAssignment) ? judgeAssignment[0] : judgeAssignment
+	if (!judgeModelStr) return undefined
+	const resolved = resolveModel(judgeModelStr, ctx.modelRegistry as ModelRegistry)
+	// resolveModel returns `unknown | string` (string is an error message) —
+	// same casting pattern as the Agent-tool model resolution below.
+	if (typeof resolved === "string") return undefined
+	return resolved as typeof ctx.model
+}
+
+/** Spawn a Grader subagent (read-only + bash, bounded turns) and wait for its
+ *  result. Returns the agent's final text response and status. Used by the
+ *  ferment grader to independently verify agent claims with tool access.
+ *
+ *  Returns undefined when the agent system is not active (e.g. unit tests,
+ *  non-TUI contexts) so callers can fall back to a single-shot LLM call. */
+export async function spawnGraderAgent(
+	pi: ExtensionAPI,
+	ctx: ExtensionContext,
+	prompt: string,
+): Promise<{ text: string; status: string } | undefined> {
+	if (!activeManager) return undefined
+	const AGENT_GRADER_TYPE = "Grader"
+
+	// Prepare a persisted session file so the grader's transcript is saved
+	// alongside the parent session for post-mortem analysis.
+	let sessionFile: string | undefined
+	let sessionDir: string | undefined
+	try {
+		const parentSessionDir = ctx.sessionManager.getSessionDir()
+		const parentSessionFile = ctx.sessionManager.getSessionFile()
+		if (parentSessionDir && parentSessionFile) {
+			const prepared = prepareAgentSessionFile(parentSessionDir, parentSessionFile, ctx.cwd)
+			sessionFile = prepared?.sessionFile
+			sessionDir = parentSessionDir
+		}
+	} catch {
+		// Session file creation is best-effort — the grader can still run
+		// without a persisted session, it just won't have a transcript file.
+	}
+
+	// Allow the grader to be cancelled when the parent session shuts down.
+	const abortController = new AbortController()
+
+	// Resolve and pass the judge-role model so this grader runs on the same
+	// model the ferment judge labels its grades with (describeJudgeModel).
+	// Without it the runner silently falls back to the parent session model,
+	// making persisted `gradedBy` provenance wrong whenever the roles differ.
+	const graderModel = resolveGraderModel(ctx)
+
+	const record = await activeManager.spawnAndWait(pi, ctx, AGENT_GRADER_TYPE, prompt, {
+		description: "Ferment grader",
+		visibility: "system",
+		sessionFile,
+		sessionDir,
+		signal: abortController.signal,
+		...(graderModel ? { model: graderModel } : {}),
+	})
+	// Collect all assistant text from the session — the grade JSON may appear
+	// in an earlier turn, not just the final response.
+	let fullText = record.result ?? ""
+	if (record.session) {
+		// Collect all assistant text — the grade JSON may appear in an earlier
+		// turn, not just the final response.
+		const assistantText = (record.session?.messages ?? [])
+			.filter((msg) => msg.role === "assistant")
+			.flatMap((msg) => msg.content)
+			.filter((part): part is { type: "text"; text: string } => part.type === "text")
+			.map((part) => part.text)
+			.join("\n\n")
+		fullText = assistantText || fullText
+	}
+	return { text: fullText, status: record.status }
+}
+
+function readAgentTaskRef(params: Record<string, unknown>): AgentTaskRef | undefined {
+	const ref = params.task_ref as Partial<AgentTaskRef> | undefined
+	if (
+		ref?.kind === "ferment_step" &&
+		typeof ref.ferment_id === "string" &&
+		typeof ref.phase_id === "string" &&
+		typeof ref.step_id === "string"
+	) {
+		return {
+			kind: "ferment_step",
+			ferment_id: ref.ferment_id,
+			phase_id: ref.phase_id,
+			step_id: ref.step_id,
+			...(ref.budget_tier === "narrow" || ref.budget_tier === "standard" || ref.budget_tier === "complex"
+				? { budget_tier: ref.budget_tier }
+				: {}),
+		}
+	}
+	return undefined
+}
+
+export default function (pi: ExtensionAPI) {
+	pi.on("message_start", (event) => {
+		if (event.message.role === "user") budgetRetryBlock = undefined
+	})
+
+	// ---- Register custom notification renderer ----
+	pi.registerMessageRenderer<NotificationDetails>("subagent-notification", (message, { expanded }, theme) => {
+		const d = message.details
+		if (!d) return undefined
+
+		function renderOne(d: NotificationDetails): string {
+			const isError = d.status === "error" || d.status === "stopped" || d.status === "aborted"
+			const icon = isError ? theme.fg("error", "✗") : theme.fg("success", "✓")
+			const statusText =
+				d.status === "aborted"
+					? getAbortLabel(d.abortReason)
+					: isError
+						? d.status
+						: d.status === "steered"
+							? "completed (steered)"
+							: "completed"
+
+			let line = `${icon} ${theme.bold(d.description)} ${theme.fg("dim", statusText)}`
+
+			const parts: string[] = []
+			if (d.turnCount > 0) parts.push(formatTurns(d.turnCount, d.maxTurns))
+			if (d.toolUses > 0) parts.push(`${d.toolUses} tool use${d.toolUses === 1 ? "" : "s"}`)
+			if (d.totalTokens > 0) parts.push(formatTokens(d.totalTokens))
+			if (d.durationMs > 0) parts.push(formatMs(d.durationMs))
+			if (parts.length) {
+				line += `\n  ${parts.map((p) => theme.fg("dim", p)).join(` ${theme.fg("dim", "·")} `)}`
+			}
+
+			if (expanded) {
+				const lines = d.resultPreview.split("\n").slice(0, 30)
+				for (const l of lines) line += `\n${theme.fg("dim", `  ${l}`)}`
+			} else {
+				const preview = d.resultPreview.split("\n")[0]?.slice(0, 80) ?? ""
+				line += `\n  ${theme.fg("dim", `⎿  ${preview}`)}`
+			}
+
+			if (d.outputFile) {
+				line += `\n  ${theme.fg("muted", `transcript: ${d.outputFile}`)}`
+			}
+
+			return line
+		}
+
+		const all = [d, ...(d.others ?? [])]
+		return new Text(all.map(renderOne).join("\n"), 0, 0)
+	})
+
+	const reloadCustomAgents = (cwd: string = process.cwd()) => {
+		const userAgents = loadCustomAgents(cwd)
+		registerAgents(userAgents)
+	}
+
+	reloadCustomAgents()
+
+	const agentActivity = new Map<string, AgentActivity>()
+
+	// ---- Cancellable pending notifications ----
+	const NUDGE_HOLD_MS = 200
+	const nudgeScheduler = new NudgeScheduler(NUDGE_HOLD_MS)
+
+	function scheduleNudge(key: string, send: () => void, delay = NUDGE_HOLD_MS) {
+		nudgeScheduler.schedule(key, send, delay)
+	}
+
+	function cancelNudge(key: string) {
+		nudgeScheduler.cancel(key)
+	}
+
+	function emitIndividualNudge(record: AgentRecord) {
+		if (record.visibility === "system") return
+		if (record.resultConsumed) return
+
+		const notification = formatTaskNotification(record, 500)
+		const transcriptNote = record.outputFile ? `\nFull transcript available at: ${record.outputFile}` : ""
+
+		try {
+			pi.sendMessage<NotificationDetails>(
+				{
+					customType: "subagent-notification",
+					content: notification + transcriptNote,
+					display: true,
+					details: buildNotificationDetails(record, 500, agentActivity.get(record.id)),
+				},
+				{ deliverAs: "followUp", triggerTurn: true },
+			)
+		} catch (err) {
+			if (isStaleCtxError(err)) return
+			throw err
+		}
+	}
+
+	function sendIndividualNudge(record: AgentRecord) {
+		agentActivity.delete(record.id)
+		widget.markFinished(record.id)
+		scheduleNudge(record.id, () => emitIndividualNudge(record))
+		widget.update()
+	}
+
+	// ---- Group join manager ----
+	const groupJoin = new GroupJoinManager((records, partial) => {
+		for (const r of records) {
+			agentActivity.delete(r.id)
+			widget.markFinished(r.id)
+		}
+
+		const groupKey = `group:${records.map((r) => r.id).join(",")}`
+		scheduleNudge(groupKey, () => {
+			const unconsumed = records.filter((r) => !r.resultConsumed)
+			if (unconsumed.length === 0) {
+				widget.update()
+				return
+			}
+
+			const notifications = unconsumed.map((r) => formatTaskNotification(r, 300)).join("\n\n")
+			const label = partial
+				? `${unconsumed.length} agent(s) finished (partial - others still running)`
+				: `${unconsumed.length} agent(s) finished`
+
+			const [first, ...rest] = unconsumed
+			const details = buildNotificationDetails(first, 300, agentActivity.get(first.id))
+			if (rest.length > 0) {
+				details.others = rest.map((r) => buildNotificationDetails(r, 300, agentActivity.get(r.id)))
+			}
+
+			try {
+				pi.sendMessage<NotificationDetails>(
+					{
+						customType: "subagent-notification",
+						content: `Background agent group completed: ${label}\n\n${notifications}\n\nUse get_subagent_result for full output.`,
+						display: true,
+						details,
+					},
+					{ deliverAs: "followUp", triggerTurn: true },
+				)
+			} catch (err) {
+				if (isStaleCtxError(err)) return
+				throw err
+			}
+		})
+		widget.update()
+	}, 30_000)
+
+	function buildEventData(record: AgentRecord) {
+		const durationMs = record.completedAt ? record.completedAt - record.startedAt : Date.now() - record.startedAt
+		const u = record.lifetimeUsage
+		const total = getLifetimeTotal(u)
+		const tokens = total > 0 ? { input: u.input, output: u.output, total } : undefined
+		return {
+			id: record.id,
+			type: record.type,
+			description: record.description,
+			result: record.result,
+			error: record.error,
+			status: record.status,
+			visibility: record.visibility,
+			abortReason: record.abortReason,
+			toolUses: record.toolUses,
+			durationMs,
+			tokens,
+		}
+	}
+
+	function appendSubagentRecord(record: AgentRecord): void {
+		pi.appendEntry("subagents:record", {
+			id: record.id,
+			type: record.type,
+			description: record.description,
+			visibility: record.visibility,
+			status: record.status,
+			abortReason: record.abortReason,
+			result: record.result,
+			error: record.error,
+			startedAt: record.startedAt,
+			completedAt: record.completedAt,
+			// Persist file paths so export post-processing can read the
+			// full transcript and attach it to the export. Stripped from
+			// the export output after reading.
+			outputFile: record.outputFile,
+			sessionFile: record.sessionFile,
+			systemPrompt: record.systemPrompt,
+		})
+	}
+
+	let currentBatchAgents: { id: string; joinMode: JoinMode }[] = []
+	let batchFinalizeTimer: ReturnType<typeof setTimeout> | undefined
+	let batchCounter = 0
+
+	function finalizeBatch() {
+		batchFinalizeTimer = undefined
+		const batchAgents = [...currentBatchAgents]
+		currentBatchAgents = []
+
+		const smartAgents = batchAgents.filter((a) => a.joinMode === "smart" || a.joinMode === "group")
+		if (smartAgents.length >= 2) {
+			const groupId = `batch-${++batchCounter}`
+			const ids = smartAgents.map((a) => a.id)
+			groupJoin.registerGroup(groupId, ids)
+			for (const id of ids) {
+				const record = manager.getRecord(id)
+				if (!record) continue
+				record.groupId = groupId
+				if (record.completedAt != null && !record.resultConsumed) {
+					groupJoin.onAgentComplete(record)
+				}
+			}
+		} else {
+			for (const { id } of batchAgents) {
+				const record = manager.getRecord(id)
+				if (record?.completedAt != null && !record.resultConsumed) {
+					sendIndividualNudge(record)
+				}
+			}
+		}
+	}
+
+	// When the user last aborted a main turn (Escape during a streaming run — the
+	// turn ends with stopReason "aborted"; the same signal the ferment extension
+	// uses to pause ferments on Esc). Background cloud agents check this at
+	// completion: a run the user aborted out of still finishes on its own, but
+	// its completion must not surface the dropdown.
+	let lastUserAbortAt: number | undefined
+	pi.on("turn_end", (event) => {
+		const message = event.message
+		if (message.role !== "assistant" || message.stopReason !== "aborted") return
+		lastUserAbortAt = Date.now()
+	})
+
+	const manager = new AgentManager(
+		(record) => {
+			const retryCandidate = budgetRetryCandidates.get(record.id)
+			budgetRetryCandidates.delete(record.id)
+			blockBudgetRetryIfNeeded(record, retryCandidate)
+
+			const isError = record.status === "error" || record.status === "stopped" || record.status === "aborted"
+			const eventData = buildEventData(record)
+			if (isError) {
+				pi.events.emit("subagents:failed", eventData)
+			} else {
+				pi.events.emit("subagents:completed", eventData)
+			}
+
+			appendSubagentRecord(record)
+
+			if (record.resultConsumed) {
+				agentActivity.delete(record.id)
+				widget.markFinished(record.id)
+				widget.update()
+				return
+			}
+
+			if (record.visibility === "system") {
+				// System agents never appear in the widget (AgentWidget filters them
+				// out at render time), so markFinished/update are no-ops that would
+				// just accrue dead state in `finishedTurnAge` and trigger spurious
+				// repaints. Just drop the activity entry and bail.
+				agentActivity.delete(record.id)
+				return
+			}
+
+			if (currentBatchAgents.some((a) => a.id === record.id)) {
+				widget.update()
+				return
+			}
+
+			// Remote agents spawned as background get the post-completion dropdown
+			// (Review / Sync / Done) instead of the normal nudge path.
+			if (record.triggersRemoteCompletion) {
+				record.triggersRemoteCompletion = false
+				trackRemoteExecution(
+					isError ? "failed" : "completed",
+					record.remoteOrigin ?? "plan",
+					buildRemoteExecutionStats(record),
+				)
+				// spawnCtx is captured at spawn time — don't fall back to a stale
+				// global context.
+				const completionCtx = record.spawnCtx
+				// A user abort (Escape) after this agent started means the user opted
+				// out of the cloud run — it finishes on its own, but its completion is
+				// surfaced nowhere.
+				const userAbortedRun = !isError && lastUserAbortAt !== undefined && lastUserAbortAt >= record.startedAt
+				if (isError) {
+					// Errored runs have no result to review/sync — no completion
+					// dropdown. handleRemoteFailure notifies the user (or steers a
+					// headless agent, which would otherwise see nothing) and resumes
+					// the ferment paused for cloud execution.
+					handleRemoteFailure(pi, completionCtx, record.remoteOrigin ?? "plan", {
+						error: record.error,
+						recoveryNote: record.recoveryNote,
+						fermentId: record.fermentId,
+						stoppedByUser: record.status === "stopped",
+					})
+				} else if (!userAbortedRun && completionCtx) {
+					void handleRemoteCompletion(pi, completionCtx, record.result ?? "", record.remoteOrigin ?? "plan", {
+						transcriptPath: record.outputFile,
+						agentId: record.id,
+						remoteSession: record.remoteSession,
+						fermentId: record.fermentId,
+						recoveryNote: record.recoveryNote,
+					}).catch((err) => {
+						currentUi?.notify(
+							`Remote completion failed: ${err instanceof Error ? err.message : String(err)}`,
+							"warning",
+						)
+					})
+				} else if (!userAbortedRun) {
+					currentUi?.notify("Remote agent completed but result could not be surfaced (no active context).", "warning")
+				} else if (record.fermentId) {
+					// Suppressed by a user abort — no dropdown, no steer, no state change.
+					// Esc is the product's ferment-pause signal (the ferment extension
+					// pauses and says "Run /ferment resume to continue"), so the ferment
+					// stays paused. Only leave a breadcrumb so the finished run isn't
+					// forgotten.
+					const ui = completionCtx?.hasUI ? completionCtx.ui : currentUi
+					ui?.notify("Cloud agent finished after abort; ferment stays paused — /ferment resume to continue.", "info")
+				}
+				agentActivity.delete(record.id)
+				widget.markFinished(record.id)
+				widget.update()
+				return
+			}
+
+			const result = groupJoin.onAgentComplete(record)
+			if (result === "pass") {
+				sendIndividualNudge(record)
+			}
+			widget.update()
+		},
+		undefined,
+		(record, ctx) => {
+			pi.events.emit("subagents:started", {
+				id: record.id,
+				type: record.type,
+				description: record.description,
+				visibility: record.visibility,
+			})
+			void trackSubagentSpawned(record, ctx)
+		},
+		(record, info) => {
+			pi.events.emit("subagents:compacted", {
+				id: record.id,
+				type: record.type,
+				description: record.description,
+				visibility: record.visibility,
+				reason: info.reason,
+				tokensBefore: info.tokensBefore,
+				compactionCount: record.compactionCount,
+			})
+		},
+	)
+	activeManager = manager
+
+	pi.on("session_start", async (_event, ctx) => {
+		manager.clearCompleted()
+		// Re-discover custom agents using the new session's cwd, so a session
+		// that started in a different project picks up that project's
+		// .kimchi/agents/ directory and forgets the previous one.
+		reloadCustomAgents(ctx.cwd)
+	})
+
+	pi.on("session_before_switch", () => {
+		manager.clearCompleted()
+	})
+
+	pi.events.emit("subagents:ready", {})
+
+	let unsubCtrlB: (() => void) | undefined
+	let unsubKill: (() => void) | undefined
+	let currentUi: ExtensionUIContext | undefined
+
+	const widget = new AgentWidget(manager, agentActivity)
+	activeWidget = widget
+
+	spawnRemoteAgentFn = async (pi, ctx, promptText, desc, opts) => {
+		widget.setUICtx(ctx.ui as UICtx)
+		const { state: bgState, callbacks: bgCallbacks } = createActivityTracker(1)
+		const parentSessionDir = ctx.sessionManager.getSessionDir()
+
+		// Build transcript-writing callbacks BEFORE spawn so they're captured
+		// in spawnOpts — no post-spawn mutation needed.
+		const {
+			callbacks: transcriptCallbacks,
+			setOutputPath,
+			flushRemaining,
+			resetForReattach,
+		} = streamRemoteToOutputFile(bgCallbacks, ctx.cwd)
+
+		const spawnOpts = {
+			description: desc,
+			isBackground: opts?.background ?? false,
+			remote: true,
+			maxTurns: 1,
+			...transcriptCallbacks,
+			// The streamer wrapper only forwards AcpSessionCallbacks, so the
+			// activity tracker's onSessionCreated is wired here too. _runRemote
+			// fires this with the RemoteAgentSession; activity_reset fires exactly
+			// on WS reattach — reset the streamer's text-slice offsets so
+			// post-reattach deltas aren't sliced against stale pre-disconnect
+			// lengths (cast: activity_reset is not in the AgentSessionEvent union).
+			onSessionCreated: (session: AgentSession) => {
+				bgCallbacks.onSessionCreated?.(session)
+				const s = session as unknown as {
+					subscribe?: (fn: (e: { type: string }) => void) => () => void
+				}
+				if (typeof s?.subscribe === "function") {
+					s.subscribe((ev) => {
+						if (ev.type === "activity_reset") resetForReattach()
+					})
+				}
+			},
+		}
+		const id = manager.spawn(pi, ctx, "Remote-Runner", promptText, spawnOpts)
+
+		const record = manager.getRecord(id)
+		if (record) {
+			record.spawnCtx = ctx
+			record.remoteOrigin = opts?.origin ?? "plan"
+			record.fermentId = opts?.fermentId
+			record.outputFile = createOutputFilePath(ctx.cwd, id, ctx.sessionManager.getSessionId(), parentSessionDir)
+			writeInitialEntry(record.outputFile, id, promptText, ctx.cwd)
+			setOutputPath(record.outputFile, id)
+		}
+		agentActivity.set(id, bgState)
+		widget.ensureTimer()
+		widget.update()
+
+		// Background mode: return immediately — the caller will be notified on completion.
+		if (opts?.background) {
+			if (record) record.triggersRemoteCompletion = true
+			return { id, result: "", backgrounded: true }
+		}
+
+		// Set up detach resolver so Ctrl+B can background the remote agent mid-run.
+		let detachResolve!: () => void
+		const detachPromise = new Promise<void>((r) => {
+			detachResolve = r
+		})
+		if (record) record.detachResolver = detachResolve
+
+		const rec = manager.getRecord(id)
+		if (!rec?.promise) return { id, result: "" }
+		try {
+			const raceResult = await Promise.race([
+				rec.promise.then(() => "completed" as const),
+				detachPromise.then(() => "detached" as const),
+			])
+
+			if (raceResult === "detached") {
+				// Remote agent was backgrounded via Ctrl+B.
+				// _runRemote's promise is still in flight — it will resolve naturally
+				// and the completion path in startAgent handles cleanup + notification.
+				if (record) record.triggersRemoteCompletion = true
+				flushRemaining()
+				widget.ensureTimer()
+				widget.update()
+
+				pi.events.emit("subagents:backgrounded", {
+					id,
+					type: "Remote-Runner",
+					description: desc,
+					visibility: "user",
+				})
+
+				const outputFile = record?.outputFile ?? ""
+				return {
+					id,
+					backgrounded: true,
+					result:
+						`Agent sent to background by the user (Ctrl+B).\n` +
+						`Agent ID: ${id}\n` +
+						`Type: Remote-Runner\n` +
+						`Description: ${desc}\n` +
+						`${outputFile ? `Output file: ${outputFile}\n` : ""}` +
+						`The agent continues running in the background. You will be notified when it completes.`,
+				}
+			}
+
+			// Normal completion path
+			if (record) record.detachResolver = undefined
+			const result = await rec.promise
+			return { id, result, backgrounded: false }
+		} finally {
+			// Flush any buffered transcript entries on completion or error so
+			// nothing is lost if the remote run is aborted or fails mid-stream.
+			flushRemaining()
+		}
+	}
+
+	const listUserVisibleAgents = () => manager.listAgents().filter((a) => a.visibility !== "system")
+
+	pi.on("session_shutdown", async () => {
+		unsubCtrlB?.()
+		unsubCtrlB = undefined
+		unsubKill?.()
+		unsubKill = undefined
+		currentUi = undefined
+		manager.abortAll()
+		budgetRetryCandidates.clear()
+		if (batchFinalizeTimer) {
+			clearTimeout(batchFinalizeTimer)
+			batchFinalizeTimer = undefined
+		}
+		nudgeScheduler.beginShutdown()
+		await waitForSubagentShutdown(manager)
+		widget.dispose()
+		manager.dispose()
+	})
+
+	let defaultJoinMode: JoinMode = "smart"
+	function getDefaultJoinMode(): JoinMode {
+		return defaultJoinMode
+	}
+	function setDefaultJoinMode(mode: JoinMode) {
+		defaultJoinMode = mode
+	}
+
+	pi.on("tool_execution_start", async (_event, ctx) => {
+		widget.setUICtx(ctx.ui as UICtx)
+		widget.onTurnStart()
+
+		if (ctx.hasUI) {
+			const newUi = ctx.ui as ExtensionUIContext
+			// Re-subscribe if the UI context changed (e.g. after a session switch).
+			// The terminal-input handler must use the live UI reference, not a
+			// stale closure captured from the first invocation.
+			if (newUi !== currentUi) {
+				unsubCtrlB?.()
+				unsubKill?.()
+				currentUi = newUi
+				unsubCtrlB = newUi.onTerminalInput((data) => {
+					if (isRawInputCaptureActive()) return undefined
+					if (!matchesKey(data, Key.ctrl("b")) || isKeyRelease(data)) return undefined
+
+					const foreground = manager.listAgents().filter((a) => a.status === "running" && !a.isBackground)
+					if (foreground.length === 0) return undefined
+
+					let detached = 0
+					for (const a of foreground) {
+						if (manager.detachToBackground(a.id)) detached++
+					}
+					if (detached === 0) return undefined
+					currentUi?.notify(`${detached} agent${detached > 1 ? "s" : ""} sent to background`, "info")
+					return { consume: true }
+				})
+
+				// Ctrl+X: kill the most recently spawned running background agent.
+				unsubKill = newUi.onTerminalInput((data) => {
+					if (isRawInputCaptureActive()) return undefined
+					if (!matchesKey(data, Key.ctrl("x")) || isKeyRelease(data)) return undefined
+
+					const bgRunning = manager.listAgents().filter((a) => a.status === "running" && a.isBackground)
+					if (bgRunning.length === 0) return undefined
+
+					const target = bgRunning[0]
+					manager.abort(target.id)
+					currentUi?.notify(`Stopped ${getDisplayName(target.type)} agent`, "info")
+					return { consume: true }
+				})
+			}
+		}
+	})
+
+	const buildTypeListText = () => {
+		const defaultNames = getDefaultAgentNames()
+		const userNames = getUserAgentNames()
+
+		const formatModels = (cfg: ReturnType<typeof getAgentConfig>) => {
+			if (!cfg?.models?.length) return ""
+			if (cfg.models.length === 1) return ` [model: ${getModelLabelFromConfig(cfg.models[0])}]`
+			const labels = cfg.models.map((m) => getModelLabelFromConfig(m))
+			return ` [models: ${labels.join(" | ")}]`
+		}
+
+		const defaultDescs = defaultNames.map((name) => {
+			const cfg = getAgentConfig(name)
+			return `- ${name}: ${cfg?.description ?? name}${formatModels(cfg)}`
+		})
+
+		const customDescs = userNames.map((name) => {
+			const cfg = getAgentConfig(name)
+			return `- ${name}: ${cfg?.description ?? name}${formatModels(cfg)}`
+		})
+
+		return [
+			"Agent types:",
+			...defaultDescs,
+			...(customDescs.length > 0 ? ["", "Custom agents:", ...customDescs] : []),
+		].join("\n")
+	}
+
+	function getModelLabelFromConfig(model: string): string {
+		// biome-ignore lint/style/noNonNullAssertion: split() of a string containing "/" always yields >=2 elements
+		const name = model.includes("/") ? model.split("/").pop()! : model
+		return name.replace(/-\d{8}$/, "")
+	}
+
+	const typeListText = buildTypeListText()
+
+	applyAndEmitLoaded(
+		{
+			setMaxConcurrent: (n) => manager.setMaxConcurrent(n),
+			setDefaultMaxTurns,
+			setGraceTurns,
+			setDefaultJoinMode,
+		},
+		(event, payload) => pi.events.emit(event, payload),
+	)
+
+	// ---- Agent tool ----
+
+	pi.registerTool(
+		defineTool({
+			name: "Agent",
+			label: "Agent",
+			description: `Launch an agent to run a complex multi-step task autonomously.
+
+${typeListText}
+
+${AGENT_TOOL_GUIDELINES}`,
+			parameters: Type.Object({
+				prompt: Type.String({
+					description: "The task for the agent to perform.",
+				}),
+				description: Type.String({
+					description: "A short (3-5 word) description of the task (shown in UI).",
+				}),
+				subagent_type: Type.String({
+					description:
+						"Agent type (see list above); custom agents come from .kimchi/agents/*.md (project) or the global agents dir.",
+				}),
+				model: Type.Optional(
+					Type.String({
+						description: AGENT_MODEL_PARAMETER_DESCRIPTION,
+					}),
+				),
+				thinking: Type.Optional(
+					Type.String({
+						description:
+							"Thinking effort: off, minimal, low, medium, high, xhigh, max. Overrides agent profile defaults.",
+					}),
+				),
+				max_turns: Type.Optional(
+					Type.Number({
+						description:
+							"Requested maximum agentic turns before stopping. Agent profiles with fixed maxTurns keep their profile value.",
+						minimum: 1,
+					}),
+				),
+				token_budget: Type.Optional(
+					Type.Integer({
+						description:
+							"Maximum cumulative output tokens this agent is allowed to generate. Input tokens are not counted.",
+						minimum: 1,
+					}),
+				),
+				max_duration: Type.Optional(
+					Type.Integer({
+						description: "Maximum wall-clock duration in seconds. The agent is aborted when this limit is exceeded.",
+						minimum: 1,
+					}),
+				),
+				run_in_background: Type.Optional(
+					Type.Boolean({
+						description:
+							"Set to true to run in background. Returns agent ID immediately. You will be notified on completion.",
+					}),
+				),
+				isolated: Type.Optional(
+					Type.Boolean({
+						description: "If true, agent gets no extension/MCP tools - only built-in tools.",
+					}),
+				),
+				inherit_context: Type.Optional(
+					Type.Boolean({
+						description: "If true, fork parent conversation into the agent. Default: false (fresh context).",
+					}),
+				),
+				task_ref: Type.Optional(
+					Type.Object({
+						kind: Type.Literal("ferment_step"),
+						ferment_id: Type.String(),
+						phase_id: Type.String(),
+						step_id: Type.String(),
+						budget_tier: Type.Optional(
+							Type.Union([Type.Literal("narrow"), Type.Literal("standard"), Type.Literal("complex")]),
+						),
+					}),
+				),
+			}),
+
+			renderCall(args, theme, context) {
+				// Defense-in-depth: `visibility` is not in this tool's public schema (see execute()),
+				// but if an LLM hallucinates the arg we'd rather hide the tool call than render it.
+				if ((args as Record<string, unknown>).visibility === "system") return new Text("", 0, 0)
+				if (!context.argsComplete && !args.subagent_type) return new Text("", 0, 0)
+				const displayName = getDisplayName(args.subagent_type || AGENT_GENERAL_PURPOSE)
+				const desc = (args.description as string) ?? ""
+				return new Text(
+					`▸ ${theme.fg("toolTitle", theme.bold(displayName))}${desc ? `  ${theme.fg("muted", desc)}` : ""}`,
+					0,
+					0,
+				)
+			},
+
+			renderResult(result, { expanded: piExpanded, isPartial }, theme, context) {
+				// Wire kimchi's global ctrl+o cycle: register on first render, then read the
+				// per-tool flag back. Falls back to pi's renderer flag if available.
+				if (context?.toolCallId) registerToolCall(context.toolCallId)
+				const expanded = piExpanded || (context?.toolCallId ? isToolExpanded(context.toolCallId) : false)
+
+				const details = result.details as AgentDetails | undefined
+				if (details?.visibility === "system") return new Text("", 0, 0)
+				if (!details) {
+					const text = result.content[0]?.type === "text" ? result.content[0].text : ""
+					return new Text(text, 0, 0)
+				}
+
+				const stats = (d: AgentDetails) => {
+					const parts: string[] = []
+					if (d.modelName) parts.push(d.modelName)
+					if (d.tags) parts.push(...d.tags)
+					if (d.turnCount != null && d.turnCount > 0) {
+						parts.push(formatTurns(d.turnCount, d.maxTurns))
+					}
+					if (d.toolUses > 0) parts.push(`${d.toolUses} tool use${d.toolUses === 1 ? "" : "s"}`)
+					if (d.tokens) parts.push(d.tokens)
+					return parts.map((p) => theme.fg("dim", p)).join(` ${theme.fg("dim", "·")} `)
+				}
+
+				if (isPartial || details.status === "running") {
+					const frame = SPINNER[details.spinnerFrame ?? 0]
+					const s = stats(details)
+					let line = theme.fg("accent", frame) + (s ? ` ${s}` : "")
+					line += `\n${theme.fg("dim", `  ⎿  ${details.activity ?? "thinking..."}`)}  ${theme.fg("muted", "(ctrl+b to run in background)")}`
+					return new Text(line, 0, 0)
+				}
+
+				if (details.status === "background") {
+					return new Text(theme.fg("dim", `  ⎿  Background agent running (ID: ${details.agentId})`), 0, 0)
+				}
+
+				if (details.status === "completed" || details.status === "steered") {
+					const duration = formatMs(details.durationMs)
+					const isSteered = details.status === "steered"
+					const icon = isSteered ? theme.fg("warning", "✓") : theme.fg("success", "✓")
+					const s = stats(details)
+					let line = icon + (s ? ` ${s}` : "")
+					line += ` ${theme.fg("dim", "·")} ${theme.fg("dim", duration)}`
+
+					if (expanded) {
+						const resultText = result.content[0]?.type === "text" ? result.content[0].text : ""
+						if (resultText) {
+							const lines = resultText.split("\n").slice(0, 50)
+							for (const l of lines) {
+								line += `\n${theme.fg("dim", `  ${l}`)}`
+							}
+							if (resultText.split("\n").length > 50) {
+								line += `\n${theme.fg("muted", "  ... (use get_subagent_result with verbose for full output)")}`
+							}
+						}
+					} else {
+						const doneText = isSteered ? "Wrapped up (turn limit)" : "Done"
+						line += `\n${theme.fg("dim", `  ⎿  ${doneText}`)}`
+					}
+					return new Text(line, 0, 0)
+				}
+
+				if (details.status === "stopped") {
+					const s = stats(details)
+					let line = theme.fg("dim", "■") + (s ? ` ${s}` : "")
+					line += `\n${theme.fg("dim", "  ⎿  Stopped")}`
+					return new Text(line, 0, 0)
+				}
+
+				const s = stats(details)
+				let line = theme.fg("error", "✗") + (s ? ` ${s}` : "")
+
+				if (details.status === "error") {
+					line += `\n${theme.fg("error", `  ⎿  Error: ${details.error ?? "unknown"}`)}`
+				} else {
+					line += `\n${theme.fg("warning", `  ⎿  ${getAbortLabel(details.abortReason)}`)}`
+				}
+
+				return new Text(line, 0, 0)
+			},
+
+			execute: async (toolCallId, params, signal, onUpdate, ctx) => {
+				widget.setUICtx(ctx.ui as UICtx)
+
+				reloadCustomAgents()
+
+				const rawType = params.subagent_type as SubagentType
+				const resolved = resolveType(rawType)
+				const subagentType = resolved ?? AGENT_GENERAL_PURPOSE
+				const fellBack = resolved === undefined
+
+				const displayName = getDisplayName(subagentType)
+
+				const customConfig = getAgentConfig(subagentType)
+
+				const resolvedConfig = resolveAgentInvocationConfig(
+					customConfig,
+					params as Parameters<typeof resolveAgentInvocationConfig>[1],
+				)
+
+				let model = ctx.model
+				if (resolvedConfig.modelInput) {
+					const resolvedModel = resolveModel(resolvedConfig.modelInput, ctx.modelRegistry as ModelRegistry)
+					if (typeof resolvedModel === "string") {
+						if (resolvedConfig.modelFromParams) return textResult(resolvedModel)
+					} else {
+						model = resolvedModel as typeof ctx.model
+					}
+				}
+
+				// When multi-model is enabled and the caller did NOT specify a model,
+				// resolve the default model from the role config based on the agent
+				// type. This ensures Builder calls use the configured builder model,
+				// not the orchestrator's own model.
+				if (getMultiModelEnabled(ctx.sessionManager) && !resolvedConfig.modelFromParams) {
+					const roleModelRef = resolveRoleModelRef(subagentType)
+					if (roleModelRef) {
+						const resolved = resolveModel(roleModelRef, ctx.modelRegistry as ModelRegistry)
+						if (typeof resolved !== "string") {
+							// resolveModel returns `unknown | string` — the cast is required because
+							// ModelRegistry.find() returns unknown. Same pattern as line 1243.
+							model = resolved as typeof ctx.model
+						}
+					}
+				}
+
+				// Multi-model guard: when multi-model mode is active and the caller supplied
+				// an explicit model, the resolved model must belong to the configured
+				// multi-model role pool. This runs before budget-retry and task_ref checks
+				// so invalid models are rejected immediately.
+				if (getMultiModelEnabled(ctx.sessionManager) && resolvedConfig.modelFromParams) {
+					const fullRef = `${(model as { provider?: string }).provider}/${(model as { id?: string }).id}`
+					const allowed = new Set(getAllowedMultiModelRefs())
+					if (!allowed.has(fullRef)) {
+						const allowedList = Array.from(allowed)
+							.map((ref) => `  - ${ref}`)
+							.join("\n")
+						return textResult(
+							`Model "${fullRef}" is not allowed in multi-model mode.\n\nAllowed models:\n${allowedList}\n\nOmit the model parameter to use the current session model, or specify one of the allowed models.`,
+						)
+					}
+				}
+
+				const explicitTokenBudget =
+					(params as { token_budget?: number; tokenBudget?: number }).token_budget ??
+					(params as { token_budget?: number; tokenBudget?: number }).tokenBudget
+				const activeBudgetRetryBlock = budgetRetryBlock
+				if (
+					activeBudgetRetryBlock &&
+					shouldBlockBudgetRetry(activeBudgetRetryBlock, {
+						tokenBudget: resolvedConfig.tokenBudget,
+						subagentType,
+						description: params.description as string,
+						prompt: params.prompt as string,
+					})
+				) {
+					return textResult(
+						`Agent retry blocked: the previous Agent call for "${activeBudgetRetryBlock.description}" already aborted because the user-supplied token_budget (${formatTokens(activeBudgetRetryBlock.budget)}) was too small. Do not raise the budget or retry the Agent tool unless the user explicitly asks.`,
+					)
+				}
+
+				const thinking = resolvedConfig.thinking
+				const inheritContext = resolvedConfig.inheritContext
+				const isolated = resolvedConfig.isolated
+				const taskRef = readAgentTaskRef(params)
+				if (taskRef && (params.max_turns == null || params.max_duration == null || params.token_budget == null)) {
+					return textResult(
+						"Ferment-linked Agent calls require explicit max_turns, max_duration, and token_budget from the shared worker budget policy.",
+					)
+				}
+				if (taskRef && isolated) {
+					return textResult(
+						"Agent task_ref cannot be used with isolated: true. Ferment-linked workers must have extension tools enabled so they can call submit_agent_report.",
+					)
+				}
+				// The `visibility` field is intentionally NOT exposed in this tool's public schema -
+				// LLMs and personas cannot create hidden agents. Internal kimchi callers (e.g. permission
+				// classifiers, future MCP adapters) spawn hidden agents directly via `AgentManager.spawn(..., { visibility: "system" })`,
+				// which bypasses the tool layer entirely. Hardcoding "user" here ensures any defiant
+				// LLM that hallucinates a `visibility` arg gets ignored at the source.
+				const visibility: AgentVisibility = "user"
+				const runInBackground = resolvedConfig.runInBackground
+
+				// Image forwarding: when session has images and subagent model supports vision,
+				// extract image paths from read tool calls and prepend them to the prompt.
+				const modelInput = (model as { input?: string[] } | undefined)?.input
+				const imagePaths = sessionHasImages() && modelInput?.includes("image") ? extractImagePathsFromSession(ctx) : []
+				const requiresVision = imagePaths.length > 0 && isAutoModel(model)
+				const effectivePrompt =
+					imagePaths.length > 0
+						? `Context images from parent session: ${imagePaths.join(", ")}. Read them if needed for your task.\n\n${params.prompt as string}`
+						: (params.prompt as string)
+
+				const parentModelId = ctx.model?.id
+				const effectiveModelId = (model as { id?: string } | undefined)?.id
+				const agentModelName =
+					effectiveModelId && effectiveModelId !== parentModelId
+						? ((model as { name?: string; id?: string } | undefined)?.name ?? effectiveModelId)
+								.replace(/^Claude\s+/i, "")
+								.toLowerCase()
+						: undefined
+				const agentTags: string[] = []
+				if (thinking) agentTags.push(`thinking: ${thinking}`)
+				if (resolvedConfig.tokenBudget != null) agentTags.push(`budget: ${formatTokens(resolvedConfig.tokenBudget)}`)
+				if (isolated) agentTags.push("isolated")
+				const effectiveMaxTurns = normalizeMaxTurns(resolvedConfig.maxTurns ?? getDefaultMaxTurns())
+				const detailBase = {
+					displayName,
+					description: params.description as string,
+					subagentType,
+					visibility,
+					modelName: agentModelName,
+					tags: agentTags.length > 0 ? agentTags : undefined,
+				}
+
+				if (runInBackground) {
+					const { state: bgState, callbacks: bgCallbacks } = createActivityTracker(effectiveMaxTurns)
+					let childSessionFile: string | undefined
+					const parentSessionDir = ctx.sessionManager.getSessionDir()
+					try {
+						childSessionFile = prepareAgentSessionFile(
+							parentSessionDir,
+							ctx.sessionManager.getSessionFile(),
+							ctx.cwd,
+						)?.sessionFile
+					} catch (err) {
+						const detail = err instanceof Error ? err.message : String(err)
+						return textResult(`Failed to pre-write Agent session file under ${parentSessionDir}: ${detail}`)
+					}
+
+					let id: string
+					const origBgOnSession = bgCallbacks.onSessionCreated
+					bgCallbacks.onSessionCreated = (session: unknown) => {
+						origBgOnSession(session)
+						const rec = manager.getRecord(id)
+						if (rec?.outputFile) {
+							rec.outputCleanup = streamToOutputFile(
+								session as Parameters<typeof streamToOutputFile>[0],
+								rec.outputFile,
+								id,
+								ctx.cwd,
+							)
+						}
+					}
+
+					try {
+						id = manager.spawn(pi, ctx, subagentType, effectivePrompt, {
+							description: params.description as string,
+							visibility,
+							model: model as Parameters<typeof manager.spawn>[4]["model"],
+							requiresVision,
+							maxTurns: effectiveMaxTurns,
+							tokenBudget: resolvedConfig.tokenBudget,
+							taskRef,
+							maxDuration: resolvedConfig.maxDuration,
+							isolated,
+							inheritContext,
+							thinkingLevel: thinking,
+							isBackground: true,
+							sessionFile: childSessionFile,
+							sessionDir: parentSessionDir,
+							...bgCallbacks,
+						})
+					} catch (err) {
+						return textResult(err instanceof Error ? err.message : String(err))
+					}
+
+					const joinMode = resolveJoinMode(getDefaultJoinMode(), true)
+					const record = manager.getRecord(id)
+					if (record && joinMode) {
+						record.joinMode = joinMode
+						record.toolCallId = toolCallId
+						record.outputFile = createOutputFilePath(ctx.cwd, id, ctx.sessionManager.getSessionId(), parentSessionDir)
+						writeInitialEntry(record.outputFile, id, params.prompt as string, ctx.cwd)
+					}
+					if (explicitTokenBudget != null) {
+						budgetRetryCandidates.set(id, {
+							budget: explicitTokenBudget,
+							subagentType,
+							description: params.description as string,
+							prompt: params.prompt as string,
+						})
+					}
+
+					if (joinMode != null && joinMode !== "async") {
+						currentBatchAgents.push({ id, joinMode })
+						if (batchFinalizeTimer) clearTimeout(batchFinalizeTimer)
+						batchFinalizeTimer = setTimeout(finalizeBatch, 100)
+					}
+
+					agentActivity.set(id, bgState)
+					widget.ensureTimer()
+					widget.update()
+
+					pi.events.emit("subagents:created", {
+						id,
+						type: subagentType,
+						description: params.description,
+						isBackground: true,
+						visibility,
+					})
+
+					const isQueued = record?.status === "queued"
+					return textResult(
+						`Agent ${isQueued ? "queued" : "started"} in background.\nAgent ID: ${id}\nType: ${displayName}\nDescription: ${params.description}\n${record?.outputFile ? `Output file: ${record.outputFile}\n` : ""}${isQueued ? `Position: queued (max ${manager.getMaxConcurrent()} concurrent)\n` : ""}\nYou will be notified when this agent completes.\nUse get_subagent_result to retrieve full results, or steer_subagent to send it messages.\nDo not duplicate this agent's work.`,
+						{ ...detailBase, toolUses: 0, tokens: "", durationMs: 0, status: "background" as const, agentId: id },
+					)
+				}
+
+				// Foreground (synchronous) execution
+				let spinnerFrame = 0
+				const startedAt = Date.now()
+				let fgId: string | undefined
+				let fgDetached = false
+
+				const streamUpdate = () => {
+					if (fgDetached) return
+					const details: AgentDetails = {
+						...detailBase,
+						toolUses: fgState.toolUses,
+						tokens: formatLifetimeTokens(fgState),
+						turnCount: fgState.turnCount,
+						maxTurns: fgState.maxTurns,
+						durationMs: Date.now() - startedAt,
+						status: "running",
+						activity: describeActivity(fgState.activeTools, fgState.responseText),
+						spinnerFrame: spinnerFrame % SPINNER.length,
+					}
+					onUpdate?.({
+						content: [{ type: "text", text: `${fgState.toolUses} tool uses...` }],
+						details: details as unknown,
+					})
+				}
+
+				const { state: fgState, callbacks: fgCallbacks } = createActivityTracker(effectiveMaxTurns, streamUpdate)
+
+				const origOnSession = fgCallbacks.onSessionCreated
+				fgCallbacks.onSessionCreated = (session: unknown) => {
+					origOnSession(session)
+					for (const a of manager.listAgents()) {
+						if (a.session === session) {
+							fgId = a.id
+							agentActivity.set(a.id, fgState)
+							widget.ensureTimer()
+							const rec = manager.getRecord(a.id)
+							if (rec?.outputFile) {
+								rec.outputCleanup = streamToOutputFile(
+									session as Parameters<typeof streamToOutputFile>[0],
+									rec.outputFile,
+									a.id,
+									ctx.cwd,
+								)
+							}
+							break
+						}
+					}
+				}
+
+				const spinnerInterval = setInterval(() => {
+					spinnerFrame++
+					streamUpdate()
+				}, 80)
+
+				streamUpdate()
+
+				let childSessionFile: string | undefined
+				let fgOutputFile: string | undefined
+				const parentSessionDir = ctx.sessionManager.getSessionDir()
+				try {
+					childSessionFile = prepareAgentSessionFile(
+						parentSessionDir,
+						ctx.sessionManager.getSessionFile(),
+						ctx.cwd,
+					)?.sessionFile
+					fgOutputFile = createOutputFilePath(
+						ctx.cwd,
+						"placeholder",
+						ctx.sessionManager.getSessionId(),
+						parentSessionDir,
+					)
+				} catch (err) {
+					clearInterval(spinnerInterval)
+					const detail = err instanceof Error ? err.message : String(err)
+					return textResult(`Failed to pre-write Agent session file under ${parentSessionDir}: ${detail}`)
+				}
+
+				let detachResolve: (() => void) | undefined
+				const detachPromise = new Promise<"detached">((resolve) => {
+					detachResolve = () => resolve("detached")
+				})
+
+				let spawnedId: string
+				try {
+					spawnedId = manager.spawn(pi, ctx, subagentType, effectivePrompt, {
+						description: params.description as string,
+						visibility,
+						model: model as Parameters<typeof manager.spawn>[4]["model"],
+						requiresVision,
+						maxTurns: effectiveMaxTurns,
+						tokenBudget: resolvedConfig.tokenBudget,
+						taskRef,
+						maxDuration: resolvedConfig.maxDuration,
+						isolated,
+						inheritContext,
+						thinkingLevel: thinking,
+						isBackground: false,
+						sessionFile: childSessionFile,
+						sessionDir: parentSessionDir,
+						signal,
+						...fgCallbacks,
+					})
+				} catch (err) {
+					clearInterval(spinnerInterval)
+					return textResult(err instanceof Error ? err.message : String(err))
+				}
+
+				// biome-ignore lint/style/noNonNullAssertion: spawn() just inserted this id into the agents map
+				const record = manager.getRecord(spawnedId)!
+				fgId = spawnedId
+				record.detachResolver = detachResolve
+				if (fgOutputFile) {
+					record.outputFile = fgOutputFile.replace("placeholder", spawnedId)
+					record.toolCallId = toolCallId
+					writeInitialEntry(record.outputFile, spawnedId, params.prompt as string, ctx.cwd)
+				}
+
+				// biome-ignore lint/style/noNonNullAssertion: promise is always set after spawn() calls startAgent()
+				const raceResult = await Promise.race([record.promise!.then(() => "completed" as const), detachPromise])
+
+				if (raceResult === "detached") {
+					fgDetached = true
+					clearInterval(spinnerInterval)
+
+					const outputFile = createOutputFilePath(
+						ctx.cwd,
+						spawnedId,
+						ctx.sessionManager.getSessionId(),
+						parentSessionDir,
+					)
+					record.outputFile = outputFile
+					writeInitialEntry(outputFile, spawnedId, params.prompt as string, ctx.cwd)
+					if (record.session) {
+						// Tear down the foreground streaming subscription before
+						// re-subscribing against the same session for background output.
+						record.outputCleanup?.()
+						record.outputCleanup = streamToOutputFile(
+							record.session as Parameters<typeof streamToOutputFile>[0],
+							outputFile,
+							spawnedId,
+							ctx.cwd,
+						)
+					}
+
+					const joinMode = resolveJoinMode(getDefaultJoinMode(), true)
+					if (record && joinMode) {
+						record.joinMode = joinMode
+					}
+					if (explicitTokenBudget != null) {
+						budgetRetryCandidates.set(spawnedId, {
+							budget: explicitTokenBudget,
+							subagentType,
+							description: params.description as string,
+							prompt: params.prompt as string,
+						})
+					}
+					if (joinMode != null && joinMode !== "async") {
+						currentBatchAgents.push({ id: spawnedId, joinMode })
+						if (batchFinalizeTimer) clearTimeout(batchFinalizeTimer)
+						batchFinalizeTimer = setTimeout(finalizeBatch, 100)
+					}
+
+					widget.ensureTimer()
+					widget.update()
+
+					pi.events.emit("subagents:backgrounded", {
+						id: spawnedId,
+						type: subagentType,
+						description: params.description,
+						visibility,
+					})
+
+					return textResult(
+						`Agent sent to background by the user (Ctrl+B).\nAgent ID: ${spawnedId}\nType: ${displayName}\nDescription: ${params.description}\n${outputFile ? `Output file: ${outputFile}\n` : ""}\nThe agent continues running in the background. You will be notified when it completes.\nDo NOT call get_subagent_result now — that would block and defeat the purpose of backgrounding. Continue with other independent work, or stop your turn and return control to the user. The completion notification will contain the results.`,
+						{
+							...detailBase,
+							toolUses: fgState.toolUses,
+							tokens: formatLifetimeTokens(fgState),
+							durationMs: Date.now() - startedAt,
+							status: "background" as const,
+							agentId: spawnedId,
+						},
+					)
+				}
+
+				// Normal completion path
+				record.detachResolver = undefined
+				clearInterval(spinnerInterval)
+
+				if (fgId) {
+					agentActivity.delete(fgId)
+					widget.markFinished(fgId)
+				}
+
+				const fallbackNote = fellBack
+					? `Note: Unknown agent type "${rawType}" - using ${AGENT_GENERAL_PURPOSE}.\n\n`
+					: ""
+
+				// Ferment step worker killed by its OWN budget (turns/duration) on a
+				// first attempt: auto-resume once so the worker finishes instead of the
+				// orchestrator patching the remaining work on the main thread — the
+				// exact residue workers exist to keep out. Measured run 019ff5cc: 8/17
+				// Builders aborted at the hard cap with no report and every one was
+				// finished by main-thread edits. First abort only (resumeAttempts
+				// empty); a second exhaustion returns to the planner as before.
+				const autoResumeCandidate = shouldAutoResumeFermentWorker(record)
+				let autoResumedFromReason: AgentAbortReason | undefined
+				if (autoResumeCandidate) {
+					// Capture the pre-resume state — manager.resume mutates record in
+					// place (clears abortReason on success), so reading it after the call
+					// loses the reason the note exists to report.
+					const beforeAbortReason = record.abortReason
+					try {
+						await manager.resume(record.id, FERMENT_WORKER_AUTO_RESUME_PROMPT, {})
+						autoResumedFromReason = beforeAbortReason
+					} catch {
+						// Fall back to the normal aborted-agent summary/instruction below
+						// instead of surfacing an unhandled tool error.
+					}
+					// The summary note/instruction below reads record.status/abortReason,
+					// so it describes the post-resume state automatically.
+				}
+
+				// Built AFTER the auto-resume block so they reflect the post-resume
+				// state (resume mutates record/fgState: status, abortReason, counters).
+				const tokenText = formatLifetimeTokens(fgState)
+				const details = buildDetails(detailBase, record, fgState, { tokens: tokenText })
+
+				if (record.status === "error") {
+					return textResult(`${fallbackNote}Agent failed: ${record.error}`, details)
+				}
+				blockBudgetRetryIfNeeded(
+					record,
+					explicitTokenBudget != null
+						? {
+								budget: explicitTokenBudget,
+								subagentType,
+								description: params.description as string,
+								prompt: params.prompt as string,
+							}
+						: undefined,
+				)
+
+				const durationMs = (record.completedAt ?? Date.now()) - record.startedAt
+				const statsParts = [`${record.toolUses} tool uses`]
+				if (tokenText) statsParts.push(tokenText)
+				const outcome = record.status === "aborted" ? "aborted" : record.status === "stopped" ? "stopped" : "completed"
+				record.latestOutcome ??= buildAgentOutcome(record)
+				// Persist a subagents:record entry for foreground agents so exports
+				// can enrich them with full transcripts the same way background
+				// agents are handled.
+				appendSubagentRecord(record)
+
+				const timeTaken = formatMs(durationMs)
+				const autoResumeNote = buildAutoResumeNote(autoResumedFromReason)
+				const note = getStatusNote(record.status, record.abortReason)
+				const instruction = getStatusInstruction(
+					record.status,
+					getMultiModelEnabled(ctx.sessionManager),
+					record.abortReason,
+				)
+				const outcomeBlock = formatAgentOutcomeBlock(record.latestOutcome)
+				return textResult(
+					`${fallbackNote}Agent ${outcome} in ${timeTaken} (${statsParts.join(", ")})${note}.${instruction}${autoResumeNote}\n\n${record.result?.trim() || "No output."}${outcomeBlock}`,
+					details,
+				)
+			},
+		}),
+	)
+
+	registerResumeSubagentTool(pi, manager)
+
+	// ---- get_subagent_result tool ----
+
+	pi.registerTool(
+		defineTool({
+			name: "get_subagent_result",
+			label: "Get Agent Result",
+			description:
+				"Check status and retrieve results from a background agent. Use the agent ID returned by Agent with run_in_background.",
+			parameters: Type.Object({
+				agent_id: Type.String({
+					description: "The agent ID to check.",
+				}),
+				wait: Type.Optional(
+					Type.Boolean({
+						description: "If true, wait for the agent to complete before returning. Default: false.",
+					}),
+				),
+				verbose: Type.Optional(
+					Type.Boolean({
+						description: "If true, include the agent's full conversation (messages + tool calls). Default: false.",
+					}),
+				),
+			}),
+
+			renderResult(result, { expanded: piExpanded }, theme, context) {
+				if (context?.toolCallId) registerToolCall(context.toolCallId)
+				const expanded = piExpanded || (context?.toolCallId ? isToolExpanded(context.toolCallId) : false)
+
+				const details = result.details as GetSubagentResultDetails | undefined
+				// Defense-in-depth: hide get_subagent_result output for system agents in the TUI
+				// (consistency with the Agent tool's renderCall/renderResult short-circuits).
+				if (details?.visibility === "system") return new Text("", 0, 0)
+				if (!details) {
+					const text = result.content[0]?.type === "text" ? result.content[0].text : ""
+					return new Text(text, 0, 0)
+				}
+
+				const statsLine = (d: GetSubagentResultDetails) => {
+					const parts: string[] = [d.status]
+					if (d.toolUses > 0) parts.push(`${d.toolUses} tool use${d.toolUses === 1 ? "" : "s"}`)
+					if (d.tokens) parts.push(d.tokens)
+					if (d.contextPercent != null) parts.push(`${Math.round(d.contextPercent)}% ctx`)
+					if (d.compactionCount && d.compactionCount > 0) {
+						parts.push(`${d.compactionCount} compaction${d.compactionCount === 1 ? "" : "s"}`)
+					}
+					return parts.map((p) => theme.fg("dim", p)).join(` ${theme.fg("dim", "·")} `)
+				}
+
+				const icon = getSubagentResultIcon(details.status, theme)
+
+				const headerName = theme.fg("toolTitle", theme.bold("Get Agent Result"))
+				const headerDesc = details.description ? `  ${theme.fg("muted", details.description)}` : ""
+				const durationTail =
+					details.durationMs != null ? ` ${theme.fg("dim", "·")} ${theme.fg("dim", formatMs(details.durationMs))}` : ""
+
+				let line = `${icon} ${headerName}${headerDesc}${durationTail}`
+				const stats = statsLine(details)
+				if (stats) line += `\n${theme.fg("dim", "  ⎿  ")}${stats}`
+
+				const bodyText = details.bodyText ?? ""
+				if (expanded && bodyText) {
+					const lines = bodyText.split("\n")
+					const maxLines = 50
+					const visible = lines.slice(0, maxLines)
+					for (const l of visible) {
+						line += `\n${theme.fg("dim", `  ${l}`)}`
+					}
+					if (lines.length > maxLines) {
+						line += `\n${theme.fg("muted", `  ... (${lines.length - maxLines} more lines - use verbose: true for full output)`)}`
+					}
+				} else if (!expanded) {
+					const summary = summaryForStatus(details.status, details.error, details.abortReason)
+					line += `\n${theme.fg("dim", `  ⎿  ${summary}`)}`
+				}
+
+				return new Text(line, 0, 0)
+			},
+
+			execute: async (_toolCallId, params, _signal, _onUpdate, _ctx) => {
+				const record = manager.getRecord(params.agent_id as string)
+				if (!record) {
+					return textResult(`Agent not found: "${params.agent_id}". It may have been cleaned up.`)
+				}
+
+				if (params.wait && record.status === "running" && record.promise) {
+					record.resultConsumed = true
+					cancelNudge(params.agent_id as string)
+					await record.promise
+				}
+
+				const displayName = getDisplayName(record.type)
+				const duration = formatDuration(record.startedAt, record.completedAt)
+				const tokens = formatLifetimeTokens(record)
+				const contextPercent = getSessionContextPercent(record.session)
+				const statsParts = [`Tool uses: ${record.toolUses}`]
+				if (tokens) statsParts.push(tokens)
+				if (contextPercent !== null) statsParts.push(`Context: ${Math.round(contextPercent)}%`)
+				if (record.compactionCount) statsParts.push(`Compactions: ${record.compactionCount}`)
+				statsParts.push(`Duration: ${duration}`)
+
+				let output =
+					`Agent: ${record.id}\n` +
+					`Type: ${displayName} | Status: ${record.status} | ${statsParts.join(" | ")}\n` +
+					`Description: ${record.description}\n\n`
+
+				let bodyForDisplay: string
+				if (record.status === "running") {
+					bodyForDisplay = "Agent is still running. Use wait: true or check back later."
+					output += bodyForDisplay
+				} else if (record.status === "error") {
+					bodyForDisplay = `Error: ${record.error}`
+					output += bodyForDisplay
+				} else {
+					bodyForDisplay = record.result?.trim() || "No output."
+					output += bodyForDisplay
+				}
+				record.latestOutcome ??= buildAgentOutcome(record)
+				if (record.latestOutcome && record.status !== "running" && record.status !== "queued") {
+					const outcomeBlock = formatAgentOutcomeBlock(record.latestOutcome)
+					output += outcomeBlock
+					bodyForDisplay += outcomeBlock
+				}
+
+				if (record.status !== "running" && record.status !== "queued") {
+					record.resultConsumed = true
+					cancelNudge(params.agent_id as string)
+				}
+
+				if (params.verbose && record.session) {
+					const conversation = getAgentConversation(record.session)
+					if (conversation) {
+						const verboseTail = `\n\n--- Agent Conversation ---\n${conversation}`
+						output += verboseTail
+						bodyForDisplay += verboseTail
+					}
+				}
+
+				const completedAt = record.completedAt ?? Date.now()
+				const durationMs = record.startedAt != null ? completedAt - record.startedAt : undefined
+				const details: GetSubagentResultDetails = {
+					agentId: record.id,
+					displayName,
+					description: record.description,
+					status: record.status,
+					visibility: record.visibility,
+					abortReason: record.abortReason,
+					toolUses: record.toolUses,
+					tokens,
+					contextPercent,
+					compactionCount: record.compactionCount,
+					durationMs,
+					error: record.error,
+					bodyText: formatAgentBodyForDisplay(bodyForDisplay),
+					agentOutcome: record.latestOutcome,
+				}
+
+				return textResult(output, details)
+			},
+		}),
+	)
+
+	// ---- steer_subagent tool ----
+
+	pi.registerTool(
+		defineTool({
+			name: "steer_subagent",
+			label: "Steer Agent",
+			description:
+				"Send a steering message to a running agent; it is injected into the agent's conversation after the current tool completes.",
+			parameters: Type.Object({
+				agent_id: Type.String({
+					description: "The running agent's ID.",
+				}),
+				message: Type.String({
+					description: "Steering message (appears as a user message in the agent's conversation).",
+				}),
+			}),
+			execute: async (_toolCallId, params, _signal, _onUpdate, _ctx) => {
+				const record = manager.getRecord(params.agent_id as string)
+				if (!record) {
+					return textResult(`Agent not found: "${params.agent_id}". It may have been cleaned up.`)
+				}
+				if (record.status !== "running") {
+					return textResult(
+						`Agent "${params.agent_id}" is not running (status: ${record.status}). Cannot steer a non-running agent.`,
+					)
+				}
+				if (!record.session) {
+					if (!record.pendingSteers) record.pendingSteers = []
+					record.pendingSteers.push(params.message as string)
+					pi.events.emit("subagents:steered", { id: record.id, message: params.message })
+					return textResult(
+						`Steering message queued for agent ${record.id}. It will be delivered once the session initializes.`,
+					)
+				}
+
+				try {
+					await steerAgent(record.session, params.message as string)
+					pi.events.emit("subagents:steered", { id: record.id, message: params.message })
+					const tokens = formatLifetimeTokens(record)
+					const contextPercent = getSessionContextPercent(record.session)
+					const stateParts: string[] = []
+					if (tokens) stateParts.push(tokens)
+					stateParts.push(`${record.toolUses} tool ${record.toolUses === 1 ? "use" : "uses"}`)
+					if (contextPercent !== null) stateParts.push(`context ${Math.round(contextPercent)}% full`)
+					if (record.compactionCount)
+						stateParts.push(`${record.compactionCount} compaction${record.compactionCount === 1 ? "" : "s"}`)
+					return textResult(
+						`Steering message sent to agent ${record.id}. The agent will process it after its current tool execution.\n` +
+							`Current state: ${stateParts.join(" · ")}`,
+					)
+				} catch (err) {
+					return textResult(`Failed to steer agent: ${err instanceof Error ? err.message : String(err)}`)
+				}
+			},
+		}),
+	)
+
+	// ---- /agents interactive menu ----
+
+	const projectAgentsDir = () => join(process.cwd(), ".kimchi", "agents")
+	const personalAgentsDir = () => join(getAgentDir(), "agents")
+
+	function findAgentFile(name: string): { path: string; location: "project" | "personal" } | undefined {
+		const projectPath = join(projectAgentsDir(), `${name}.md`)
+		if (existsSync(projectPath)) return { path: projectPath, location: "project" }
+		const personalPath = join(personalAgentsDir(), `${name}.md`)
+		if (existsSync(personalPath)) return { path: personalPath, location: "personal" }
+		return undefined
+	}
+
+	/** Max number of models to display in the /agents menu list. */
+	const MAX_MODELS_IN_MENU = 5
+
+	function getModelLabel(type: string, registry?: ModelRegistry): string {
+		const cfg = getAgentConfig(type)
+		if (!cfg?.models?.length) return "inherit"
+		if (registry) {
+			// Probe the first entry - if even that doesn't resolve, the agent
+			// will inherit the parent's model anyway.
+			const resolvedM = resolveModel(cfg.models[0], registry)
+			if (typeof resolvedM === "string") return "inherit"
+		}
+		const visible = cfg.models.slice(0, MAX_MODELS_IN_MENU).map((m) => getModelLabelFromConfig(m))
+		const overflow = cfg.models.length - visible.length
+		const list = visible.join(" | ")
+		return overflow > 0 ? `${list} (+${overflow} more)` : list
+	}
+
+	async function showAgentsMenu(ctx: ExtensionCommandContext) {
+		reloadCustomAgents()
+		const allNames = getAllTypes()
+
+		const options: string[] = []
+
+		const agents = listUserVisibleAgents()
+		if (agents.length > 0) {
+			const running = agents.filter((a) => a.status === "running" || a.status === "queued").length
+			const done = agents.filter((a) => a.status === "completed" || a.status === "steered").length
+			options.push(`Running agents (${agents.length}) - ${running} running, ${done} done`)
+		}
+
+		if (allNames.length > 0) {
+			options.push(`Agent types (${allNames.length})`)
+		}
+
+		options.push("Create new agent")
+		options.push("Settings")
+
+		const noAgentsMsg =
+			allNames.length === 0 && agents.length === 0
+				? "No agents found. Create specialized subagents that can be delegated to.\n\n" +
+					"Each subagent has its own context window, custom system prompt, and specific tools.\n\n" +
+					"Try creating: Code Reviewer, Security Auditor, Test Writer, or Documentation Writer.\n\n"
+				: ""
+
+		if (noAgentsMsg) {
+			ctx.ui.notify(noAgentsMsg, "info")
+		}
+
+		const choice = await ctx.ui.select("Agents", options)
+		if (!choice) return
+
+		if (choice.startsWith("Running agents (")) {
+			await showRunningAgents(ctx)
+			await showAgentsMenu(ctx)
+		} else if (choice.startsWith("Agent types (")) {
+			await showAllAgentsList(ctx)
+			await showAgentsMenu(ctx)
+		} else if (choice === "Create new agent") {
+			await showCreateWizard(ctx)
+		} else if (choice === "Settings") {
+			await showSettings(ctx)
+			await showAgentsMenu(ctx)
+		}
+	}
+
+	async function showAllAgentsList(ctx: ExtensionCommandContext) {
+		const allNames = getAllTypes()
+		if (allNames.length === 0) {
+			ctx.ui.notify("No agents.", "info")
+			return
+		}
+
+		const sourceIndicator = (cfg: AgentConfig | undefined) => {
+			const disabled = cfg?.enabled === false
+			if (cfg?.source === "project") return disabled ? "✕• " : "•  "
+			if (cfg?.source === "global") return disabled ? "✕◦ " : "◦  "
+			if (disabled) return "✕  "
+			return "   "
+		}
+
+		const entries = allNames.map((name) => {
+			const cfg = getAgentConfig(name)
+			const disabled = cfg?.enabled === false
+			const model = getModelLabel(name, ctx.modelRegistry as ModelRegistry)
+			const indicator = sourceIndicator(cfg)
+			const prefix = `${indicator}${name} · ${model}`
+			const desc = disabled ? "(disabled)" : (cfg?.description ?? name)
+			return { name, prefix, desc }
+		})
+		const maxPrefix = Math.max(...entries.map((e) => e.prefix.length))
+
+		const hasCustom = allNames.some((n) => {
+			const c = getAgentConfig(n)
+			return c && !c.isDefault && c.enabled !== false
+		})
+		const hasDisabled = allNames.some((n) => getAgentConfig(n)?.enabled === false)
+		const legendParts: string[] = []
+		if (hasCustom) legendParts.push("• = project  ◦ = global")
+		if (hasDisabled) legendParts.push("✕ = disabled")
+		const legend = legendParts.length ? `\n${legendParts.join("  ")}` : ""
+
+		const options = entries.map(({ prefix, desc }) => `${prefix.padEnd(maxPrefix)} - ${desc}`)
+		if (legend) options.push(legend)
+
+		const choice = await ctx.ui.select("Agent types", options)
+		if (!choice) return
+
+		const agentName = choice
+			.split(" · ")[0]
+			.replace(/^[•◦✕\s]+/, "")
+			.trim()
+		if (getAgentConfig(agentName)) {
+			await showAgentDetail(ctx, agentName)
+			await showAllAgentsList(ctx)
+		}
+	}
+
+	async function showRunningAgents(ctx: ExtensionCommandContext) {
+		const agents = listUserVisibleAgents()
+		if (agents.length === 0) {
+			ctx.ui.notify("No agents.", "info")
+			return
+		}
+
+		const options = agents.map((a) => {
+			const dn = getDisplayName(a.type)
+			const dur = formatDuration(a.startedAt, a.completedAt)
+			const bgLabel = a.isBackground && a.status === "running" ? " [background]" : ""
+			return `${dn} (${a.description}) · ${a.toolUses} tools · ${a.status}${bgLabel} · ${dur}`
+		})
+
+		const choice = await ctx.ui.select("Running agents", options)
+		if (!choice) return
+
+		const idx = options.indexOf(choice)
+		if (idx < 0) return
+		const record = agents[idx]
+
+		await viewAgentConversation(ctx, record)
+		await showRunningAgents(ctx)
+	}
+
+	async function viewAgentConversation(ctx: ExtensionCommandContext, record: AgentRecord) {
+		if (!record.session) {
+			ctx.ui.notify(`Agent is ${record.status === "queued" ? "queued" : "expired"} - no session available.`, "info")
+			return
+		}
+
+		if (ctx.mode !== "tui") {
+			return
+		}
+
+		const { ConversationViewer } = await import("./ui/conversation-viewer.js")
+		const session = record.session
+		const activity = agentActivity.get(record.id)
+
+		await ctx.ui.custom<undefined>(
+			(tui, theme, _keybindings, done) => {
+				return new ConversationViewer(tui, session, record, activity, theme, done)
+			},
+			{
+				overlay: true,
+				overlayOptions: { anchor: "center", width: "90%" },
+			},
+		)
+	}
+
+	async function showAgentDetail(ctx: ExtensionCommandContext, name: string) {
+		const cfg = getAgentConfig(name)
+		if (!cfg) {
+			ctx.ui.notify(`Agent config not found for "${name}".`, "warning")
+			return
+		}
+
+		const file = findAgentFile(name)
+		const isDefault = cfg.isDefault === true
+		const disabled = cfg.enabled === false
+
+		let menuOptions: string[]
+		if (disabled && file) {
+			menuOptions = isDefault
+				? ["Enable", "Edit", "Reset to default", "Delete", "Back"]
+				: ["Enable", "Edit", "Delete", "Back"]
+		} else if (isDefault && !file) {
+			menuOptions = ["Eject (export as .md)", "Disable", "Back"]
+		} else if (isDefault && file) {
+			menuOptions = ["Edit", "Disable", "Reset to default", "Delete", "Back"]
+		} else {
+			menuOptions = ["Edit", "Disable", "Delete", "Back"]
+		}
+
+		const choice = await ctx.ui.select(name, menuOptions)
+		if (!choice || choice === "Back") return
+
+		if (choice === "Edit" && file) {
+			const content = readFileSync(file.path, "utf-8")
+			const edited = await ctx.ui.editor(`Edit ${name}`, content)
+			if (edited !== undefined && edited !== content) {
+				const { writeFileSync } = await import("node:fs")
+				writeFileSync(file.path, edited, "utf-8")
+				reloadCustomAgents()
+				ctx.ui.notify(`Updated ${file.path}`, "info")
+			}
+		} else if (choice === "Delete") {
+			if (file) {
+				const confirmed = await ctx.ui.confirm("Delete agent", `Delete ${name} from ${file.location} (${file.path})?`)
+				if (confirmed) {
+					unlinkSync(file.path)
+					reloadCustomAgents()
+					ctx.ui.notify(`Deleted ${file.path}`, "info")
+				}
+			}
+		} else if (choice === "Reset to default" && file) {
+			const confirmed = await ctx.ui.confirm(
+				"Reset to default",
+				`Delete override ${file.path} and restore embedded default?`,
+			)
+			if (confirmed) {
+				unlinkSync(file.path)
+				reloadCustomAgents()
+				ctx.ui.notify(`Restored default ${name}`, "info")
+			}
+		} else if (choice.startsWith("Eject")) {
+			await ejectAgent(ctx, name, cfg)
+		} else if (choice === "Disable") {
+			await disableAgent(ctx, name)
+		} else if (choice === "Enable") {
+			await enableAgent(ctx, name)
+		}
+	}
+
+	async function ejectAgent(ctx: ExtensionCommandContext, name: string, cfg: AgentConfig) {
+		const location = await ctx.ui.select("Choose location", [
+			"Project (.kimchi/agents/)",
+			`Personal (${personalAgentsDir()})`,
+		])
+		if (!location) return
+
+		const targetDir = location.startsWith("Project") ? projectAgentsDir() : personalAgentsDir()
+		mkdirSync(targetDir, { recursive: true })
+
+		const targetPath = join(targetDir, `${name}.md`)
+		if (existsSync(targetPath)) {
+			const overwrite = await ctx.ui.confirm("Overwrite", `${targetPath} already exists. Overwrite?`)
+			if (!overwrite) return
+		}
+
+		const fmFields: string[] = []
+		fmFields.push(`description: ${cfg.description}`)
+		if (cfg.displayName) fmFields.push(`display_name: ${cfg.displayName}`)
+		fmFields.push(`tools: ${cfg.builtinToolNames?.join(", ") || "all"}`)
+		if (cfg.models?.length) fmFields.push(`models: [${cfg.models.map((m) => `"${m}"`).join(", ")}]`)
+		if (cfg.thinking) fmFields.push(`thinking: ${cfg.thinking}`)
+		if (cfg.maxTurns) fmFields.push(`max_turns: ${cfg.maxTurns}`)
+		fmFields.push(`prompt_mode: ${cfg.promptMode}`)
+		if (cfg.extensions === false) fmFields.push("extensions: false")
+		else if (Array.isArray(cfg.extensions)) fmFields.push(`extensions: ${cfg.extensions.join(", ")}`)
+		if (cfg.skills === false) fmFields.push("skills: false")
+		else if (Array.isArray(cfg.skills)) fmFields.push(`skills: ${cfg.skills.join(", ")}`)
+		if (cfg.disallowedTools?.length) fmFields.push(`disallowed_tools: ${cfg.disallowedTools.join(", ")}`)
+		if (cfg.inheritContext) fmFields.push("inherit_context: true")
+		if (cfg.runInBackground) fmFields.push("run_in_background: true")
+		if (cfg.isolated) fmFields.push("isolated: true")
+		if (cfg.memory) fmFields.push(`memory: ${cfg.memory}`)
+		if (cfg.isolation) fmFields.push(`isolation: ${cfg.isolation}`)
+
+		const content = `---\n${fmFields.join("\n")}\n---\n\n${cfg.systemPrompt}\n`
+
+		const { writeFileSync } = await import("node:fs")
+		writeFileSync(targetPath, content, "utf-8")
+		reloadCustomAgents()
+		ctx.ui.notify(`Ejected ${name} to ${targetPath}`, "info")
+	}
+
+	async function disableAgent(ctx: ExtensionCommandContext, name: string) {
+		const file = findAgentFile(name)
+		if (file) {
+			const content = readFileSync(file.path, "utf-8")
+			if (content.includes("\nenabled: false\n")) {
+				ctx.ui.notify(`${name} is already disabled.`, "info")
+				return
+			}
+			const updated = content.replace(/^---\n/, "---\nenabled: false\n")
+			const { writeFileSync } = await import("node:fs")
+			writeFileSync(file.path, updated, "utf-8")
+			reloadCustomAgents()
+			ctx.ui.notify(`Disabled ${name} (${file.path})`, "info")
+			return
+		}
+
+		const location = await ctx.ui.select("Choose location", [
+			"Project (.kimchi/agents/)",
+			`Personal (${personalAgentsDir()})`,
+		])
+		if (!location) return
+
+		const targetDir = location.startsWith("Project") ? projectAgentsDir() : personalAgentsDir()
+		mkdirSync(targetDir, { recursive: true })
+
+		const targetPath = join(targetDir, `${name}.md`)
+		const { writeFileSync } = await import("node:fs")
+		writeFileSync(targetPath, "---\nenabled: false\n---\n", "utf-8")
+		reloadCustomAgents()
+		ctx.ui.notify(`Disabled ${name} (${targetPath})`, "info")
+	}
+
+	async function enableAgent(ctx: ExtensionCommandContext, name: string) {
+		const file = findAgentFile(name)
+		if (!file) return
+
+		const content = readFileSync(file.path, "utf-8")
+		const updated = content.replace(/^(---\n)enabled: false\n/, "$1")
+		const { writeFileSync } = await import("node:fs")
+
+		if (updated.trim() === "---\n---" || updated.trim() === "---\n---\n") {
+			unlinkSync(file.path)
+			reloadCustomAgents()
+			ctx.ui.notify(`Enabled ${name} (removed ${file.path})`, "info")
+		} else {
+			writeFileSync(file.path, updated, "utf-8")
+			reloadCustomAgents()
+			ctx.ui.notify(`Enabled ${name} (${file.path})`, "info")
+		}
+	}
+
+	async function showCreateWizard(ctx: ExtensionCommandContext) {
+		const location = await ctx.ui.select("Choose location", [
+			"Project (.kimchi/agents/)",
+			`Personal (${personalAgentsDir()})`,
+		])
+		if (!location) return
+
+		const targetDir = location.startsWith("Project") ? projectAgentsDir() : personalAgentsDir()
+
+		const method = await ctx.ui.select("Creation method", ["Generate with AI (recommended)", "Manual configuration"])
+		if (!method) return
+
+		if (method.startsWith("Generate")) {
+			await showGenerateWizard(ctx, targetDir)
+		} else {
+			await showManualWizard(ctx, targetDir)
+		}
+	}
+
+	async function showGenerateWizard(ctx: ExtensionCommandContext, targetDir: string) {
+		const description = await ctx.ui.input("Describe what this agent should do")
+		if (!description) return
+
+		const name = await ctx.ui.input("Agent name (filename, no spaces)")
+		if (!name) return
+
+		mkdirSync(targetDir, { recursive: true })
+
+		const targetPath = join(targetDir, `${name}.md`)
+		if (existsSync(targetPath)) {
+			const overwrite = await ctx.ui.confirm("Overwrite", `${targetPath} already exists. Overwrite?`)
+			if (!overwrite) return
+		}
+
+		ctx.ui.notify("Generating agent definition...", "info")
+
+		const generatePrompt = `Create a custom kimchi sub-agent definition file based on this description: "${description}"
+
+Write a markdown file to: ${targetPath}
+
+The file format is a markdown file with YAML frontmatter and a system prompt body:
+
+\`\`\`markdown
+---
+description: <one-line description shown in UI>
+tools: <comma-separated built-in tools: read, bash, edit, write, grep, find, ls. Use "none" for no tools. Omit for all tools>
+models: <optional ordered list of models, e.g. ["kimchi-dev/minimax-m2.7"]. Omit to inherit parent model>
+thinking: <optional thinking level: off, minimal, low, medium, high, xhigh, max. Omit to inherit>
+max_turns: <optional max agentic turns. 0 or omit for unlimited (default)>
+token_budget: <optional maximum total tokens for this agent. Omit for no profile budget>
+prompt_mode: <"replace" (body IS the full system prompt) or "append" (body is appended to default prompt). Default: replace>
+extensions: <true (inherit all MCP/extension tools), false (none), or comma-separated names. Default: true>
+skills: <true (inherit all), false (none), or comma-separated skill names to preload into prompt. Default: true>
+disallowed_tools: <comma-separated tool names to block, even if otherwise available. Omit for none>
+inherit_context: <true to fork parent conversation into agent so it sees chat history. Default: false>
+run_in_background: <true to run in background by default. Default: false>
+isolated: <true for no extension/MCP tools, only built-in tools. Default: false>
+memory: <"user" (global), "project" (per-project), or "local" (gitignored per-project) for persistent memory. Omit for none>
+---
+
+<system prompt body - instructions for the agent>
+\`\`\`
+
+Write the file using the write tool. Only write the file, nothing else.`
+
+		const record = await manager.spawnAndWait(pi, ctx as ExtensionContext, AGENT_GENERAL_PURPOSE, generatePrompt, {
+			description: `Generate ${name} agent`,
+			maxTurns: 5,
+		})
+
+		if (record.status === "error") {
+			ctx.ui.notify(`Generation failed: ${record.error}`, "warning")
+			return
+		}
+
+		reloadCustomAgents()
+
+		if (existsSync(targetPath)) {
+			ctx.ui.notify(`Created ${targetPath}`, "info")
+		} else {
+			ctx.ui.notify("Agent generation completed but file was not created. Check the agent output.", "warning")
+		}
+	}
+
+	async function showManualWizard(ctx: ExtensionCommandContext, targetDir: string) {
+		const name = await ctx.ui.input("Agent name (filename, no spaces)")
+		if (!name) return
+
+		const description = await ctx.ui.input("Description (one line)")
+		if (!description) return
+
+		const toolChoice = await ctx.ui.select("Tools", [
+			"all",
+			"none",
+			"read-only (read, bash, grep, find, ls)",
+			"custom...",
+		])
+		if (!toolChoice) return
+
+		let tools: string
+		if (toolChoice === "all") {
+			tools = BUILTIN_TOOL_NAMES.join(", ")
+		} else if (toolChoice === "none") {
+			tools = "none"
+		} else if (toolChoice.startsWith("read-only")) {
+			tools = "read, bash, grep, find, ls"
+		} else {
+			const customTools = await ctx.ui.input("Tools (comma-separated)", BUILTIN_TOOL_NAMES.join(", "))
+			if (!customTools) return
+			tools = customTools
+		}
+
+		const wizardModelChoices = Array.from(MODEL_CAPABILITIES.entries())
+			.filter(([, entry]) => entry !== "ignored")
+			.map(([id]) => id)
+			.sort()
+
+		const modelChoice = await ctx.ui.select("Model", ["inherit (parent model)", ...wizardModelChoices, "custom..."])
+		if (!modelChoice) return
+
+		let modelLine = ""
+		if (wizardModelChoices.includes(modelChoice)) {
+			modelLine = `\nmodels: ["${KIMCHI_DEV_PROVIDER}/${modelChoice}"]`
+		} else if (modelChoice === "custom...") {
+			const customModel = await ctx.ui.input("Model (provider/modelId)")
+			if (customModel) modelLine = `\nmodels: ["${customModel}"]`
+		}
+
+		const thinkingChoice = await ctx.ui.select("Thinking level", [
+			"inherit",
+			"off",
+			"minimal",
+			"low",
+			"medium",
+			"high",
+			"xhigh",
+			"max",
+		])
+		if (!thinkingChoice) return
+
+		let thinkingLine = ""
+		if (thinkingChoice !== "inherit") thinkingLine = `\nthinking: ${thinkingChoice}`
+
+		const maxTurnsInput = await ctx.ui.input("Max turns (optional, blank for unlimited)", "")
+		let maxTurnsLine = ""
+		if (maxTurnsInput?.trim()) {
+			const trimmed = maxTurnsInput.trim()
+			if (!/^\d+$/.test(trimmed)) {
+				ctx.ui.notify("Max turns must be a non-negative integer.", "warning")
+				return
+			}
+			const maxTurns = Number.parseInt(trimmed, 10)
+			maxTurnsLine = `\nmax_turns: ${maxTurns}`
+		}
+
+		const tokenBudgetInput = await ctx.ui.input("Token budget (optional, blank for none)", "")
+		let tokenBudgetLine = ""
+		if (tokenBudgetInput?.trim()) {
+			const trimmed = tokenBudgetInput.trim()
+			if (!/^\d+$/.test(trimmed)) {
+				ctx.ui.notify("Token budget must be a positive integer.", "warning")
+				return
+			}
+			const tokenBudget = Number.parseInt(trimmed, 10)
+			if (tokenBudget <= 0) {
+				ctx.ui.notify("Token budget must be a positive integer.", "warning")
+				return
+			}
+			tokenBudgetLine = `\ntoken_budget: ${tokenBudget}`
+		}
+
+		const systemPrompt = await ctx.ui.editor("System prompt", "")
+		if (systemPrompt === undefined) return
+
+		const content = `---
+description: ${description}
+tools: ${tools}${modelLine}${thinkingLine}${maxTurnsLine}${tokenBudgetLine}
+prompt_mode: replace
+---
+
+${systemPrompt}
+`
+
+		mkdirSync(targetDir, { recursive: true })
+		const targetPath = join(targetDir, `${name}.md`)
+
+		if (existsSync(targetPath)) {
+			const overwrite = await ctx.ui.confirm("Overwrite", `${targetPath} already exists. Overwrite?`)
+			if (!overwrite) return
+		}
+
+		const { writeFileSync } = await import("node:fs")
+		writeFileSync(targetPath, content, "utf-8")
+		reloadCustomAgents()
+		ctx.ui.notify(`Created ${targetPath}`, "info")
+	}
+
+	function snapshotSettings(): SubagentsSettings {
+		return {
+			maxConcurrent: manager.getMaxConcurrent(),
+			defaultMaxTurns: getDefaultMaxTurns() ?? 0,
+			graceTurns: getGraceTurns(),
+			defaultJoinMode: getDefaultJoinMode(),
+		}
+	}
+
+	async function showSettings(ctx: ExtensionCommandContext) {
+		const choice = await ctx.ui.select("Settings", [
+			`Max concurrency (current: ${manager.getMaxConcurrent()})`,
+			`Default max turns (current: ${getDefaultMaxTurns() ?? "unlimited"})`,
+			`Grace turns (current: ${getGraceTurns()})`,
+			`Join mode (current: ${getDefaultJoinMode()})`,
+		])
+		if (!choice) return
+
+		if (choice.startsWith("Max concurrency")) {
+			const val = await ctx.ui.input("Max concurrent background agents", String(manager.getMaxConcurrent()))
+			if (val) {
+				const n = Number.parseInt(val, 10)
+				if (n >= 1) {
+					manager.setMaxConcurrent(n)
+					notifyApplied(ctx, `Max concurrency set to ${n}`)
+				} else {
+					ctx.ui.notify("Must be a positive integer.", "warning")
+				}
+			}
+		} else if (choice.startsWith("Default max turns")) {
+			const val = await ctx.ui.input(
+				"Default max turns before wrap-up (0 = unlimited)",
+				String(getDefaultMaxTurns() ?? 0),
+			)
+			if (val) {
+				const n = Number.parseInt(val, 10)
+				if (n === 0) {
+					setDefaultMaxTurns(undefined)
+					notifyApplied(ctx, "Default max turns set to unlimited")
+				} else if (n >= 1) {
+					setDefaultMaxTurns(n)
+					notifyApplied(ctx, `Default max turns set to ${n}`)
+				} else {
+					ctx.ui.notify("Must be 0 (unlimited) or a positive integer.", "warning")
+				}
+			}
+		} else if (choice.startsWith("Grace turns")) {
+			const val = await ctx.ui.input("Grace turns after wrap-up steer", String(getGraceTurns()))
+			if (val) {
+				const n = Number.parseInt(val, 10)
+				if (n >= 1) {
+					setGraceTurns(n)
+					notifyApplied(ctx, `Grace turns set to ${n}`)
+				} else {
+					ctx.ui.notify("Must be a positive integer.", "warning")
+				}
+			}
+		} else if (choice.startsWith("Join mode")) {
+			const val = await ctx.ui.select("Default join mode for background agents", [
+				"smart - auto-group 2+ agents in same turn (default)",
+				"async - always notify individually",
+				"group - always group background agents",
+			])
+			if (val) {
+				const mode = val.split(" ")[0] as JoinMode
+				setDefaultJoinMode(mode)
+				notifyApplied(ctx, `Default join mode set to ${mode}`)
+			}
+		}
+	}
+
+	function notifyApplied(ctx: ExtensionCommandContext, successMsg: string) {
+		const { message, level } = saveAndEmitChanged(snapshotSettings(), successMsg, (event, payload) =>
+			pi.events.emit(event, payload),
+		)
+		ctx.ui.notify(message, level)
+	}
+
+	pi.registerCommand("agents", {
+		description: "Manage agents",
+		handler: async (_args, ctx) => {
+			await showAgentsMenu(ctx)
+		},
+	})
+}
+
+async function waitForSubagentShutdown(manager: AgentManager): Promise<void> {
+	let timeout: ReturnType<typeof setTimeout> | undefined
+	try {
+		await Promise.race([
+			manager.waitForAll(),
+			new Promise<void>((resolve) => {
+				timeout = setTimeout(resolve, SUBAGENT_SHUTDOWN_WAIT_MS)
+				timeout.unref?.()
+			}),
+		])
+	} finally {
+		if (timeout) clearTimeout(timeout)
+	}
+}

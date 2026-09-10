@@ -1,0 +1,244 @@
+import { createWriteStream } from "node:fs"
+import { Readable } from "node:stream"
+import { pipeline } from "node:stream/promises"
+import type { ReadableStream as WebReadable } from "node:stream/web"
+import { THIRD_PARTY_MAX_RETRIES } from "../config.js"
+import { fetchWithRetry } from "../utils/http.js"
+
+const DEFAULT_API_BASE = "https://api.github.com"
+const DEFAULT_DOWNLOAD_BASE = "https://github.com"
+
+export interface Repo {
+	owner: string
+	name: string
+	/** Binary name inside the release archive (also the prefix of the asset filename). */
+	binary: string
+}
+
+export interface ReleaseInfo {
+	tagName: string
+	htmlUrl: string
+}
+
+export interface CanaryReleaseInfo {
+	tagName: string
+	targetCommitish: string
+	htmlUrl: string
+	/** Release title, e.g. "Canary 0.0.0-canary.20260509.abc1234". */
+	name: string
+}
+
+export interface GitHubClientOptions {
+	apiBase?: string
+	downloadBase?: string
+	fetch?: typeof globalThis.fetch
+	/** Aborts every request this client issues (forwarded to fetchWithRetry).
+	 *  Lets a caller — e.g. the on-launch auto-update on Ctrl+C — actually
+	 *  cancel an in-flight download instead of merely abandoning the promise. */
+	signal?: AbortSignal
+}
+
+export const KIMCHI_REPO: Repo = { owner: "getkimchi", name: "kimchi", binary: "kimchi" }
+
+/** Map node `process.platform` → the goreleaser-style OS slug used in asset names. */
+function osSlug(): string {
+	switch (process.platform) {
+		case "darwin":
+			return "darwin"
+		case "linux":
+			return "linux"
+		case "win32":
+			return "windows"
+		default:
+			throw new Error(`unsupported platform: ${process.platform}`)
+	}
+}
+
+/** Map node `process.arch` → the goreleaser-style arch slug. */
+function archSlug(): string {
+	switch (process.arch) {
+		case "x64":
+			return "amd64"
+		case "arm64":
+			return "arm64"
+		default:
+			throw new Error(`unsupported architecture: ${process.arch}`)
+	}
+}
+
+export function assetName(repo: Repo): string {
+	const ext = process.platform === "win32" ? "zip" : "tar.gz"
+	return `${repo.binary}_${osSlug()}_${archSlug()}.${ext}`
+}
+
+export class GitHubClient {
+	private readonly apiBase: string
+	private readonly downloadBase: string
+	private readonly fetchImpl: typeof globalThis.fetch
+	private readonly signal: AbortSignal | undefined
+
+	constructor(opts: GitHubClientOptions = {}) {
+		this.apiBase = opts.apiBase ?? DEFAULT_API_BASE
+		this.downloadBase = opts.downloadBase ?? DEFAULT_DOWNLOAD_BASE
+		this.fetchImpl = opts.fetch ?? globalThis.fetch
+		this.signal = opts.signal
+	}
+
+	/** GET /repos/{owner}/{name}/releases/latest. Returns tag + URL. */
+	async latestRelease(repo: Repo): Promise<ReleaseInfo> {
+		const url = `${this.apiBase}/repos/${repo.owner}/${repo.name}/releases/latest`
+		const res = await fetchWithRetry(
+			url,
+			{ headers: { Accept: "application/vnd.github+json" } },
+			{ fetchImpl: this.fetchImpl, signal: this.signal, retry: { maxRetries: THIRD_PARTY_MAX_RETRIES } },
+		)
+		if (!res.ok) {
+			throw new Error(`github API returned ${res.status}`)
+		}
+		const json = (await res.json()) as { tag_name?: unknown; html_url?: unknown }
+		if (typeof json.tag_name !== "string" || json.tag_name.length === 0) {
+			throw new Error("github API response missing tag_name")
+		}
+		return {
+			tagName: json.tag_name,
+			htmlUrl: typeof json.html_url === "string" ? json.html_url : "",
+		}
+	}
+
+	/** GET /repos/{owner}/{name}/releases/tags/{tag}. Returns tag + URL. */
+	async releaseByTag(repo: Repo, tag: string): Promise<ReleaseInfo> {
+		const url = `${this.apiBase}/repos/${repo.owner}/${repo.name}/releases/tags/${tag}`
+		const res = await fetchWithRetry(
+			url,
+			{ headers: { Accept: "application/vnd.github+json" } },
+			{ fetchImpl: this.fetchImpl, signal: this.signal, retry: { maxRetries: THIRD_PARTY_MAX_RETRIES } },
+		)
+		if (res.status === 404) {
+			throw new Error(`release ${tag} not found (404)`)
+		}
+		if (!res.ok) {
+			throw new Error(`github API returned ${res.status}`)
+		}
+		const json = (await res.json()) as { tag_name?: unknown; html_url?: unknown }
+		if (typeof json.tag_name !== "string" || json.tag_name.length === 0) {
+			throw new Error("github API response missing tag_name")
+		}
+		return {
+			tagName: json.tag_name,
+			htmlUrl: typeof json.html_url === "string" ? json.html_url : "",
+		}
+	}
+
+	/** GET /repos/{owner}/{name}/releases/tags/canary. */
+	async canaryRelease(repo: Repo): Promise<CanaryReleaseInfo> {
+		const url = `${this.apiBase}/repos/${repo.owner}/${repo.name}/releases/tags/canary`
+		const res = await fetchWithRetry(
+			url,
+			{ headers: { Accept: "application/vnd.github+json" } },
+			{ fetchImpl: this.fetchImpl, signal: this.signal, retry: { maxRetries: THIRD_PARTY_MAX_RETRIES } },
+		)
+		if (!res.ok) {
+			throw new Error(`github API returned ${res.status}`)
+		}
+		const json = (await res.json()) as {
+			tag_name?: unknown
+			html_url?: unknown
+			target_commitish?: unknown
+			name?: unknown
+		}
+		if (typeof json.tag_name !== "string" || json.tag_name.length === 0) {
+			throw new Error("github API response missing tag_name")
+		}
+		if (typeof json.target_commitish !== "string" || json.target_commitish.length === 0) {
+			throw new Error("github API response missing target_commitish")
+		}
+		return {
+			tagName: json.tag_name,
+			targetCommitish: json.target_commitish,
+			htmlUrl: typeof json.html_url === "string" ? json.html_url : "",
+			name: typeof json.name === "string" ? json.name : "",
+		}
+	}
+
+	/**
+	 * Fetch the SHA-256 checksum for our platform's asset out of the release's
+	 * checksums.txt. Returns the raw 32-byte hash. Throws if the file is
+	 * missing or has no entry for our asset.
+	 */
+	async fetchChecksum(repo: Repo, tag: string): Promise<Uint8Array> {
+		const url = `${this.downloadBase}/${repo.owner}/${repo.name}/releases/download/${tag}/checksums.txt`
+		const res = await fetchWithRetry(url, undefined, {
+			fetchImpl: this.fetchImpl,
+			signal: this.signal,
+			retry: { maxRetries: THIRD_PARTY_MAX_RETRIES },
+		})
+		if (!res.ok) {
+			throw new Error(`checksums.txt download returned ${res.status}`)
+		}
+		const text = await res.text()
+		const target = assetName(repo)
+		for (const line of text.split("\n")) {
+			const parts = line.trim().split(/\s+/)
+			if (parts.length === 2 && parts[1] === target) {
+				return hexDecode(parts[0])
+			}
+		}
+		throw new Error(`checksum not found for ${target}`)
+	}
+
+	/** Download the platform asset to `dest`. Streams body to disk. */
+	async downloadArchive(repo: Repo, tag: string, dest: string): Promise<void> {
+		const url = `${this.downloadBase}/${repo.owner}/${repo.name}/releases/download/${tag}/${assetName(repo)}`
+		const res = await fetchWithRetry(url, undefined, {
+			fetchImpl: this.fetchImpl,
+			signal: this.signal,
+			timeoutMs: 60_000,
+			retry: { maxRetries: THIRD_PARTY_MAX_RETRIES },
+		})
+		if (!res.ok || !res.body) {
+			throw new Error(`release download returned ${res.status}`)
+		}
+		const sink = createWriteStream(dest)
+		// fetch's body is a Web ReadableStream; convert via Readable.fromWeb so we
+		// can pipe it through pipeline() with proper backpressure + cleanup.
+		const source = Readable.fromWeb(res.body as WebReadable<Uint8Array>)
+		// On abort, destroy the Node-side stream directly. Pipeline cannot rely
+		// on the web stream's own error terminal here: under Bun,
+		// Readable.fromWeb never settles when a wrapped stream (the idle-timeout
+		// wrapper's) errors while an abort is in flight — observed on Ctrl+C
+		// during auto-update as a hanging launch plus an unhandled AbortError
+		// storm. Node-stream destroy settles pipeline on every runtime; the
+		// underlying request is torn down via fromWeb's cancel/abort chain.
+		const onAbort = () => {
+			source.destroy(this.signal?.reason)
+		}
+		// The signal may have fired during the fetch await above (addEventListener
+		// on an already-aborted signal never calls a new listener) — destroy
+		// immediately in that case so pipeline doesn't wait for body EOF.
+		if (this.signal?.aborted) {
+			onAbort()
+		} else {
+			this.signal?.addEventListener("abort", onAbort, { once: true })
+		}
+		try {
+			await pipeline(source, sink)
+		} finally {
+			this.signal?.removeEventListener("abort", onAbort)
+		}
+	}
+}
+
+function hexDecode(hex: string): Uint8Array {
+	if (hex.length % 2 !== 0) {
+		throw new Error(`invalid checksum hex length: ${hex.length}`)
+	}
+	const out = new Uint8Array(hex.length / 2)
+	for (let i = 0; i < out.length; i++) {
+		const byte = Number.parseInt(hex.substr(i * 2, 2), 16)
+		if (Number.isNaN(byte)) {
+			throw new Error(`invalid checksum hex at offset ${i * 2}`)
+		}
+		out[i] = byte
+	}
+	return out
+}

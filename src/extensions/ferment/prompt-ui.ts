@@ -1,0 +1,286 @@
+import type { ExtensionContext, ExtensionUIContext, Theme } from "@earendil-works/pi-coding-agent"
+import type { Component, TUI } from "@earendil-works/pi-tui"
+import type { ScopingQuestionType } from "../../ferment/types.js"
+import { type Answer, createQuestionForm, type Question, type QuestionType } from "../questionnaire/index.js"
+import { setTipWidgetLocation } from "../tips/index.js"
+import { pauseWorkingAnimation, resumeWorkingAnimation } from "../ui.js"
+
+type PromptUi = Pick<ExtensionUIContext, "select" | "input" | "editor" | "custom" | "setWorkingVisible">
+
+export interface PromptEditorOptions {
+	placeholder?: string
+	prefill?: string
+}
+
+export interface PromptChoiceOption {
+	label: string
+	description?: string
+}
+
+export type PromptFormQuestionType = ScopingQuestionType
+
+export interface PromptFormOption {
+	id: string
+	label: string
+	description?: string
+}
+
+export interface PromptFormQuestion {
+	id: string
+	type: PromptFormQuestionType
+	prompt: string
+	label?: string
+	options?: ReadonlyArray<PromptFormOption>
+	allowOther?: boolean
+	required?: boolean
+	default?: string | string[]
+}
+
+export interface PromptFormSpec {
+	title?: string
+	description?: string
+	questions: ReadonlyArray<PromptFormQuestion>
+}
+
+export type PromptFormAnswer = Answer
+
+export interface PromptFormResult {
+	questions: Question[]
+	answers: PromptFormAnswer[]
+	cancelled: boolean
+}
+
+export async function withWorkingHidden<T>(ui: PromptUi, fn: () => Promise<T>): Promise<T> {
+	const restoreTips = setTipWidgetLocation("hidden")
+	pauseWorkingAnimation()
+	try {
+		ui.setWorkingVisible?.(false)
+		return await fn()
+	} finally {
+		try {
+			ui.setWorkingVisible?.(true)
+		} finally {
+			resumeWorkingAnimation()
+			restoreTips()
+		}
+	}
+}
+
+export function promptSelect(ctx: ExtensionContext, title: string, options: string[]): Promise<string | undefined> {
+	if (!ctx.hasUI) return Promise.resolve(undefined)
+	const ui = ctx.ui
+	return withWorkingHidden(ui, () => ui.select?.(title, options) ?? Promise.resolve(undefined))
+}
+
+export function promptInput(ctx: ExtensionContext, title: string, placeholder?: string): Promise<string | undefined> {
+	if (!ctx.hasUI) return Promise.resolve(undefined)
+	const ui = ctx.ui
+	return withWorkingHidden(ui, () => ui.input?.(title, placeholder) ?? Promise.resolve(undefined))
+}
+
+export function promptEditor(
+	ctx: ExtensionContext,
+	title: string,
+	options: PromptEditorOptions = {},
+): Promise<string | undefined> {
+	if (!ctx.hasUI) return Promise.resolve(undefined)
+	const ui = ctx.ui
+	if (ctx.mode === "tui") {
+		const editorTitle = options.placeholder ? `${title}\n${options.placeholder}` : title
+		return withWorkingHidden(ui, () => ui.editor?.(editorTitle, options.prefill ?? "") ?? Promise.resolve(undefined))
+	}
+	return withWorkingHidden(
+		ui,
+		() => ui.input?.(title, options.prefill ?? options.placeholder) ?? Promise.resolve(undefined),
+	)
+}
+
+export async function promptForm(ctx: ExtensionContext, spec: PromptFormSpec): Promise<PromptFormResult | undefined> {
+	if (!ctx.hasUI) return undefined
+	const ui = ctx.ui
+	const questions = spec.questions.map(normalizePromptFormQuestion)
+	if (questions.length === 0) return undefined
+
+	if (ctx.mode === "tui") {
+		const customResult = await withWorkingHidden(
+			ui,
+			() =>
+				ui.custom?.<PromptFormResult | null>((tui, theme, _keybindings, done) =>
+					createPromptFormComponent(tui, theme, questions, spec.title, spec.description, done),
+				) ?? Promise.resolve(undefined),
+		)
+		if (customResult !== undefined) return customResult ?? undefined
+	}
+
+	return promptFormFallback(ui, questions, spec.title, spec.description)
+}
+
+function normalizePromptFormQuestion(q: PromptFormQuestion, index: number): Question {
+	const type = normalizePromptFormQuestionType(q.type)
+	return {
+		id: q.id,
+		label: q.label || `Q${index + 1}`,
+		prompt: q.prompt,
+		type,
+		options: (q.options ?? []).map((o) => ({ id: o.id, label: o.label, description: o.description })),
+		allowOther: q.allowOther ?? false,
+		required: q.required !== false,
+	}
+}
+
+function normalizePromptFormQuestionType(type: PromptFormQuestionType): QuestionType {
+	const legacyType = type as string
+	if (legacyType === "radio") return "single"
+	if (legacyType === "checkbox") return "multi"
+	return type
+}
+
+async function promptFormFallback(
+	ui: PromptUi,
+	questions: Question[],
+	title: string | undefined,
+	description: string | undefined,
+): Promise<PromptFormResult | undefined> {
+	const answers: Answer[] = []
+	const heading = [title, description].filter(Boolean).join("\n\n")
+	for (const question of questions) {
+		const promptTitle = [heading, question.prompt].filter(Boolean).join("\n\n")
+		if (question.type === "text") {
+			const value = await withWorkingHidden(ui, () => ui.input?.(promptTitle, "") ?? Promise.resolve(undefined))
+			if (!value && question.required) return { questions, answers, cancelled: true }
+			if (value) answers.push({ id: question.id, value, label: value, wasCustom: true })
+			continue
+		}
+
+		const choices: PromptChoiceOption[] = question.options.map((o) => ({ label: o.label, description: o.description }))
+		const customLabel = "Type your own answer"
+		if (question.allowOther) choices.push({ label: customLabel })
+		if (question.type === "multi") {
+			const selected = await promptMultiChoiceWithUi(ui, promptTitle, choices)
+			if ((!selected || selected.length === 0) && question.required) return { questions, answers, cancelled: true }
+			if (!selected || selected.length === 0) continue
+			const values: string[] = []
+			const labels: string[] = []
+			const indices: number[] = []
+			for (const label of selected) {
+				if (label === customLabel && question.allowOther) {
+					const custom = await withWorkingHidden(
+						ui,
+						() => ui.input?.(`${promptTitle}\n\nYour answer:`, "") ?? Promise.resolve(undefined),
+					)
+					if (custom) {
+						values.push(custom)
+						labels.push(custom)
+						indices.push(question.options.length + 1)
+					}
+					continue
+				}
+				const index = question.options.findIndex((o) => o.label === label)
+				const option = question.options[index]
+				if (option) {
+					values.push(option.id)
+					labels.push(option.label)
+					indices.push(index + 1)
+				}
+			}
+			if (values.length > 0) {
+				answers.push({
+					id: question.id,
+					value: values.join(", "),
+					label: labels.join(", "),
+					wasCustom: selected.includes(customLabel),
+					values,
+					labels,
+					indices,
+				})
+			}
+			continue
+		}
+
+		const selected = await promptChoiceWithUi(ui, promptTitle, choices)
+		if (!selected && question.required) return { questions, answers, cancelled: true }
+		if (!selected) continue
+		if (selected === customLabel && question.allowOther) {
+			const custom = await withWorkingHidden(
+				ui,
+				() => ui.input?.(`${promptTitle}\n\nYour answer:`, "") ?? Promise.resolve(undefined),
+			)
+			if (!custom && question.required) return { questions, answers, cancelled: true }
+			if (custom) answers.push({ id: question.id, value: custom, label: custom, wasCustom: true })
+			continue
+		}
+		const index = question.options.findIndex((o) => o.label === selected)
+		const option = question.options[index]
+		if (option) {
+			answers.push({ id: question.id, value: option.id, label: option.label, wasCustom: false, index: index + 1 })
+		}
+	}
+	return { questions, answers, cancelled: false }
+}
+
+async function promptChoiceWithUi(
+	ui: PromptUi,
+	title: string,
+	options: ReadonlyArray<PromptChoiceOption>,
+): Promise<string | undefined> {
+	if (!ui.select) return undefined
+	return withWorkingHidden(
+		ui,
+		() =>
+			ui.select?.(
+				title,
+				options.map((o) => o.label),
+			) ?? Promise.resolve(undefined),
+	)
+}
+
+async function promptMultiChoiceWithUi(
+	ui: PromptUi,
+	title: string,
+	options: ReadonlyArray<PromptChoiceOption>,
+): Promise<string[] | undefined> {
+	if (!ui.input) return undefined
+	const optionText = options
+		.map((o, i) => `${i + 1}. ${o.label}${o.description ? ` - ${o.description}` : ""}`)
+		.join("\n")
+	const raw = await withWorkingHidden(
+		ui,
+		() =>
+			ui.input?.(`${title}\n\nSelect one or more:\n${optionText}`, "Numbers or labels, comma-separated") ??
+			Promise.resolve(undefined),
+	)
+	if (!raw) return undefined
+	const labels = parseMultiChoiceInput(raw, options)
+	return labels.length > 0 ? labels : undefined
+}
+
+export function createPromptFormComponent(
+	tui: TUI,
+	theme: Theme,
+	questions: Question[],
+	title: string | undefined,
+	description: string | undefined,
+	done: (result: PromptFormResult | null) => void,
+): Component {
+	return createQuestionForm(tui, theme, questions, { title, description }, done)
+}
+
+function parseMultiChoiceInput(input: string, options: ReadonlyArray<PromptChoiceOption>): string[] {
+	const out: string[] = []
+	const seen = new Set<string>()
+	const parts = input
+		.split(",")
+		.map((p) => p.trim())
+		.filter(Boolean)
+	for (const part of parts) {
+		const numeric = Number(part)
+		const option = Number.isInteger(numeric)
+			? options[numeric - 1]
+			: options.find((o) => o.label.toLowerCase() === part.toLowerCase())
+		if (option && !seen.has(option.label)) {
+			seen.add(option.label)
+			out.push(option.label)
+		}
+	}
+	return out
+}

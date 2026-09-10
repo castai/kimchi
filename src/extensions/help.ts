@@ -1,0 +1,173 @@
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
+import { isKeyRelease, Key, matchesKey, visibleWidth } from "@earendil-works/pi-tui"
+import { truncateLinesToWidth } from "../truncate-lines.js"
+import { SLASH_COMMANDS } from "./slash-commands.js"
+
+type HelpRow = { kind: "heading"; text: string } | { kind: "entry"; key: string; desc: string } | { kind: "spacer" }
+
+const HELP_ROWS: HelpRow[] = [
+	{ kind: "heading", text: "Keyboard Shortcuts" },
+	{ kind: "entry", key: "Enter", desc: "Submit prompt" },
+	{ kind: "entry", key: "Shift+Enter / Ctrl+J", desc: "Newline in input" },
+	{ kind: "entry", key: "Up/Down", desc: "Navigate input history" },
+	{ kind: "entry", key: "Escape", desc: "Close dialog / Abort running agent" },
+	{ kind: "entry", key: "Ctrl+C", desc: "Clear input / Abort running agent" },
+	{ kind: "entry", key: "Ctrl+P", desc: "Cycle to next model" },
+	{ kind: "entry", key: "Shift+Tab", desc: "Change permissions mode" },
+
+	{ kind: "spacer" },
+	{ kind: "heading", text: "Slash Commands" },
+	...Object.entries(SLASH_COMMANDS).map(([key, { hint }]) => ({
+		kind: "entry" as const,
+		key: `/${key}`,
+		desc: hint,
+	})),
+]
+
+// The overlay maxHeight percentage — must match overlayOptions below.
+const MAX_HEIGHT_PCT = 0.9
+
+// Lines outside the scrollable viewport:
+//   top border (1) + bottom row (1) + hint row (1) + bottom border (1)
+const CHROME_LINES = 4
+
+export default function helpExtension(pi: ExtensionAPI) {
+	pi.registerCommand("help", {
+		description: "Show keyboard shortcuts and slash commands",
+		handler: async (_args, ctx) => {
+			if (ctx.mode !== "tui") {
+				const lines: string[] = []
+				for (const row of HELP_ROWS) {
+					if (row.kind === "heading") {
+						lines.push(`\n${row.text}`)
+					} else if (row.kind === "entry") {
+						lines.push(`  ${row.key.padEnd(20)} ${row.desc}`)
+					}
+				}
+				ctx.ui.notify(lines.join("\n").trim(), "info")
+				return
+			}
+
+			await ctx.ui.custom<void>(
+				(tui, theme, _kb, done) => {
+					let scrollOffset = 0
+
+					function viewportHeight(): number {
+						// Derive available rows from the same maxHeight the overlay uses,
+						// then subtract chrome so the bottom border is never clipped.
+						const overlayMax = Math.floor(tui.terminal.rows * MAX_HEIGHT_PCT)
+						return Math.max(1, overlayMax - CHROME_LINES)
+					}
+
+					function buildContentLines(keyColW: number): Array<[string, number]> {
+						const lines: Array<[string, number]> = []
+						for (const row of HELP_ROWS) {
+							if (row.kind === "spacer") {
+								lines.push(["", 0])
+							} else if (row.kind === "heading") {
+								lines.push([theme.fg("text", row.text), visibleWidth(row.text)])
+							} else {
+								const keyStr = row.key.padEnd(keyColW)
+								const rawText = `${keyStr} ${row.desc}`
+								const colored = `${theme.fg("accent", keyStr)} ${theme.fg("muted", row.desc)}`
+								lines.push([colored, visibleWidth(rawText)])
+							}
+						}
+						return lines
+					}
+
+					return {
+						render(width: number): string[] {
+							const innerW = Math.max(1, width - 2)
+							const contentW = innerW - 2
+							const keyColW = Math.max(16, Math.min(28, Math.floor(contentW * 0.35)))
+
+							const contentLines = buildContentLines(keyColW)
+							const vp = viewportHeight()
+							const maxScroll = Math.max(0, contentLines.length - vp)
+							if (scrollOffset > maxScroll) scrollOffset = maxScroll
+
+							const hasScroll = contentLines.length > vp
+							const border = (s: string) => theme.fg("border", s)
+							const wrapRow = (colored: string, rawLen: number) =>
+								`${border("│")} ${colored}${" ".repeat(Math.max(0, contentW - rawLen))} ${border("│")}`
+							const emptyRow = () => `${border("│")}${" ".repeat(innerW)}${border("│")}`
+
+							const titleText = " Help "
+							const borderLen = Math.max(0, innerW - titleText.length)
+							const leftB = Math.floor(borderLen / 2)
+							const rightB = borderLen - leftB
+
+							const out: string[] = []
+
+							// Top border with title
+							out.push(
+								`${border(`╭${"─".repeat(leftB)}`)}${theme.fg("dim", titleText)}${border(`${"─".repeat(rightB)}╮`)}`,
+							)
+
+							// Scrollable content
+							const showUp = scrollOffset > 0
+							const showDown = scrollOffset < maxScroll
+							const visible = contentLines.slice(scrollOffset, scrollOffset + vp)
+
+							for (let i = 0; i < visible.length; i++) {
+								const [colored, rawLen] = visible[i]
+								if (i === 0 && showUp) {
+									const ind = `↑ ${scrollOffset} more`
+									out.push(wrapRow(theme.fg("dim", ind), ind.length))
+								} else if (i === visible.length - 1 && showDown) {
+									const remaining = contentLines.length - scrollOffset - vp
+									const ind = `↓ ${remaining} more`
+									out.push(wrapRow(theme.fg("dim", ind), ind.length))
+								} else if (rawLen === 0) {
+									out.push(emptyRow())
+								} else {
+									out.push(wrapRow(colored, rawLen))
+								}
+							}
+
+							// Footer (always rendered, outside scrollable area)
+							out.push(emptyRow())
+							const scrollHint = hasScroll ? " · ↑↓ to scroll" : ""
+							const hintText = `Esc/Enter to close${scrollHint}`
+							out.push(wrapRow(theme.fg("dim", `  ${hintText}`), hintText.length + 2))
+							out.push(border(`╰${"─".repeat(innerW)}╯`))
+
+							return truncateLinesToWidth(out, width)
+						},
+						invalidate() {},
+						handleInput(data: string): void {
+							if (isKeyRelease(data)) return
+							if (
+								matchesKey(data, Key.escape) ||
+								matchesKey(data, Key.enter) ||
+								matchesKey(data, "return") ||
+								data === "q"
+							) {
+								done(undefined)
+								return
+							}
+							const contentLen = HELP_ROWS.length
+							const vp = viewportHeight()
+							const maxScroll = Math.max(0, contentLen - vp)
+							if (matchesKey(data, Key.up) || data === "k") {
+								scrollOffset = Math.max(0, scrollOffset - 1)
+							} else if (matchesKey(data, Key.down) || data === "j") {
+								scrollOffset = Math.min(maxScroll, scrollOffset + 1)
+							} else if (matchesKey(data, Key.pageUp)) {
+								scrollOffset = Math.max(0, scrollOffset - vp)
+							} else if (matchesKey(data, Key.pageDown)) {
+								scrollOffset = Math.min(maxScroll, scrollOffset + vp)
+							}
+						},
+						wantsKeyRelease: false,
+					}
+				},
+				{
+					overlay: true,
+					overlayOptions: { anchor: "center", width: "80%", maxHeight: "90%" },
+				},
+			)
+		},
+	})
+}

@@ -1,0 +1,1859 @@
+import { mkdtempSync } from "node:fs"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
+import type { Api, Model } from "@earendil-works/pi-ai"
+import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
+import { beforeEach, describe, expect, it, vi } from "vitest"
+import { FermentEventStore } from "../../../ferment/event-store.js"
+import { createContext } from "../../__mocks__/context.js"
+import { createDefaultFermentRuntime, type FermentRuntime } from "../runtime.js"
+import { captureJudgeContext } from "../state.js"
+import { createApplyAndPersist } from "../tool-helpers.js"
+import { FERMENT_TOOLS } from "../tool-names.js"
+import {
+	buildFreeformScopingFeedbackMessage,
+	buildPlanMarkdown,
+	completeFerment,
+	normalizeCharter,
+	normalizeScopingAdvisories,
+	registerLifecycleTools,
+	scopeFerment,
+} from "./lifecycle.js"
+
+// Stub the journey-grade judge for completeFerment tests. The mock returns a
+// clean A by default; individual cases can vi.mocked(judgeJourneyGrade).mockResolvedValueOnce(...)
+// to exercise the judge-unavailable / unparseable paths.
+vi.mock("../judge.js", async () => {
+	const actual = await vi.importActual<typeof import("../judge.js")>("../judge.js")
+	return {
+		...actual,
+		judgeApiCall: vi.fn(async () => ({
+			ok: true as const,
+			text: '{"answers":[{"id":"criteria_ok","value":"yes"}],"rationale":"criteria are clear"}',
+		})),
+		judgeJourneyGrade: vi.fn(async () => ({
+			ok: true as const,
+			grade: "A" as const,
+			rationale: "Clean delivery; gates substantiated.",
+			recommendations: [] as string[],
+		})),
+		judgeJourneyGradeViaSubagent: vi.fn(async (_input: unknown, _spawner: unknown) => ({
+			ok: true as const,
+			grade: "A" as const,
+			rationale: "Clean delivery; gates substantiated.",
+			recommendations: [] as string[],
+		})),
+	}
+})
+
+const { judgeApiCall: mockJudgeApiCall, judgeJourneyGradeViaSubagent: mockJudgeJourneyGrade } = await import(
+	"../judge.js"
+)
+
+import type { JudgeJourneyGradeInput } from "../judge.js"
+
+interface RegisteredTool {
+	name: string
+	execute: (
+		toolCallId: string,
+		params: Record<string, unknown>,
+		signal: unknown | undefined,
+		onUpdate: unknown | undefined,
+		ctx: ExtensionContext,
+	) => Promise<unknown>
+	renderResult?: (result: unknown) => unknown
+}
+
+function okText(result: { content: { text: string }[]; isError?: boolean }): string {
+	if (result.isError) throw new Error(`Expected ok, got error: ${result.content[0]?.text}`)
+	return result.content.map((c) => c.text).join("\n")
+}
+
+function errText(result: { content: { text: string }[]; isError?: boolean }): string {
+	if (!result.isError) throw new Error(`Expected error, got ok: ${result.content[0]?.text}`)
+	return result.content.map((c) => c.text).join("\n")
+}
+
+function createHarness() {
+	const storage = new FermentEventStore(mkdtempSync(join(tmpdir(), "ferment-lifecycle-test-")))
+	const runtime: FermentRuntime = { ...createDefaultFermentRuntime(), getStorage: () => storage }
+	const pi = {
+		sendMessage: vi.fn(),
+		sendUserMessage: vi.fn(),
+		appendEntry: vi.fn(),
+		on: vi.fn(),
+		events: { emit: vi.fn(), on: vi.fn(() => () => {}) },
+		getFlag: vi.fn(() => undefined),
+		getActiveTools: vi.fn(() => []),
+		setActiveTools: vi.fn(),
+	} as unknown as ExtensionAPI
+	const ferment = storage.create("Lifecycle Test")
+	// Isolation: tests should set their own active ferment rather than inherit
+	// module-level state from earlier tests.
+	runtime.setActive(undefined)
+	return { storage, runtime, pi, fermentId: ferment.id }
+}
+
+function createTerminalFerment(h: ReturnType<typeof createHarness>) {
+	const applyAndPersist = createApplyAndPersist(h.runtime)
+	const scoped = applyAndPersist(h.fermentId, {
+		type: "scope",
+		goal: "Ship the feature",
+		successCriteria: ["Done"],
+		constraints: [],
+		phases: [{ name: "Build", goal: "Implement", steps: [] }],
+	})
+	if (!scoped.ok) throw new Error(scoped.error.message)
+	const activated = applyAndPersist(h.fermentId, { type: "activate_phase", phaseId: "phase-1" })
+	if (!activated.ok) throw new Error(activated.error.message)
+	const completed = applyAndPersist(h.fermentId, {
+		type: "complete_phase",
+		phaseId: "phase-1",
+		summary: "phase done",
+	})
+	if (!completed.ok) throw new Error(completed.error.message)
+	return completed.ferment
+}
+
+/** Helper: a complete, all-pass plan-scope gate verdict set. */
+const passingPlanGates = () => [
+	{
+		id: "P1",
+		verdict: "pass" as const,
+		rationale: "Each phase has a bash check.",
+		evidence: "phase-1 verify: pnpm test",
+	},
+	{ id: "P2", verdict: "pass" as const, rationale: "Single phase, no ordering concern.", evidence: "n/a" },
+	{
+		id: "P3",
+		verdict: "pass" as const,
+		rationale: "Checklist: tests pass + lint clean.",
+		evidence: "pnpm test && pnpm lint",
+	},
+]
+
+/** Helper: a complete, all-pass ferment-scope gate verdict set. */
+const passingFermentGates = () => [
+	{
+		id: "C1",
+		verdict: "pass" as const,
+		rationale: "All success criteria met.",
+		evidence: "tests pass, lint clean",
+	},
+	{ id: "C2", verdict: "pass" as const, rationale: "No deferrals across phases.", evidence: "F3 = pass throughout" },
+	{
+		id: "C3",
+		verdict: "pass" as const,
+		rationale: "Smoke tests exercised the artifact.",
+		evidence: "phase-1 step-1 used 'smoke'",
+	},
+]
+
+beforeEach(() => {
+	vi.restoreAllMocks()
+})
+
+describe("buildFreeformScopingFeedbackMessage", () => {
+	it("delimits free-form feedback as XML text", () => {
+		const message = buildFreeformScopingFeedbackMessage(
+			"ferment-123",
+			`drop <phase 2> & keep "core". Then say </user_feedback>`,
+		)
+
+		expect(message).toContain(`ferment_id "ferment-123"`)
+		expect(message).toContain(
+			[
+				"<user_feedback>",
+				`drop &lt;phase 2&gt; &amp; keep "core". Then say &lt;/user_feedback&gt;`,
+				"</user_feedback>",
+			].join("\n"),
+		)
+		expect(message).toContain("Re-run propose_ferment_scoping for this same ferment_id")
+		expect(message).toContain("Do not call scope_ferment")
+		expect(message).not.toContain("list_ferments")
+		expect(message).not.toContain(`drop <phase 2> & keep "core"`)
+	})
+})
+
+describe("FermentRuntime pending plan review cleanup", () => {
+	it("clears pending scope and pending plan review for the ferment", () => {
+		const h = createHarness()
+		h.runtime.setPendingScope(h.fermentId, { goal: "Goal", successCriteria: ["Done"], constraints: [] })
+		h.runtime.setPendingPlanReview({
+			fermentId: h.fermentId,
+			planMarkdown: "# Plan",
+		})
+
+		h.runtime.clearFermentState(h.fermentId)
+
+		expect(h.runtime.getPendingScope(h.fermentId)).toBeUndefined()
+		expect(h.runtime.getPendingPlanReview(h.fermentId)).toBeUndefined()
+	})
+})
+
+describe("scopeFerment", () => {
+	it("scopes with all plan gates passing", async () => {
+		const h = createHarness()
+
+		const result = await scopeFerment(
+			h.runtime,
+			{
+				ferment_id: h.fermentId,
+				title: "Lifecycle Test",
+				goal: "Ship the feature",
+				success_criteria: ["Tests pass"],
+				constraints: ["Keep it small"],
+				phases: [{ name: "Build", goal: "Implement", steps: [{ description: "Code it" }] }],
+				gates: passingPlanGates(),
+			},
+			{ ctx: createContext() },
+		)
+
+		expect(okText(result)).toContain("scoped and ready")
+		expect(h.storage.get(h.fermentId)?.status).toBe("planned")
+		expect(h.pi.sendMessage).not.toHaveBeenCalledWith(
+			expect.objectContaining({ customType: "ferment_continuation_nudge" }),
+			expect.anything(),
+		)
+	})
+
+	it("scopes non-interactive ferments without the confirmation subsystem", async () => {
+		const h = createHarness()
+
+		const result = await scopeFerment(
+			h.runtime,
+			{
+				ferment_id: h.fermentId,
+				title: "Lifecycle Test",
+				goal: "Ship the feature",
+				success_criteria: ["Tests pass"],
+				phases: [{ name: "Build", goal: "Implement", steps: [{ description: "Code it" }] }],
+				gates: passingPlanGates(),
+			},
+			{ ctx: createContext() },
+		)
+
+		expect(okText(result)).toContain("scoped and ready")
+		expect(h.storage.get(h.fermentId)?.status).toBe("planned")
+	})
+
+	it("rejects scope_ferment when title is blank", async () => {
+		const h = createHarness()
+
+		const result = await scopeFerment(
+			h.runtime,
+			{
+				ferment_id: h.fermentId,
+				title: "   ",
+				goal: "Ship the feature",
+				success_criteria: ["Tests pass"],
+				phases: [{ name: "Build", goal: "Implement", steps: [{ description: "Code it" }] }],
+				gates: passingPlanGates(),
+			},
+			{ ctx: createContext() },
+		)
+
+		expect(errText(result)).toContain('Field "title" must be a non-empty')
+		expect(h.storage.get(h.fermentId)?.status).toBe("draft")
+	})
+
+	it("refuses scoping when agent self-flags a plan gate", async () => {
+		const h = createHarness()
+		const flaggedGates = [
+			{
+				id: "P1",
+				verdict: "flag" as const,
+				rationale: "phase-1 has no concrete verifier.",
+				evidence: "no verify command set",
+			},
+			{ id: "P2", verdict: "pass" as const, rationale: "ok", evidence: "n/a" },
+			{ id: "P3", verdict: "pass" as const, rationale: "ok", evidence: "n/a" },
+		]
+
+		const result = await scopeFerment(
+			h.runtime,
+			{
+				ferment_id: h.fermentId,
+				title: "Lifecycle Test",
+				goal: "Ship the feature",
+				success_criteria: ["Tests pass"],
+				phases: [{ name: "Build", goal: "Implement" }],
+				gates: flaggedGates,
+			},
+			{ ctx: createContext() },
+		)
+
+		expect(errText(result)).toContain("Gate P1")
+		expect(errText(result)).toContain("no concrete verifier")
+		expect(h.storage.get(h.fermentId)?.status).toBe("draft")
+	})
+
+	it("rejects scoping with a clear error when gate coverage is incomplete", async () => {
+		const h = createHarness()
+		const incomplete = [{ id: "P1", verdict: "pass" as const, rationale: "ok", evidence: "n/a" }]
+
+		const result = await scopeFerment(
+			h.runtime,
+			{
+				ferment_id: h.fermentId,
+				title: "Lifecycle Test",
+				goal: "Ship the feature",
+				success_criteria: ["Tests pass"],
+				phases: [{ name: "Build", goal: "Implement" }],
+				gates: incomplete,
+			},
+			{ ctx: createContext() },
+		)
+
+		expect(errText(result)).toContain("missing required gate verdicts")
+		expect(errText(result)).toContain("P2")
+		expect(errText(result)).toContain("P3")
+		expect(h.storage.get(h.fermentId)?.status).toBe("draft")
+	})
+
+	it("points blocked interactive scope_ferment calls back to propose_ferment_scoping", async () => {
+		const h = createHarness()
+		h.runtime.markScopingInteractive(h.fermentId)
+
+		const result = await scopeFerment(
+			h.runtime,
+			{
+				ferment_id: h.fermentId,
+				title: "Lifecycle Test",
+				goal: "Ship the feature",
+				success_criteria: ["Tests pass"],
+				phases: [{ name: "Build", goal: "Implement" }],
+				gates: passingPlanGates(),
+			},
+			{ ctx: createContext() },
+		)
+
+		expect(errText(result)).toContain("propose_ferment_scoping")
+		expect(errText(result)).toContain("Do not call scope_ferment directly")
+		expect(errText(result)).not.toContain("Present the plan summary")
+		expect(h.storage.get(h.fermentId)?.status).toBe("draft")
+	})
+
+	it("scope_ferment tool with assumptions param persists them into scoping.assumptions", async () => {
+		const h = createHarness()
+
+		await scopeFerment(
+			h.runtime,
+			{
+				ferment_id: h.fermentId,
+				title: "Lifecycle Test",
+				goal: "Ship the feature",
+				success_criteria: ["Tests pass"],
+				assumptions: "k8s cluster exists and is reachable",
+				phases: [{ name: "Build", goal: "Implement", steps: [{ description: "Code it" }] }],
+				gates: passingPlanGates(),
+			},
+			{ ctx: createContext() },
+		)
+
+		const saved = h.storage.get(h.fermentId)
+		expect(saved?.scoping.assumptions?.answer).toBe("k8s cluster exists and is reachable")
+	})
+
+	it("scope_ferment tool without assumptions leaves scoping.assumptions undefined", async () => {
+		const h = createHarness()
+
+		await scopeFerment(
+			h.runtime,
+			{
+				ferment_id: h.fermentId,
+				title: "Lifecycle Test",
+				goal: "Ship the feature",
+				success_criteria: ["Tests pass"],
+				phases: [{ name: "Build", goal: "Implement", steps: [{ description: "Code it" }] }],
+				gates: passingPlanGates(),
+			},
+			{ ctx: createContext() },
+		)
+
+		const saved = h.storage.get(h.fermentId)
+		expect(saved?.scoping.assumptions).toBeUndefined()
+	})
+})
+
+describe("propose_ferment_scoping via registerLifecycleTools", () => {
+	function createProposeHarness() {
+		const h = createHarness()
+		const tools = new Map<string, RegisteredTool>()
+		const pi = {
+			...h.pi,
+			registerTool: (tool: RegisteredTool) => {
+				tools.set(tool.name, tool)
+			},
+			getActiveTools: vi.fn(() => ["read", "bash"]),
+			getAllTools: vi.fn(() => [{ name: "read" }, { name: "bash" }]),
+			setActiveTools: vi.fn(),
+		} as unknown as ExtensionAPI
+		registerLifecycleTools(pi, h.runtime)
+
+		const tool = tools.get("propose_ferment_scoping")
+		if (!tool) throw new Error("propose_ferment_scoping not registered")
+		const execute = tool.execute as unknown as (
+			...args: unknown[]
+		) => Promise<{ content: { text: string }[]; isError?: boolean }>
+		return { h, execute, tool }
+	}
+
+	it("normalizes canonical question fields before runtime validation", async () => {
+		const { h, execute } = createProposeHarness()
+
+		const result = await execute(
+			"tool-call-1",
+			{
+				ferment_id: h.fermentId,
+				title: "Lifecycle Test",
+				goal: "Ship the feature",
+				phases: [{ name: "Build", goal: "Implement", steps: [{ description: "Code it" }] }],
+				questions: [
+					{
+						id: "q1",
+						question: "Which path?",
+						options: [
+							{ id: "a", label: "A", recommended: true },
+							{ id: "b", label: "B" },
+						],
+					},
+				],
+				gates: passingPlanGates(),
+			},
+			undefined,
+			undefined,
+			createContext({ hasUI: false }),
+		)
+
+		expect(errText(result)).toContain("Cannot ask scoping questions without an interactive UI")
+		expect(errText(result)).not.toContain("questions.0.question")
+	})
+
+	it("rejects propose_ferment_scoping when title is blank", async () => {
+		const { h, execute } = createProposeHarness()
+
+		const result = await execute(
+			"tool-call-1",
+			{
+				ferment_id: h.fermentId,
+				title: '  ""  ',
+				goal: "Ship the feature",
+				phases: [{ name: "Build", goal: "Implement", steps: [{ description: "Code it" }] }],
+				questions: [],
+				gates: passingPlanGates(),
+			},
+			undefined,
+			undefined,
+			createContext(),
+		)
+
+		expect(errText(result)).toContain('Field "title" must be a non-empty')
+	})
+
+	it("rejects prompt because question is the only public question text field", async () => {
+		const { h, execute } = createProposeHarness()
+
+		const result = await execute(
+			"tool-call-1",
+			{
+				ferment_id: h.fermentId,
+				title: "Lifecycle Test",
+				goal: "Ship the feature",
+				phases: [{ name: "Build", goal: "Implement", steps: [{ description: "Code it" }] }],
+				questions: [
+					{
+						id: "q1",
+						prompt: "Which path?",
+						options: [
+							{ id: "a", label: "A", recommended: true },
+							{ id: "b", label: "B" },
+						],
+					},
+				],
+				gates: passingPlanGates(),
+			},
+			undefined,
+			undefined,
+			createContext(),
+		)
+
+		expect(errText(result)).toContain("questions.0.question must be a string")
+	})
+
+	it("allows empty question because the schema only requires a string", async () => {
+		const { h, execute } = createProposeHarness()
+
+		const result = await execute(
+			"tool-call-1",
+			{
+				ferment_id: h.fermentId,
+				title: "Lifecycle Test",
+				goal: "Ship the feature",
+				phases: [{ name: "Build", goal: "Implement", steps: [{ description: "Code it" }] }],
+				questions: [
+					{
+						id: "q1",
+						question: "",
+						options: [
+							{ id: "a", label: "A", recommended: true },
+							{ id: "b", label: "B" },
+						],
+					},
+				],
+				gates: passingPlanGates(),
+			},
+			undefined,
+			undefined,
+			createContext({ hasUI: false }),
+		)
+
+		expect(errText(result)).toContain("Cannot ask scoping questions without an interactive UI")
+		expect(errText(result)).not.toContain("questions.0.question must be a string")
+	})
+
+	it("rejects text because question is the only public question text field", async () => {
+		const { h, execute } = createProposeHarness()
+
+		const result = await execute(
+			"tool-call-1",
+			{
+				ferment_id: h.fermentId,
+				title: "Lifecycle Test",
+				goal: "Ship the feature",
+				phases: [{ name: "Build", goal: "Implement", steps: [{ description: "Code it" }] }],
+				questions: [
+					{
+						id: "q1",
+						text: "Legacy text?",
+						options: [
+							{ id: "a", label: "A", recommended: true },
+							{ id: "b", label: "B" },
+						],
+					},
+				],
+				gates: passingPlanGates(),
+			},
+			undefined,
+			undefined,
+			createContext(),
+		)
+
+		expect(errText(result)).toContain("questions.0.question must be a string")
+	})
+
+	it("renderResult returns a Markdown component", async () => {
+		const { tool } = createProposeHarness()
+		const result = { content: [{ type: "text", text: "**Bold** plan" }] }
+		const component = tool.renderResult?.(result)
+		expect(component).toBeDefined()
+	})
+
+	it("creates a new draft ferment when ferment_id is omitted and no active ferment exists", async () => {
+		const { h, execute } = createProposeHarness()
+		expect(h.runtime.getActive()).toBeUndefined()
+		const beforeCount = h.storage.list().length
+
+		const result = await execute(
+			"tool-call-1",
+			{
+				title: "Bootstrap Ferment",
+				goal: "Ship the feature",
+				success_criteria: ["Tests pass"],
+				phases: [{ name: "P1", goal: "Build it", steps: [{ description: "Code it" }] }],
+				questions: [],
+				gates: passingPlanGates(),
+			},
+			undefined,
+			undefined,
+			createContext({ hasUI: false }),
+		)
+
+		expect(okText(result)).toContain("Plan saved")
+		expect(h.storage.list().length).toBe(beforeCount + 1)
+		const active = h.runtime.getActive()
+		expect(active).toBeDefined()
+		expect(active?.name).toBe("Bootstrap Ferment")
+		expect(active?.status).toBe("planned")
+	})
+
+	it("creates a new draft ferment when an unknown ferment_id is provided and no active ferment exists", async () => {
+		const { h, execute } = createProposeHarness()
+		const beforeCount = h.storage.list().length
+
+		const result = await execute(
+			"tool-call-1",
+			{
+				ferment_id: "research-nudge-prompts",
+				title: "Unknown Id Ferment",
+				goal: "Ship the feature",
+				success_criteria: ["Tests pass"],
+				phases: [{ name: "P1", goal: "Build it", steps: [{ description: "Code it" }] }],
+				questions: [],
+				gates: passingPlanGates(),
+			},
+			undefined,
+			undefined,
+			createContext({ hasUI: false }),
+		)
+
+		expect(okText(result)).toContain("Plan saved")
+		expect(h.storage.list().length).toBe(beforeCount + 1)
+		const active = h.runtime.getActive()
+		expect(active).toBeDefined()
+		expect(active?.name).toBe("Unknown Id Ferment")
+	})
+
+	it("targets the active ferment when ferment_id is omitted", async () => {
+		const { h, execute } = createProposeHarness()
+		const existing = h.storage.get(h.fermentId)
+		if (!existing) throw new Error("Harness ferment missing")
+		h.runtime.setActive(existing)
+		const beforeCount = h.storage.list().length
+
+		const result = await execute(
+			"tool-call-1",
+			{
+				title: "Updated Title",
+				goal: "Updated goal",
+				success_criteria: ["Tests pass"],
+				phases: [{ name: "P1", goal: "Build it", steps: [{ description: "Code it" }] }],
+				questions: [],
+				gates: passingPlanGates(),
+			},
+			undefined,
+			undefined,
+			createContext({ hasUI: false }),
+		)
+
+		expect(okText(result)).toContain("Plan saved")
+		expect(h.storage.list().length).toBe(beforeCount)
+		const active = h.runtime.getActive()
+		expect(active?.id).toBe(h.fermentId)
+		expect(active?.name).toBe("Updated Title")
+	})
+})
+
+describe("propose_ferment_scoping continuation policy reset", () => {
+	it("bootstrapped ferment uses manual policy for interactive UI", async () => {
+		const h = createHarness()
+		h.runtime.setContinuationPolicy("automated")
+		const tools = new Map<string, RegisteredTool>()
+		const pi = {
+			...h.pi,
+			registerTool: (tool: RegisteredTool) => {
+				tools.set(tool.name, tool)
+			},
+		} as unknown as ExtensionAPI
+		registerLifecycleTools(pi, h.runtime)
+		const execute = tools.get("propose_ferment_scoping")?.execute as unknown as (
+			...args: unknown[]
+		) => Promise<{ content: { text: string }[]; isError?: boolean }>
+
+		await execute(
+			"tool-call-1",
+			{
+				title: "Bootstrapped Ferment",
+				goal: "Ship the feature",
+				phases: [{ name: "Build", goal: "Implement", steps: [{ description: "Code it" }] }],
+				questions: [],
+				gates: passingPlanGates(),
+			},
+			undefined,
+			undefined,
+			createContext({ hasUI: true }),
+		)
+
+		expect(h.runtime.getContinuationPolicy()).toBe("manual")
+	})
+
+	it("bootstrapped ferment uses automated policy for one-shot", async () => {
+		const h = createHarness()
+		h.runtime.setContinuationPolicy("manual")
+		const tools = new Map<string, RegisteredTool>()
+		const pi = {
+			...h.pi,
+			registerTool: (tool: RegisteredTool) => {
+				tools.set(tool.name, tool)
+			},
+			getFlag: vi.fn((name: string) => (name === "ferment-oneshot" ? true : undefined)),
+		} as unknown as ExtensionAPI
+		registerLifecycleTools(pi, h.runtime)
+		const execute = tools.get("propose_ferment_scoping")?.execute as unknown as (
+			...args: unknown[]
+		) => Promise<{ content: { text: string }[]; isError?: boolean }>
+
+		await execute(
+			"tool-call-1",
+			{
+				title: "One-shot Ferment",
+				goal: "Ship the feature",
+				phases: [{ name: "Build", goal: "Implement", steps: [{ description: "Code it" }] }],
+				questions: [],
+				gates: passingPlanGates(),
+			},
+			undefined,
+			undefined,
+			createContext({ hasUI: true }),
+		)
+
+		expect(h.runtime.getContinuationPolicy()).toBe("automated")
+	})
+
+	it("re-proposing for an existing draft does not reset its policy", async () => {
+		const h = createHarness()
+		h.runtime.setContinuationPolicy("automated")
+		const draft = h.storage.create("Existing Draft")
+		h.runtime.setActive(draft)
+		const tools = new Map<string, RegisteredTool>()
+		const pi = {
+			...h.pi,
+			registerTool: (tool: RegisteredTool) => {
+				tools.set(tool.name, tool)
+			},
+		} as unknown as ExtensionAPI
+		registerLifecycleTools(pi, h.runtime)
+		const execute = tools.get("propose_ferment_scoping")?.execute as unknown as (
+			...args: unknown[]
+		) => Promise<{ content: { text: string }[]; isError?: boolean }>
+
+		await execute(
+			"tool-call-1",
+			{
+				ferment_id: draft.id,
+				title: "Existing Draft",
+				goal: "Ship the feature",
+				phases: [{ name: "Build", goal: "Implement", steps: [{ description: "Code it" }] }],
+				questions: [],
+				gates: passingPlanGates(),
+			},
+			undefined,
+			undefined,
+			createContext({ hasUI: true }),
+		)
+
+		expect(h.runtime.getContinuationPolicy()).toBe("automated")
+	})
+})
+
+describe("confirm_ferment_completion_criteria via registerLifecycleTools", () => {
+	function createConfirmCriteriaHarness(options?: { oneShot?: boolean }) {
+		const h = createHarness()
+		const tools = new Map<string, RegisteredTool>()
+		const pi = {
+			...h.pi,
+			registerTool: (tool: RegisteredTool) => {
+				tools.set(tool.name, tool)
+			},
+			getFlag: vi.fn((flag: string) => flag === "ferment-oneshot" && options?.oneShot === true),
+		} as unknown as ExtensionAPI
+		registerLifecycleTools(pi, h.runtime)
+
+		const tool = tools.get(FERMENT_TOOLS.CONFIRM_COMPLETION_CRITERIA)
+		if (!tool) throw new Error("confirm_ferment_completion_criteria not registered")
+		const execute = tool.execute as unknown as (
+			...args: unknown[]
+		) => Promise<{ content: { text: string }[]; isError?: boolean }>
+		return { h, execute }
+	}
+
+	it("asks one inline question with yes/no style answers and no follow-up prompt on yes", async () => {
+		const { h, execute } = createConfirmCriteriaHarness()
+		const select = vi.fn<(title: string, options: string[]) => Promise<string>>(async (_title, options) =>
+			options.includes("Yes, looks good") ? "Yes, looks good" : "Type your own answer",
+		)
+		const input = vi.fn<(title: string, placeholder?: string) => Promise<string>>(async () => "")
+
+		const result = await execute(
+			"tool-call-1",
+			{
+				ferment_id: h.fermentId,
+				criteria: [
+					"README.md exists at the project root; verify by opening README.md.",
+					"README.md documents all CLI commands; verify by reading the command list.",
+				],
+			},
+			undefined,
+			undefined,
+			createContext({ ui: { select, input } }),
+		)
+
+		const text = okText(result)
+		expect(text).toContain("Confirmed: yes")
+		expect(text).toContain("Changes: (none)")
+		expect(text).toContain("Next action: continue to exploration.")
+		expect(select).toHaveBeenCalledWith(expect.stringContaining("Do these completion criteria look right?"), [
+			"Yes, looks good",
+			"Type your own answer",
+		])
+		expect(select.mock.calls[0]?.[0]).toContain("README.md exists at the project root")
+		expect(input).not.toHaveBeenCalled()
+	})
+
+	it("asks for inline text when criteria are rejected", async () => {
+		const { h, execute } = createConfirmCriteriaHarness()
+		const select = vi.fn<(title: string, options: string[]) => Promise<string>>(
+			async (_title, _options) => "Type your own answer",
+		)
+		const input = vi.fn<(title: string, placeholder?: string) => Promise<string>>(
+			async () => "Add go test ./... as verification.",
+		)
+
+		const result = await execute(
+			"tool-call-1",
+			{
+				ferment_id: h.fermentId,
+				criteria: ["README.md exists at the project root; verify by opening README.md."],
+			},
+			undefined,
+			undefined,
+			createContext({ ui: { select, input } }),
+		)
+
+		const text = okText(result)
+		expect(text).toContain("Confirmed: no")
+		expect(text).toContain("Changes: Add go test ./... as verification.")
+		expect(text).toContain(`call ${FERMENT_TOOLS.CONFIRM_COMPLETION_CRITERIA} again before exploration`)
+		expect(select).toHaveBeenCalledWith(expect.stringContaining("Do these completion criteria look right?"), [
+			"Yes, looks good",
+			"Type your own answer",
+		])
+		expect(input).toHaveBeenCalledWith(expect.stringContaining("Do these completion criteria look right?"), "")
+	})
+
+	it("exposes the rejection label to one-shot criteria judges", async () => {
+		const { h, execute } = createConfirmCriteriaHarness({ oneShot: true })
+		let userMsg = ""
+		vi.mocked(mockJudgeApiCall).mockImplementationOnce(async (_sys: string, msg: string) => {
+			userMsg = msg
+			return {
+				ok: true,
+				text: '{"answers":[{"id":"criteria_ok","value":"Add go test ./... as verification."}],"rationale":"needs verification"}',
+			}
+		})
+
+		const result = await execute(
+			"tool-call-1",
+			{
+				ferment_id: h.fermentId,
+				criteria: ["README.md exists at the project root; verify by opening README.md."],
+			},
+			undefined,
+			undefined,
+			createContext(),
+		)
+
+		const text = okText(result)
+		expect(text).toContain("Confirmed: no")
+		expect(text).toContain("Changes: Add go test ./... as verification.")
+		expect(userMsg).toContain('option id="yes" label="Yes, looks good"')
+		expect(userMsg).toContain('custom label="Type your own answer" value="<free-form text>"')
+	})
+
+	it("rejects criteria that normalize to empty strings", async () => {
+		const { h, execute } = createConfirmCriteriaHarness()
+
+		const result = await execute(
+			"tool-call-1",
+			{
+				ferment_id: h.fermentId,
+				criteria: ["  "],
+			},
+			undefined,
+			undefined,
+			createContext(),
+		)
+
+		expect(errText(result)).toContain('Field "criteria" must include at least one non-empty criterion')
+	})
+})
+
+describe("ask_user via registerLifecycleTools", () => {
+	function createAskUserHarness() {
+		const h = createHarness()
+		const tools = new Map<string, RegisteredTool>()
+		const pi = {
+			...h.pi,
+			registerTool: (tool: RegisteredTool) => {
+				tools.set(tool.name, tool)
+			},
+			getFlag: vi.fn(() => false),
+		} as unknown as ExtensionAPI
+		registerLifecycleTools(pi, h.runtime)
+
+		const tool = tools.get(FERMENT_TOOLS.ASK_USER)
+		if (!tool) throw new Error("ask_user not registered")
+		const execute = tool.execute as unknown as (
+			...args: unknown[]
+		) => Promise<{ content: { text: string }[]; isError?: boolean }>
+		return { h, execute }
+	}
+
+	it("renders a confirm question as Yes/No via questions[]", async () => {
+		const { h, execute } = createAskUserHarness()
+		const select = vi.fn(async () => "Yes")
+		const result = await execute(
+			"tool-call-1",
+			{
+				ferment_id: h.fermentId,
+				questions: [{ id: "confirm", type: "confirm", prompt: "Sound right?" }],
+			},
+			undefined,
+			undefined,
+			createContext({ ui: { select } }),
+		)
+		expect(okText(result)).toContain("- confirm: yes")
+		expect(select).toHaveBeenCalledWith("Sound right?", ["Yes", "No"])
+	})
+
+	it("infers ferment_id from runtime.getActiveId() when params.ferment_id is omitted", async () => {
+		const { h, execute } = createAskUserHarness()
+		const select = vi.fn(async () => "Yes")
+		vi.spyOn(h.runtime, "getActiveId").mockReturnValue(h.fermentId)
+		const result = await execute(
+			"tool-call-1",
+			{
+				questions: [{ id: "confirm", type: "confirm", prompt: "Sound right?" }],
+			},
+			undefined,
+			undefined,
+			createContext({ ui: { select } }),
+		)
+		expect(okText(result)).toContain("- confirm: yes")
+	})
+
+	it("returns an actionable error when ferment_id is omitted and no active ferment exists", async () => {
+		const { h, execute } = createAskUserHarness()
+		vi.spyOn(h.runtime, "getActiveId").mockReturnValue(undefined)
+		const result = await execute(
+			"tool-call-1",
+			{
+				questions: [{ id: "confirm", type: "confirm", prompt: "Sound right?" }],
+			},
+			undefined,
+			undefined,
+			createContext(),
+		)
+		expect(errText(result)).toContain("No active ferment. Provide ferment_id or activate a ferment first.")
+	})
+
+	it("returns an actionable error when questions[] is empty", async () => {
+		const { h, execute } = createAskUserHarness()
+		const result = await execute(
+			"tool-call-1",
+			{
+				ferment_id: h.fermentId,
+				questions: [],
+			},
+			undefined,
+			undefined,
+			createContext(),
+		)
+		expect(errText(result)).toContain("ask_user requires a non-empty questions[] array")
+	})
+
+	it("rejects a question missing its id with an actionable message", async () => {
+		const { h, execute } = createAskUserHarness()
+		const result = await execute(
+			"tool-call-1",
+			{
+				ferment_id: h.fermentId,
+				questions: [{ id: "", type: "single", prompt: "Which?", options: [{ id: "a", label: "A" }] }],
+			},
+			undefined,
+			undefined,
+			createContext(),
+		)
+		expect(errText(result)).toContain('missing required field "id"')
+	})
+
+	it("rejects a question missing its prompt with an actionable message naming the id", async () => {
+		const { h, execute } = createAskUserHarness()
+		const result = await execute(
+			"tool-call-1",
+			{
+				ferment_id: h.fermentId,
+				questions: [{ id: "q1", type: "single", prompt: "", options: [{ id: "a", label: "A" }] }],
+			},
+			undefined,
+			undefined,
+			createContext(),
+		)
+		expect(errText(result)).toContain('Question "q1" is missing required field "prompt"')
+	})
+
+	it("rejects an unknown question type naming the id and valid types", async () => {
+		const { h, execute } = createAskUserHarness()
+		const result = await execute(
+			"tool-call-1",
+			{
+				ferment_id: h.fermentId,
+				questions: [{ id: "bad", type: "bogus", prompt: "Which?", options: [{ id: "a", label: "A" }] }],
+			},
+			undefined,
+			undefined,
+			createContext(),
+		)
+		expect(errText(result)).toContain('Question "bad" has unknown type "bogus"')
+		expect(errText(result)).toContain("single, multi, text, confirm")
+	})
+
+	it("rejects a confirm question that carries options", async () => {
+		const { h, execute } = createAskUserHarness()
+		const result = await execute(
+			"tool-call-1",
+			{
+				ferment_id: h.fermentId,
+				questions: [{ id: "ok", type: "confirm", prompt: "Proceed?", options: [{ id: "ship", label: "Ship" }] }],
+			},
+			undefined,
+			undefined,
+			createContext(),
+		)
+		expect(errText(result)).toContain('Question "ok" is type "confirm" and must not have options')
+	})
+
+	it("rejects a single question with no options and allowOther false", async () => {
+		const { h, execute } = createAskUserHarness()
+		const result = await execute(
+			"tool-call-1",
+			{
+				ferment_id: h.fermentId,
+				questions: [{ id: "lonely", type: "single", prompt: "Pick one?" }],
+			},
+			undefined,
+			undefined,
+			createContext(),
+		)
+		expect(errText(result)).toContain('Question "lonely" is type "single" but has no options')
+	})
+
+	it("rejects a multi question with no options and allowOther false", async () => {
+		const { h, execute } = createAskUserHarness()
+		const result = await execute(
+			"tool-call-1",
+			{
+				ferment_id: h.fermentId,
+				questions: [{ id: "lonely", type: "multi", prompt: "Pick many?" }],
+			},
+			undefined,
+			undefined,
+			createContext(),
+		)
+		expect(errText(result)).toContain('Question "lonely" is type "multi" but has no options')
+	})
+})
+
+describe("update_ferment_scope_field via registerLifecycleTools", () => {
+	function createRegisteredHarness() {
+		const storage = new FermentEventStore(mkdtempSync(join(tmpdir(), "ferment-update-scope-test-")))
+		const runtime: FermentRuntime = { ...createDefaultFermentRuntime(), getStorage: () => storage }
+		const tools = new Map<string, RegisteredTool>()
+		const pi = {
+			registerTool: (tool: RegisteredTool) => {
+				tools.set(tool.name, tool)
+			},
+			sendMessage: vi.fn(),
+			appendEntry: vi.fn(),
+			on: vi.fn(),
+			getFlag: vi.fn(() => undefined),
+			getActiveTools: vi.fn(() => ["read", "bash"]),
+			getAllTools: vi.fn(() => [{ name: "read" }, { name: "bash" }]),
+			setActiveTools: vi.fn(),
+		} as unknown as ExtensionAPI
+		registerLifecycleTools(pi, runtime)
+		// Create and scope a ferment so update_ferment_scope_field has something to revise.
+		const applyAndPersist = createApplyAndPersist(runtime)
+		const ferment = storage.create("Update Scope Test")
+		const scoped = applyAndPersist(ferment.id, {
+			type: "scope",
+			goal: "Original goal",
+			successCriteria: ["Done"],
+			constraints: [],
+			phases: [{ name: "Phase", goal: "Build", steps: [] }],
+		})
+		if (!scoped.ok) throw new Error(scoped.error.message)
+		return { storage, runtime, tools, fermentId: ferment.id }
+	}
+
+	it("update_ferment_scope_field with field 'assumptions' writes scoping.assumptions via the tool", async () => {
+		const { tools, fermentId, storage } = createRegisteredHarness()
+		const tool = tools.get("update_ferment_scope_field")
+		if (!tool) throw new Error("update_ferment_scope_field was not registered")
+
+		const result = (await tool.execute(
+			"test-call-id",
+			{
+				ferment_id: fermentId,
+				field: "assumptions",
+				value: "k8s cluster exists and is reachable",
+			},
+			undefined,
+			undefined,
+			createContext(),
+		)) as { content: { text: string }[]; isError?: boolean }
+
+		expect(okText(result)).toContain("assumptions")
+		expect(storage.get(fermentId)?.scoping.assumptions?.answer).toBe("k8s cluster exists and is reachable")
+	})
+
+	it("update_ferment_scope_field rejects unknown fields with a message listing assumptions", async () => {
+		const { tools, fermentId } = createRegisteredHarness()
+		const tool = tools.get("update_ferment_scope_field")
+		if (!tool) throw new Error("update_ferment_scope_field was not registered")
+
+		const result = (await tool.execute(
+			"test-call-id",
+			{
+				ferment_id: fermentId,
+				field: "unknown_field",
+				value: "ignored",
+			},
+			undefined,
+			undefined,
+			createContext(),
+		)) as { content: { text: string }[]; isError?: boolean }
+
+		expect(errText(result)).toContain("assumptions")
+	})
+})
+
+describe("completeFerment", () => {
+	it("ships and clears runtime state when all ferment gates pass", async () => {
+		const h = createHarness()
+		createTerminalFerment(h)
+		const clearFermentState = vi.fn()
+		const setActive = vi.fn()
+		h.runtime.clearFermentState = clearFermentState
+		h.runtime.setActive = setActive
+
+		const result = await completeFerment(
+			h.runtime,
+			{
+				ferment_id: h.fermentId,
+				final_summary: "all done",
+				gates: passingFermentGates(),
+			},
+			{ ctx: createContext() },
+		)
+
+		expect(okText(result)).toContain("complete")
+		expect(okText(result)).toContain("C1 (pass)")
+		expect(h.storage.get(h.fermentId)?.status).toBe("complete")
+		expect(h.storage.get(h.fermentId)?.grade?.grade).toBe("A")
+		expect(clearFermentState).toHaveBeenCalledWith(h.fermentId)
+		expect(setActive).toHaveBeenCalledWith(undefined)
+	})
+
+	it("refuses ship when agent self-flags a ferment gate", async () => {
+		const h = createHarness()
+		createTerminalFerment(h)
+		const flaggedGates = [
+			{ id: "C1", verdict: "pass" as const, rationale: "ok", evidence: "n/a" },
+			{
+				id: "C2",
+				verdict: "flag" as const,
+				rationale: "phase-1 deferred error handling but no later phase resolves it.",
+				evidence: "F3 of phase-1 deferred 'edge cases'",
+			},
+			{ id: "C3", verdict: "pass" as const, rationale: "ok", evidence: "smoke" },
+		]
+
+		const result = await completeFerment(
+			h.runtime,
+			{ ferment_id: h.fermentId, final_summary: "", gates: flaggedGates },
+			{ ctx: createContext() },
+		)
+
+		expect(errText(result)).toContain("complete_ferment refused")
+		expect(errText(result)).toContain("Gate C2")
+		expect(h.storage.get(h.fermentId)?.status).not.toBe("complete")
+	})
+
+	it("rejects ship with a clear error when ferment gate coverage is incomplete", async () => {
+		const h = createHarness()
+		createTerminalFerment(h)
+		const incomplete = [{ id: "C1", verdict: "pass" as const, rationale: "ok", evidence: "n/a" }]
+
+		const result = await completeFerment(
+			h.runtime,
+			{ ferment_id: h.fermentId, final_summary: "", gates: incomplete },
+			{ ctx: createContext() },
+		)
+
+		expect(errText(result)).toContain("missing required gate verdicts")
+		expect(errText(result)).toContain("C2")
+		expect(errText(result)).toContain("C3")
+		expect(h.storage.get(h.fermentId)?.status).not.toBe("complete")
+	})
+
+	it("treats complete_ferment on an already-complete ferment as an inert no-op", async () => {
+		const h = createHarness()
+		createTerminalFerment(h)
+		const first = await completeFerment(
+			h.runtime,
+			{
+				ferment_id: h.fermentId,
+				final_summary: "done",
+				gates: passingFermentGates(),
+			},
+			{ ctx: createContext() },
+		)
+		expect(okText(first)).toContain('**Ferment "Lifecycle Test"** complete')
+		expect(okText(first)).toContain("Do not call bash/read/list_ferments or any ferment tools")
+		expect(okText(first)).toContain('/ferment new "..."')
+		expect(okText(first)).toContain("do not search MCP tools or invent a tool")
+		expect(mockJudgeJourneyGrade).toHaveBeenCalledTimes(1)
+
+		const second = await completeFerment(h.runtime, { ferment_id: h.fermentId }, { ctx: createContext() })
+
+		expect(okText(second)).toContain('Ferment "Lifecycle Test" is already complete')
+		expect(okText(second)).toContain("without clear user consent")
+		expect(mockJudgeJourneyGrade).toHaveBeenCalledTimes(1)
+		expect(h.storage.get(h.fermentId)?.status).toBe("complete")
+	})
+
+	it("refuses complete_ferment on an abandoned ferment without grading", async () => {
+		const h = createHarness()
+		const applyAndPersist = createApplyAndPersist(h.runtime)
+		const abandoned = applyAndPersist(h.fermentId, { type: "abandon", reason: "user stopped" })
+		if (!abandoned.ok) throw new Error(abandoned.error.message)
+
+		const result = await completeFerment(h.runtime, { ferment_id: h.fermentId }, { ctx: createContext() })
+
+		expect(errText(result)).toContain('Ferment "Lifecycle Test" is abandoned and cannot be completed')
+		expect(mockJudgeJourneyGrade).not.toHaveBeenCalled()
+		expect(h.storage.get(h.fermentId)?.status).toBe("abandoned")
+	})
+
+	it("persists the journey grade from the judge into ferment.grade", async () => {
+		const h = createHarness()
+		createTerminalFerment(h)
+		// B is refused on first attempt; accepted on second.
+		vi.mocked(mockJudgeJourneyGrade).mockResolvedValue({
+			ok: true,
+			grade: "B",
+			rationale: "Phase 1 verified via proxy; goal met but coverage is thin.",
+			recommendations: [],
+		})
+		// First attempt: B refused.
+		const result1 = await completeFerment(
+			h.runtime,
+			{
+				ferment_id: h.fermentId,
+				final_summary: "done",
+				gates: passingFermentGates(),
+			},
+			{ ctx: createContext() },
+		)
+		expect(errText(result1)).toContain("minimum required is A")
+		// Second attempt: B accepted.
+		const result = await completeFerment(
+			h.runtime,
+			{
+				ferment_id: h.fermentId,
+				final_summary: "done",
+				gates: passingFermentGates(),
+			},
+			{ ctx: createContext() },
+		)
+		expect(okText(result)).toContain("**Final grade:** B")
+		expect(okText(result)).toContain("proxy")
+		expect(h.storage.get(h.fermentId)?.grade?.grade).toBe("B")
+		expect(h.storage.get(h.fermentId)?.grade?.rationale).toContain("proxy")
+		expect(h.storage.get(h.fermentId)?.grade?.unavailable).toBeUndefined()
+	})
+
+	it("renders the charter audit and persists per-clause verdicts", async () => {
+		const h = createHarness()
+		createTerminalFerment(h)
+		vi.mocked(mockJudgeJourneyGrade).mockResolvedValueOnce({
+			ok: true,
+			grade: "A",
+			rationale: "Shell is faithful and complete per the acceptance demo.",
+			recommendations: [],
+			charterVerdicts: [
+				{
+					clause: "recreate the Tahoe desktop",
+					status: "unmet",
+					evidence: "only a bootable shell replica exists",
+				},
+				{
+					clause: "feels like the real OS",
+					status: "met",
+					evidence: "window chrome and menus match references",
+				},
+			],
+		})
+
+		const result = await completeFerment(
+			h.runtime,
+			{ ferment_id: h.fermentId, final_summary: "done", gates: passingFermentGates() },
+			{ ctx: createContext() },
+		)
+
+		expect(okText(result)).toContain("Charter audit")
+		expect(okText(result)).toContain("2 clause(s) — 1 met, 0 waived, 1 unmet")
+		expect(okText(result)).toContain("⚠ unmet: recreate the Tahoe desktop — only a bootable shell replica exists")
+		const persisted = h.storage.get(h.fermentId)?.grade?.charterVerdicts
+		expect(persisted).toHaveLength(2)
+		expect(persisted?.[0]?.status).toBe("unmet")
+		expect(persisted?.[1]?.status).toBe("met")
+	})
+
+	it("renders an omission breadcrumb when the grader never emits charter verdicts", async () => {
+		const h = createHarness()
+		const applyAndPersist = createApplyAndPersist(h.runtime)
+		const scoped = applyAndPersist(h.fermentId, {
+			type: "scope",
+			goal: "Ship the feature",
+			successCriteria: ["Done"],
+			constraints: [],
+			phases: [{ name: "Build", goal: "Implement", steps: [] }],
+			charter: { intent: "recreate the Tahoe desktop" },
+		})
+		if (!scoped.ok) throw new Error(scoped.error.message)
+		const activated = applyAndPersist(h.fermentId, { type: "activate_phase", phaseId: "phase-1" })
+		if (!activated.ok) throw new Error(activated.error.message)
+		const completed = applyAndPersist(h.fermentId, {
+			type: "complete_phase",
+			phaseId: "phase-1",
+			summary: "phase done",
+		})
+		if (!completed.ok) throw new Error(completed.error.message)
+		vi.mocked(mockJudgeJourneyGrade).mockResolvedValueOnce({
+			ok: true,
+			grade: "A",
+			rationale: "Ships cleanly.",
+			recommendations: [],
+		})
+
+		const result = await completeFerment(
+			h.runtime,
+			{ ferment_id: h.fermentId, final_summary: "done", gates: passingFermentGates() },
+			{ ctx: createContext() },
+		)
+
+		expect(okText(result)).toContain("**Charter audit:** not emitted by the grader after retries")
+		expect(h.storage.get(h.fermentId)?.grade?.charterVerdicts).toBeUndefined()
+	})
+
+	it("stamps and renders the judge model when resolvable", async () => {
+		captureJudgeContext({ provider: "kimchi-dev", id: "glm-5.2-fp8" } as unknown as Model<Api>)
+		const h = createHarness()
+		createTerminalFerment(h)
+		vi.mocked(mockJudgeJourneyGrade).mockResolvedValueOnce({
+			ok: true,
+			grade: "A",
+			rationale: "Ships cleanly.",
+			recommendations: [],
+		})
+
+		const result = await completeFerment(
+			h.runtime,
+			{ ferment_id: h.fermentId, final_summary: "done", gates: passingFermentGates() },
+			{ ctx: createContext() },
+		)
+
+		expect(okText(result)).toContain("judge: kimchi-dev/glm-5.2-fp8")
+		expect(h.storage.get(h.fermentId)?.grade?.gradedBy).toBe("kimchi-dev/glm-5.2-fp8")
+	})
+
+	it("judge unavailable ships without a persisted grade", async () => {
+		const h = createHarness()
+		createTerminalFerment(h)
+		vi.mocked(mockJudgeJourneyGrade).mockResolvedValueOnce({
+			ok: false,
+			reason: "no_auth",
+			detail: "missing api key",
+		})
+
+		const result = await completeFerment(
+			h.runtime,
+			{
+				ferment_id: h.fermentId,
+				final_summary: "done",
+				gates: passingFermentGates(),
+			},
+			{ ctx: createContext() },
+		)
+
+		expect(okText(result)).toContain("**Final grade:** unavailable")
+		expect(okText(result)).toContain("Judge unreachable (no_auth: missing api key)")
+		expect(h.storage.get(h.fermentId)?.status).toBe("complete")
+		expect(h.storage.get(h.fermentId)?.grade).toBeUndefined()
+	})
+
+	it("judge unavailable without detail ships without a persisted grade", async () => {
+		const h = createHarness()
+		createTerminalFerment(h)
+		vi.mocked(mockJudgeJourneyGrade).mockResolvedValueOnce({
+			ok: false,
+			reason: "no_registry",
+		})
+
+		const result = await completeFerment(
+			h.runtime,
+			{
+				ferment_id: h.fermentId,
+				final_summary: "done",
+				gates: passingFermentGates(),
+			},
+			{ ctx: createContext() },
+		)
+
+		expect(okText(result)).toContain("**Final grade:** unavailable")
+		expect(okText(result)).toContain("Judge unreachable (no_registry)")
+		expect(h.storage.get(h.fermentId)?.status).toBe("complete")
+		expect(h.storage.get(h.fermentId)?.grade).toBeUndefined()
+	})
+
+	// ── Final grader enforcement ──────────────────────────────────────────────────
+
+	it("A-grade ships with recommendations persisted", async () => {
+		const h = createHarness()
+		createTerminalFerment(h)
+		const recs = ["Add integration test for the retry path."]
+		vi.mocked(mockJudgeJourneyGrade).mockResolvedValueOnce({
+			ok: true,
+			grade: "A",
+			rationale: "Excellent. Production-ready.",
+			recommendations: recs,
+		})
+		const result = await completeFerment(
+			h.runtime,
+			{
+				ferment_id: h.fermentId,
+				final_summary: "done",
+				gates: passingFermentGates(),
+			},
+			{ ctx: createContext() },
+		)
+		expect(okText(result)).toContain("**Final grade:** A")
+		expect(h.storage.get(h.fermentId)?.status).toBe("complete")
+		expect(h.storage.get(h.fermentId)?.grade?.grade).toBe("A")
+		expect(h.storage.get(h.fermentId)?.grade?.recommendations).toEqual(recs)
+	})
+
+	it("B-grade refused on first attempt, ships after rework", async () => {
+		const h = createHarness()
+		createTerminalFerment(h)
+		const recs = ["Add edge-case test for empty input.", "Wire retry into production call site."]
+		vi.mocked(mockJudgeJourneyGrade).mockResolvedValue({
+			ok: true,
+			grade: "B",
+			rationale: "Goal met but coverage is thin.",
+			recommendations: recs,
+		})
+		// First attempt: B refused (minimum is A).
+		const result1 = await completeFerment(
+			h.runtime,
+			{
+				ferment_id: h.fermentId,
+				final_summary: "done",
+				gates: passingFermentGates(),
+			},
+			{ ctx: createContext() },
+		)
+		expect(errText(result1)).toContain("minimum required is A")
+		expect(errText(result1)).toContain("Add edge-case test")
+		// Second attempt: B accepted (minimum relaxes to B).
+		const result2 = await completeFerment(
+			h.runtime,
+			{
+				ferment_id: h.fermentId,
+				final_summary: "done",
+				gates: passingFermentGates(),
+			},
+			{ ctx: createContext() },
+		)
+		expect(okText(result2)).toContain("**Final grade:** B")
+		expect(h.storage.get(h.fermentId)?.status).toBe("complete")
+		expect(h.storage.get(h.fermentId)?.grade?.grade).toBe("B")
+		expect(h.storage.get(h.fermentId)?.grade?.recommendations).toEqual(recs)
+	})
+
+	it("journey retry carries its own refusal as delta context", async () => {
+		const h = createHarness()
+		createTerminalFerment(h)
+		const recs = ["Fix the broken onClick handler."]
+		vi.mocked(mockJudgeJourneyGrade)
+			.mockResolvedValueOnce({ ok: true, grade: "C", rationale: "Handler bug.", recommendations: recs })
+			.mockResolvedValueOnce({ ok: true, grade: "A", rationale: "Fixed.", recommendations: [] })
+
+		const first = await completeFerment(
+			h.runtime,
+			{ ferment_id: h.fermentId, final_summary: "done", gates: passingFermentGates() },
+			{ ctx: createContext() },
+		)
+		expect(errText(first)).toContain("final LLM grader assigned grade C")
+		expect(errText(first)).toContain("How to fix this correctly")
+		expect(errText(first)).toContain("do NOT modify test files, assertions, test runners")
+
+		const second = await completeFerment(
+			h.runtime,
+			{ ferment_id: h.fermentId, final_summary: "done", gates: passingFermentGates() },
+			{ ctx: createContext() },
+		)
+		expect(okText(second)).toContain("**Final grade:** A")
+
+		const calls = vi.mocked(mockJudgeJourneyGrade).mock.calls
+		const inputs = calls.slice(-2).map((c) => c[0] as unknown as JudgeJourneyGradeInput)
+		expect(inputs[0].priorRefusal).toBeUndefined()
+		expect(inputs[1].priorRefusal?.grade).toBe("C")
+		expect(inputs[1].priorRefusal?.recommendations).toEqual(recs)
+	})
+
+	it("first journey attempt carries the most recent phase refusal as quality momentum", async () => {
+		const h = createHarness()
+		createTerminalFerment(h)
+		const recs = ["Add an integration test for the menu path."]
+		h.runtime.setLastPhaseRefusal(h.fermentId, "phase-1", {
+			grade: "B",
+			recommendations: recs,
+			at: "2026-08-11T12:00:00Z",
+		})
+		vi.mocked(mockJudgeJourneyGrade).mockClear()
+
+		const result = await completeFerment(
+			h.runtime,
+			{ ferment_id: h.fermentId, final_summary: "done", gates: passingFermentGates() },
+			{ ctx: createContext() },
+		)
+		expect(okText(result)).toContain("**Final grade:** A")
+
+		const calls = vi.mocked(mockJudgeJourneyGrade).mock.calls
+		expect(calls).toHaveLength(1)
+		const input = calls[0][0] as unknown as JudgeJourneyGradeInput
+		expect(input.priorRefusal?.grade).toBe("B")
+		expect(input.priorRefusal?.recommendations).toEqual(recs)
+	})
+
+	it("C-grade refuses ship within budget and surfaces recommendations", async () => {
+		const h = createHarness()
+		createTerminalFerment(h)
+		const recs = ["Fix the N+1 query in listUsers.", "Add cancellation to the fetch loop."]
+		vi.mocked(mockJudgeJourneyGrade).mockResolvedValueOnce({
+			ok: true,
+			grade: "C",
+			rationale: "Operational gaps.",
+			recommendations: recs,
+		})
+		const result = await completeFerment(
+			h.runtime,
+			{
+				ferment_id: h.fermentId,
+				final_summary: "done",
+				gates: passingFermentGates(),
+			},
+			{ ctx: createContext() },
+		)
+		expect(errText(result)).toContain("final LLM grader assigned grade C")
+		expect(errText(result)).toContain("retry 1/3")
+		expect(errText(result)).toContain("Fix the N+1 query in listUsers.")
+		expect(errText(result)).toContain("Add cancellation to the fetch loop.")
+		// Ferment must NOT be completed.
+		expect(h.storage.get(h.fermentId)?.status).not.toBe("complete")
+		// Retry counter must have been bumped.
+		expect(h.runtime.getBlockRetry(h.fermentId, "__ferment__")).toBe(1)
+	})
+
+	it("fallback_single_shot journey grade is advisory-only and ships, with provenance persisted", async () => {
+		// Regression: a blind fallback letter (grader subagent unusable) used to be
+		// able to refuse ship even though it had no independent verification.
+		const h = createHarness()
+		createTerminalFerment(h)
+		vi.mocked(mockJudgeJourneyGrade).mockResolvedValueOnce({
+			ok: true,
+			grade: "F",
+			rationale: "Blind fallback could not verify anything.",
+			recommendations: ["Everything looks broken."],
+			graderSource: "fallback_single_shot",
+		})
+		await completeFerment(
+			h.runtime,
+			{
+				ferment_id: h.fermentId,
+				final_summary: "done",
+				gates: passingFermentGates(),
+			},
+			{ ctx: createContext() },
+		)
+
+		// No retry bump — the grade never blocks.
+		expect(h.runtime.getBlockRetry(h.fermentId, "__ferment__")).toBe(0)
+		const stored = h.storage.get(h.fermentId)
+		expect(stored?.status).toBe("complete")
+		expect(stored?.grade?.grade).toBe("F")
+		expect(stored?.grade?.rationale).toContain("advisory-only")
+		expect(stored?.grade?.graderSource).toBe("fallback_single_shot")
+	})
+
+	it("C-grade repeated exhausts budget and ships with the grade", async () => {
+		const h = createHarness()
+		createTerminalFerment(h)
+		const recs = ["Fix the N+1 query in listUsers."]
+		vi.mocked(mockJudgeJourneyGrade).mockResolvedValue({
+			ok: true,
+			grade: "C",
+			rationale: "Operational gaps.",
+			recommendations: recs,
+		})
+
+		// First refusal: within budget.
+		const result1 = await completeFerment(
+			h.runtime,
+			{
+				ferment_id: h.fermentId,
+				final_summary: "attempt 1",
+				gates: passingFermentGates(),
+			},
+			{ ctx: createContext() },
+		)
+		expect(errText(result1)).toContain("retry 1/3")
+
+		// Second refusal: within budget.
+		const result2 = await completeFerment(
+			h.runtime,
+			{
+				ferment_id: h.fermentId,
+				final_summary: "attempt 2",
+				gates: passingFermentGates(),
+			},
+			{ ctx: createContext() },
+		)
+		expect(errText(result2)).toContain("retry 2/3")
+
+		// Third refusal: within budget.
+		const result3 = await completeFerment(
+			h.runtime,
+			{
+				ferment_id: h.fermentId,
+				final_summary: "attempt 3",
+				gates: passingFermentGates(),
+			},
+			{ ctx: createContext() },
+		)
+		expect(errText(result3)).toContain("retry 3/3")
+
+		// Fourth attempt: budget exhausted — accepts the grade and ships.
+		const result4 = await completeFerment(
+			h.runtime,
+			{
+				ferment_id: h.fermentId,
+				final_summary: "attempt 4",
+				gates: passingFermentGates(),
+			},
+			{ ctx: createContext() },
+		)
+		expect(okText(result4)).toContain("**Final grade:** C")
+		expect(h.storage.get(h.fermentId)?.status).toBe("complete")
+		expect(h.storage.get(h.fermentId)?.grade?.grade).toBe("C")
+		expect(h.storage.get(h.fermentId)?.grade?.recommendations).toEqual(recs)
+	})
+
+	it("judge-unavailable ships without refusal", async () => {
+		const h = createHarness()
+		createTerminalFerment(h)
+		vi.mocked(mockJudgeJourneyGrade).mockResolvedValueOnce({
+			ok: false,
+			reason: "no_auth",
+			detail: "missing api key",
+		})
+		const result = await completeFerment(
+			h.runtime,
+			{
+				ferment_id: h.fermentId,
+				final_summary: "done",
+				gates: passingFermentGates(),
+			},
+			{ ctx: createContext() },
+		)
+		expect(okText(result)).toContain("**Final grade:** unavailable")
+		expect(h.storage.get(h.fermentId)?.status).toBe("complete")
+		expect(h.storage.get(h.fermentId)?.grade).toBeUndefined()
+	})
+})
+
+describe("interactive ferment tool visibility (registerLifecycleTools)", () => {
+	interface FakePi {
+		registerTool: (tool: { name: string }) => void
+		on: (event: string, handler: (e: unknown, ctx: { hasUI: boolean }) => void) => void
+		getActiveTools: () => string[]
+		setActiveTools: (names: string[]) => void
+		getFlag: (name: string) => boolean | undefined
+		_sessionStart: ((event: unknown, ctx: { hasUI: boolean }) => void) | null
+	}
+
+	function makePi(options: { activeTools: string[]; oneShot?: boolean }): FakePi & { setActiveCalls: string[][] } {
+		const pi: FakePi & { setActiveCalls: string[][] } = {
+			registerTool: () => {},
+			on: (_event, handler) => {
+				pi._sessionStart = handler
+			},
+			getActiveTools: () => options.activeTools,
+			setActiveTools: (names: string[]) => {
+				pi.setActiveCalls.push(names)
+			},
+			getFlag: (name: string) => (name === "ferment-oneshot" ? options.oneShot === true : undefined),
+			_sessionStart: null,
+			setActiveCalls: [],
+		}
+		return pi
+	}
+
+	function fireSessionStart(pi: FakePi, hasUI: boolean): void {
+		if (!pi._sessionStart) throw new Error("session_start handler not registered")
+		pi._sessionStart({}, { hasUI })
+	}
+
+	it("hides confirm_ferment_completion_criteria and ask_user when no UI and no oneShot", () => {
+		const pi = makePi({
+			activeTools: [FERMENT_TOOLS.CONFIRM_COMPLETION_CRITERIA, FERMENT_TOOLS.ASK_USER, "read", "bash"],
+		})
+		registerLifecycleTools(pi as unknown as ExtensionAPI)
+		fireSessionStart(pi, false)
+
+		// Last write should remove the two interactive tools from the active set.
+		const lastWrite = pi.setActiveCalls.at(-1) ?? []
+		expect(lastWrite).not.toContain(FERMENT_TOOLS.CONFIRM_COMPLETION_CRITERIA)
+		expect(lastWrite).not.toContain(FERMENT_TOOLS.ASK_USER)
+		expect(lastWrite).toContain("read")
+	})
+
+	it("keeps confirm_ferment_completion_criteria and ask_user visible when no UI but oneShot is set (judge fallback)", () => {
+		const pi = makePi({
+			activeTools: [FERMENT_TOOLS.CONFIRM_COMPLETION_CRITERIA, FERMENT_TOOLS.ASK_USER, "read"],
+			oneShot: true,
+		})
+		registerLifecycleTools(pi as unknown as ExtensionAPI)
+		fireSessionStart(pi, false)
+
+		// No disable writes — the tools stay visible because the judge can answer.
+		expect(pi.setActiveCalls).toEqual([])
+	})
+
+	it("keeps confirm_ferment_completion_criteria and ask_user visible when UI is attached", () => {
+		const pi = makePi({
+			activeTools: [FERMENT_TOOLS.CONFIRM_COMPLETION_CRITERIA, FERMENT_TOOLS.ASK_USER, "read"],
+		})
+		registerLifecycleTools(pi as unknown as ExtensionAPI)
+		fireSessionStart(pi, true)
+
+		// No disable writes — UI is attached, tools work normally.
+		expect(pi.setActiveCalls).toEqual([])
+	})
+})
+
+describe("normalizeCharter", () => {
+	it("passes through an absent charter", () => {
+		expect(normalizeCharter(undefined)).toBeUndefined()
+	})
+
+	it("converts snake_case schema fields to the camelCase FermentCharter", () => {
+		expect(
+			normalizeCharter({
+				intent: "  Recreate the Tahoe desktop  ",
+				wow_factor: "Looks like the real OS",
+				confirmed_scope: "All apps; no backend.",
+				demo_script: "Boot; Finder opens",
+			}),
+		).toEqual({
+			intent: "Recreate the Tahoe desktop",
+			wowFactor: "Looks like the real OS",
+			confirmedScope: "All apps; no backend.",
+			demoScript: "Boot; Finder opens",
+		})
+	})
+
+	it("drops empty optional fields instead of persisting blanks", () => {
+		expect(normalizeCharter({ intent: "Do the thing", wow_factor: "   " })).toEqual({ intent: "Do the thing" })
+	})
+
+	it("returns an actionable error when intent is missing or blank", () => {
+		expect(normalizeCharter({ intent: "   " })).toMatch(/charter\.intent is required/)
+		expect(normalizeCharter({ wow_factor: "x" })).toMatch(/charter\.intent is required/)
+	})
+
+	it("rejects non-object charters with an actionable error", () => {
+		expect(normalizeCharter("a string")).toMatch(/charter must be an object/)
+	})
+})
+
+describe("normalizeScopingAdvisories", () => {
+	it("returns undefined when no advisory signal is present", () => {
+		expect(normalizeScopingAdvisories({})).toBeUndefined()
+		expect(normalizeScopingAdvisories({ self_critique: "   ", scope_deltas: [] })).toBeUndefined()
+	})
+
+	it("trims and drops blank entries", () => {
+		expect(
+			normalizeScopingAdvisories({
+				self_critique: "  tone uncovered, deliberate  ",
+				scope_deltas: [" every app → 12 ", "  "],
+				quality_dimensions: ["visual coherence"],
+			}),
+		).toEqual({
+			selfCritique: "tone uncovered, deliberate",
+			scopeDeltas: ["every app → 12"],
+			qualityDimensions: ["visual coherence"],
+		})
+	})
+
+	it("returns an actionable error for malformed constraint_costs items", () => {
+		expect(normalizeScopingAdvisories({ constraint_costs: [{ constraint: "mock", cost: "" }] })).toMatch(
+			/constraint_costs\[0\] requires non-empty/,
+		)
+	})
+
+	it("keeps well-formed constraint_costs", () => {
+		expect(
+			normalizeScopingAdvisories({ constraint_costs: [{ constraint: "mock weather", cost: "no real conditions" }] }),
+		).toEqual({ constraintCosts: [{ constraint: "mock weather", cost: "no real conditions" }] })
+	})
+})
+
+describe("buildPlanMarkdown", () => {
+	const baseArgs = {
+		title: "Tahoe Replica",
+		goal: "recreate the Tahoe desktop",
+		success_criteria: ["apps work"],
+		constraints: ["mock weather data"],
+		assumptions: "desktop browser only",
+		phases: [{ name: "Shell", goal: "desktop shell", steps: [] }],
+		questions: [],
+		gates: [
+			{ id: "P1", verdict: "pass" as const, rationale: "verify per phase", evidence: "pnpm test" },
+			{ id: "P2", verdict: "omitted" as const, rationale: "single phase", evidence: "n/a" },
+			{ id: "P3", verdict: "pass" as const, rationale: "ship checklist", evidence: "criteria" },
+		],
+	}
+
+	it("renders advisory sections when present", () => {
+		const md = buildPlanMarkdown({
+			...baseArgs,
+			advisories: {
+				scopeDeltas: ["every app → the 12 most-used apps"],
+				constraintCosts: [{ constraint: "mock weather", cost: "no real conditions" }],
+				qualityDimensions: ["global visual coherence — shell phase owns it"],
+				selfCritique: "visual tone uncovered; deliberate until grading",
+			},
+		})
+		expect(md).toContain("## Scope decisions (vs the literal request)")
+		expect(md).toContain("- every app → the 12 most-used apps")
+		expect(md).toContain("## Constraint costs")
+		expect(md).toContain("- mock weather — costs: no real conditions")
+		expect(md).toContain("## Quality dimensions")
+		expect(md).toContain("- global visual coherence — shell phase owns it")
+		expect(md).toContain("## Self-critique (meh-test)")
+		expect(md).toContain("visual tone uncovered; deliberate until grading")
+	})
+
+	it("renders no advisory sections when absent", () => {
+		const md = buildPlanMarkdown({ ...baseArgs })
+		expect(md).not.toContain("## Scope decisions")
+		expect(md).not.toContain("## Constraint costs")
+		expect(md).not.toContain("## Quality dimensions")
+		expect(md).not.toContain("## Self-critique")
+	})
+})

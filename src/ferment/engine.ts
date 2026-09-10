@@ -1,0 +1,310 @@
+/**
+ * Ferment Engine v4 — Progressive Refinement
+ *
+ * Reads canonical ferment state and returns the next action for the LLM.
+ * Runtime continuation policy decides whether callers act on that action
+ * automatically or wait for user confirmation.
+ *
+ * Two output modes:
+ * - `determineNextAction` — declarative, state-based. Returns a `DeclarativeAction`
+ *   with a one-sentence reason, or undefined when no lifecycle action remains.
+ *   No prose instructions.
+ * - `whatNext` — prose-driven (legacy). Returns `FermentAction` with LLM prose,
+ *   or undefined when no lifecycle action remains.
+ *   Used by callers that need the full coaching message.
+ */
+
+import { type Ferment, type FermentAction, inSameParallelCohort, type Phase, type Step } from "./types.js"
+
+// ─── Declarative Action Types ─────────────────────────────────────────────────
+
+export type DeclarativeAction =
+	| { kind: "scope"; reason: string }
+	| { kind: "activate_phase"; phaseId: string; reason: string }
+	| { kind: "refine"; phaseId: string; reason: string }
+	| { kind: "start_step"; phaseId: string; stepId: string; reason: string; canParallel: boolean }
+	| { kind: "complete_step"; phaseId: string; stepId: string; reason: string }
+	| { kind: "verify_step"; phaseId: string; stepId: string; reason: string }
+	| { kind: "complete_phase"; phaseId: string; reason: string }
+	| { kind: "pause"; reason: string }
+	| { kind: "complete_ferment"; reason: string }
+	| { kind: "recover_step"; phaseId: string; stepId: string; reason: string }
+	| { kind: "recover_phase"; phaseId: string; reason: string }
+
+// ─── Main Entry Point ──────────────────────────────────────────────────────────
+
+/**
+ * Declarative next-action determination.
+ * Reads ferment state and returns the next action without prose.
+ * Reason is a one-sentence objective, not an instruction.
+ */
+export function determineNextAction(ferment: Ferment): DeclarativeAction | undefined {
+	const active = findActivePhase(ferment)
+
+	// Priority-ordered conditions (higher priority first)
+
+	// 0. Terminal ferment status → no lifecycle action remains.
+	if (ferment.status === "complete" || ferment.status === "abandoned") return undefined
+
+	// 1. No phases defined → scope (only if not paused)
+	if (ferment.phases.length === 0) {
+		if (ferment.status === "paused") {
+			return { kind: "pause", reason: "ferment is paused" }
+		}
+		return { kind: "scope", reason: "collect goal, criteria, constraints, and phase breakdown" }
+	}
+
+	// 2. Ferment is paused
+	if (ferment.status === "paused") {
+		return { kind: "pause", reason: "ferment is paused" }
+	}
+
+	// 3. Failed phase → recover_phase. This must run before all-terminal
+	// completion so failed phases can be retried or explicitly bypassed.
+	const failedPhase = ferment.phases.find((p) => p.status === "failed")
+	if (failedPhase) {
+		return { kind: "recover_phase", phaseId: failedPhase.id, reason: "handle failed phase" }
+	}
+
+	// 4. All phases terminal → complete_ferment
+	const allPhasesTerminal = ferment.phases.every(
+		(p) => p.status === "completed" || p.status === "skipped" || p.status === "failed",
+	)
+	if (allPhasesTerminal) {
+		return { kind: "complete_ferment", reason: `all ${ferment.phases.length} phases are terminal` }
+	}
+
+	// 5. No active phase, ferment is planned → activate first planned
+	if (!active && ferment.status === "planned") {
+		const next = findFirstPlannedPhase(ferment)
+		if (next) {
+			return {
+				kind: "activate_phase",
+				phaseId: next.id,
+				reason: "activate the first planned phase",
+			}
+		}
+	}
+
+	// 6. Running but no active phase (recovered state)
+	if (ferment.status === "running" && !active) {
+		return { kind: "pause", reason: "no active phase, recovered state" }
+	}
+
+	// 7. Active phase has no steps → refine
+	if (active && active.steps.length === 0) {
+		return { kind: "refine", phaseId: active.id, reason: "populate the active phase with concrete steps" }
+	}
+
+	// 8. Steps with failures → recover_step first
+	if (active) {
+		const failedStep = active.steps.find((s) => s.status === "failed")
+		if (failedStep) {
+			return {
+				kind: "recover_step",
+				phaseId: active.id,
+				stepId: failedStep.id,
+				reason: "handle failed step",
+			}
+		}
+
+		// 9. Step running → check for parallel siblings to start, else complete_step.
+		//
+		// A running step blocks non-parallel siblings (the FSM rejects concurrent
+		// non-parallel starts). So before suggesting start_step for a pending step,
+		// we must check whether the pending step is in the same parallel cohort.
+		// If it is, start_step is valid. If not, the only actionable next step is
+		// to complete the running one — the FSM would reject a start on the
+		// pending sibling.
+		//
+		// This ordering prevents a delegation deadlock in multi-step phases:
+		// the agent-spawn-guard blocks Agent dispatch when the engine returns
+		// start_step, but the FSM rejects the start because a sibling is running.
+		const runningStep = active.steps.find((s) => s.status === "running")
+		if (runningStep) {
+			const parallelPending = active.steps.find((s) => s.status === "pending" && inSameParallelCohort(runningStep, s))
+			if (parallelPending) {
+				return {
+					kind: "start_step",
+					phaseId: active.id,
+					stepId: parallelPending.id,
+					reason: "start parallel sibling while cohort is running",
+					canParallel: true,
+				}
+			}
+
+			return {
+				kind: "complete_step",
+				phaseId: active.id,
+				stepId: runningStep.id,
+				reason: "mark the running step as complete",
+			}
+		}
+
+		// 10. Steps pending → start first pending (no step is running)
+		const nextStep = findNextStep(active)
+		if (nextStep) {
+			return {
+				kind: "start_step",
+				phaseId: active.id,
+				stepId: nextStep.id,
+				reason: "start the next pending step",
+				canParallel: false,
+			}
+		}
+
+		// 11. All steps terminal → complete_phase
+		const allStepsTerminal = active.steps.every(
+			(s) => s.status === "done" || s.status === "skipped" || s.status === "verified" || s.status === "failed",
+		)
+		if (allStepsTerminal) {
+			return {
+				kind: "complete_phase",
+				phaseId: active.id,
+				reason: `mark phase ${active.index} as complete when all steps are terminal`,
+			}
+		}
+	}
+
+	// 12. No lifecycle action remains.
+	return undefined
+}
+
+/**
+ * Legacy prose-driven action. Prefer `determineNextAction` for new code.
+ */
+export function whatNext(ferment: Ferment): FermentAction | undefined {
+	const action = determineNextAction(ferment)
+	if (!action) return undefined
+	return toFermentAction(action, ferment)
+}
+
+function toFermentAction(action: DeclarativeAction, ferment: Ferment): FermentAction {
+	// Helper to find phase/step from action
+	const phase = "phaseId" in action ? ferment.phases.find((p) => p.id === action.phaseId) : undefined
+	const step = phase && "stepId" in action ? phase.steps.find((s) => s.id === action.stepId) : undefined
+
+	switch (action.kind) {
+		case "scope":
+			return { kind: "scope", message: buildScopeProse(ferment) }
+
+		case "activate_phase":
+			return {
+				kind: "activate_phase",
+				phaseId: action.phaseId,
+				message: `Activate phase ${phase?.index}: "${phase?.name}"`,
+			}
+
+		case "refine":
+			return {
+				kind: "refine",
+				phaseId: action.phaseId,
+				message: `Break phase ${phase?.index} "${phase?.name}" into 3–6 concrete steps.`,
+			}
+
+		case "start_step":
+			return {
+				kind: "start_step",
+				stepId: action.stepId,
+				message: `Start step ${step?.index}: "${step?.description}"`,
+			}
+
+		case "complete_step":
+			return {
+				kind: "complete_step",
+				stepId: action.stepId,
+				message: `Complete step ${step?.index}: "${step?.description}"`,
+			}
+
+		case "verify_step":
+			// FermentAction uses "verify" kind
+			return {
+				kind: "verify",
+				stepId: action.stepId,
+				message: `Verify step ${step?.index}: "${step?.description}"`,
+			}
+
+		case "complete_phase":
+			return {
+				kind: "complete_phase",
+				phaseId: action.phaseId,
+				message: `Mark phase ${phase?.index} "${phase?.name}" as complete.`,
+			}
+
+		case "pause":
+			return { kind: "paused", message: "Ferment is paused." }
+
+		case "complete_ferment":
+			return {
+				kind: "complete_ferment",
+				message:
+					ferment.status !== "running" && ferment.status !== "planned" && ferment.status !== "draft"
+						? `Ferment is ${ferment.status}. All ${ferment.phases.length} phases complete.`
+						: `All ${ferment.phases.length} phases complete. Mark ferment as complete.`,
+			}
+
+		case "recover_step":
+			return {
+				kind: "recover_step",
+				phaseId: action.phaseId,
+				stepId: action.stepId,
+				message: `Step ${step?.index} "${step?.description}" failed.`,
+			}
+
+		case "recover_phase":
+			return {
+				kind: "recover_phase",
+				phaseId: action.phaseId,
+				message: `Phase ${phase?.index} "${phase?.name}" failed. Retry it with activate_ferment_phase, bypass it with skip_ferment_phase, or ask the user to run /ferment abandon if the ferment should stop.`,
+			}
+	}
+}
+
+function buildScopeProse(f: Ferment): string {
+	const s = f.scoping
+	const missing: string[] = []
+	if (!s.goal) missing.push("goal")
+	if (!s.criteria) missing.push("success criteria")
+	if (!s.constraints) missing.push("constraints")
+	if (!s.phases) missing.push("phase breakdown")
+
+	if (missing.length === 0) {
+		return `All scoping fields collected for ferment "${f.name}".`
+	}
+
+	return `Collect: ${missing.join(", ")}.`
+}
+
+// ─── Helpers ──────────────────────────────────────────────────────────────────
+
+export function findFirstPlannedPhase(f: Ferment): Phase | undefined {
+	return f.phases.find((p) => p.status === "planned")
+}
+
+export function isScopingComplete(f: Ferment): boolean {
+	return !!(f.scoping.goal && f.scoping.criteria && f.scoping.constraints && f.scoping.phases)
+}
+
+function findActivePhase(f: Ferment): Phase | undefined {
+	if (f.activePhaseId) {
+		const byId = f.phases.find((p) => p.id === f.activePhaseId)
+		// Only trust activePhaseId if the phase is actually in an active state;
+		// fall back to status scan on data drift (e.g. recovered ferments).
+		if (byId?.status === "active") return byId
+	}
+	return f.phases.find((p) => p.status === "active")
+}
+
+function findNextStep(p: Phase): Step | undefined {
+	// Returns the first step that should be *started* next. Excludes terminal states
+	// (done/skipped/verified/failed) AND running — a running step is the runningStep
+	// branch's responsibility, not a candidate for start_step.
+	return p.steps.find(
+		(s) =>
+			s.status !== "done" &&
+			s.status !== "skipped" &&
+			s.status !== "verified" &&
+			s.status !== "failed" &&
+			s.status !== "running",
+	)
+}

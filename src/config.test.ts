@@ -1,0 +1,927 @@
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs"
+import { tmpdir } from "node:os"
+import { dirname, join } from "node:path"
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+import {
+	buildSkillPathOptions,
+	checkConfigFilePermissions,
+	clearApiKey,
+	ensureHideThinkingBlockDefault,
+	ensureQuietStartupDefault,
+	loadConfig,
+	RETRY_DEFAULTS,
+	readApiKeyFromConfigFile,
+	readGitToken,
+	readHideTips,
+	readTelemetryConfig,
+	readTeleportCompactHintEnabled,
+	upgradeLegacyRetrySettings,
+	writeApiKey,
+	writeDeviceId,
+	writeGitToken,
+	writeHideTips,
+	writeSessionModeWizardSeenAt,
+	writeTeleportCompactHintEnabled,
+} from "./config.js"
+
+describe("loadConfig", () => {
+	let tempDir: string
+	let configPath: string
+
+	beforeEach(() => {
+		tempDir = mkdtempSync(join(tmpdir(), "kimchi-test-"))
+		configPath = join(tempDir, "config.json")
+	})
+
+	afterEach(() => {
+		rmSync(tempDir, { recursive: true, force: true })
+	})
+
+	it("reads apiKey from config file", () => {
+		writeFileSync(configPath, JSON.stringify({ apiKey: "file-key-456" }))
+		const config = loadConfig({ configPath })
+		expect(config.apiKey).toBe("file-key-456")
+	})
+
+	it("reads api_key from config file for backward compatibility", () => {
+		writeFileSync(configPath, JSON.stringify({ api_key: "file-key-456" }))
+		const config = loadConfig({ configPath })
+		expect(config.apiKey).toBe("file-key-456")
+	})
+
+	it("prefers apiKey over api_key when both are set", () => {
+		writeFileSync(configPath, JSON.stringify({ apiKey: "new-key", api_key: "old-key" }))
+		const config = loadConfig({ configPath })
+		expect(config.apiKey).toBe("new-key")
+	})
+
+	it("reads deviceId from config file", () => {
+		writeFileSync(configPath, JSON.stringify({ deviceId: "550e8400-e29b-41d4-a716-446655440000" }))
+		const config = loadConfig({ configPath })
+		expect(config.deviceId).toBe("550e8400-e29b-41d4-a716-446655440000")
+	})
+
+	it("reads device_id from config file for backward compatibility", () => {
+		writeFileSync(configPath, JSON.stringify({ device_id: "550e8400-e29b-41d4-a716-446655440000" }))
+		const config = loadConfig({ configPath })
+		expect(config.deviceId).toBe("550e8400-e29b-41d4-a716-446655440000")
+	})
+
+	it("prefers deviceId over device_id when both are set", () => {
+		writeFileSync(
+			configPath,
+			JSON.stringify({
+				deviceId: "preferred-uuid",
+				device_id: "legacy-uuid",
+			}),
+		)
+		const config = loadConfig({ configPath })
+		expect(config.deviceId).toBe("preferred-uuid")
+	})
+
+	it("returns empty deviceId when no device ID is found", () => {
+		const config = loadConfig({ configPath })
+		expect(config.deviceId).toBe("")
+	})
+
+	it("returns empty apiKey when no key is found", () => {
+		const config = loadConfig({ configPath })
+		expect(config.apiKey).toBe("")
+	})
+
+	it("does not expose Pi retry settings as Kimchi config", () => {
+		const config = loadConfig({ configPath, cwd: tempDir })
+		expect(config).not.toHaveProperty("retry")
+	})
+
+	it("reads project config from .kimchi/config.json overriding global", () => {
+		const globalDir = mkdtempSync(join(tmpdir(), "kimchi-test-"))
+		const projectDir = mkdtempSync(join(tmpdir(), "kimchi-test-"))
+		const globalPath = join(globalDir, "config.json")
+		const projectPath = join(projectDir, ".kimchi", "config.json")
+
+		writeFileSync(globalPath, JSON.stringify({ apiKey: "global-key" }))
+		mkdirSync(dirname(projectPath), { recursive: true })
+		writeFileSync(projectPath, JSON.stringify({ apiKey: "project-key" }))
+
+		const config = loadConfig({ configPath: globalPath, cwd: projectDir })
+		expect(config.apiKey).toBe("project-key")
+
+		rmSync(globalDir, { recursive: true, force: true })
+		rmSync(projectDir, { recursive: true, force: true })
+	})
+
+	it("merges mcpSearch shallowly (project overrides only provided keys)", () => {
+		const globalDir = mkdtempSync(join(tmpdir(), "kimchi-test-"))
+		const projectDir = mkdtempSync(join(tmpdir(), "kimchi-test-"))
+		const globalPath = join(globalDir, "config.json")
+		const projectPath = join(projectDir, ".kimchi", "config.json")
+
+		writeFileSync(globalPath, JSON.stringify({ mcpSearch: { strategy: "regex", bm25K1: 1.5 } }))
+		mkdirSync(dirname(projectPath), { recursive: true })
+		writeFileSync(projectPath, JSON.stringify({ mcpSearch: { strategy: "bm25" } }))
+
+		const config = loadConfig({ configPath: globalPath, cwd: projectDir })
+		expect(config.mcpSearch.strategy).toBe("bm25")
+		expect(config.mcpSearch.bm25K1).toBe(1.5) // inherited from global
+
+		rmSync(globalDir, { recursive: true, force: true })
+		rmSync(projectDir, { recursive: true, force: true })
+	})
+
+	it("falls back to global when .kimchi/config.json does not exist", () => {
+		const globalDir = mkdtempSync(join(tmpdir(), "kimchi-test-"))
+		const projectDir = mkdtempSync(join(tmpdir(), "kimchi-test-"))
+		const globalPath = join(globalDir, "config.json")
+
+		writeFileSync(globalPath, JSON.stringify({ apiKey: "global-key" }))
+
+		const config = loadConfig({ configPath: globalPath, cwd: projectDir })
+		expect(config.apiKey).toBe("global-key")
+
+		rmSync(globalDir, { recursive: true, force: true })
+		rmSync(projectDir, { recursive: true, force: true })
+	})
+
+	it("customLlmEndpoint is undefined when no endpoint is saved", () => {
+		writeFileSync(configPath, JSON.stringify({ apiKey: "my-key" }))
+		const config = loadConfig({ configPath })
+		expect(config.customLlmEndpoint).toBeUndefined()
+	})
+
+	it("customLlmEndpoint returns the saved value when explicitly configured", () => {
+		writeFileSync(configPath, JSON.stringify({ apiKey: "my-key", llmEndpoint: "https://custom.example" }))
+		const config = loadConfig({ configPath })
+		expect(config.customLlmEndpoint).toBe("https://custom.example")
+		expect(config.llmEndpoint).toBe("https://custom.example")
+	})
+
+	it("project llmEndpoint overrides global", () => {
+		const globalDir = mkdtempSync(join(tmpdir(), "kimchi-test-"))
+		const projectDir = mkdtempSync(join(tmpdir(), "kimchi-test-"))
+		const globalPath = join(globalDir, "config.json")
+		const projectPath = join(projectDir, ".kimchi", "config.json")
+
+		writeFileSync(globalPath, JSON.stringify({ apiKey: "key", llmEndpoint: "https://global.example.com" }))
+		mkdirSync(dirname(projectPath), { recursive: true })
+		writeFileSync(projectPath, JSON.stringify({ apiKey: "key", llmEndpoint: "https://project.example.com" }))
+
+		const config = loadConfig({ configPath: globalPath, cwd: projectDir })
+		expect(config.llmEndpoint).toBe("https://project.example.com")
+
+		rmSync(globalDir, { recursive: true, force: true })
+		rmSync(projectDir, { recursive: true, force: true })
+	})
+
+	it("project skillPaths replaces global (not concatenated)", () => {
+		const globalDir = mkdtempSync(join(tmpdir(), "kimchi-test-"))
+		const projectDir = mkdtempSync(join(tmpdir(), "kimchi-test-"))
+		const globalPath = join(globalDir, "config.json")
+		const projectPath = join(projectDir, ".kimchi", "config.json")
+
+		writeFileSync(globalPath, JSON.stringify({ apiKey: "key", skillPaths: ["/global/path"] }))
+		mkdirSync(dirname(projectPath), { recursive: true })
+		writeFileSync(projectPath, JSON.stringify({ apiKey: "key", skillPaths: ["/project/path"] }))
+
+		const config = loadConfig({ configPath: globalPath, cwd: projectDir })
+		expect(config.skillPaths).toEqual(["/project/path"])
+
+		rmSync(globalDir, { recursive: true, force: true })
+		rmSync(projectDir, { recursive: true, force: true })
+	})
+
+	it("gracefully ignores malformed project config JSON", () => {
+		const globalDir = mkdtempSync(join(tmpdir(), "kimchi-test-"))
+		const projectDir = mkdtempSync(join(tmpdir(), "kimchi-test-"))
+		const globalPath = join(globalDir, "config.json")
+		const projectPath = join(projectDir, ".kimchi", "config.json")
+
+		writeFileSync(globalPath, JSON.stringify({ apiKey: "global-key" }))
+		mkdirSync(dirname(projectPath), { recursive: true })
+		writeFileSync(projectPath, "{ not valid json }")
+
+		const config = loadConfig({ configPath: globalPath, cwd: projectDir })
+		expect(config.apiKey).toBe("global-key")
+
+		rmSync(globalDir, { recursive: true, force: true })
+		rmSync(projectDir, { recursive: true, force: true })
+	})
+
+	it("ignores empty-string project values and falls back to global", () => {
+		const globalDir = mkdtempSync(join(tmpdir(), "kimchi-test-"))
+		const projectDir = mkdtempSync(join(tmpdir(), "kimchi-test-"))
+		const globalPath = join(globalDir, "config.json")
+		const projectPath = join(projectDir, ".kimchi", "config.json")
+
+		writeFileSync(globalPath, JSON.stringify({ apiKey: "global-key", llmEndpoint: "https://global.example.com" }))
+		mkdirSync(dirname(projectPath), { recursive: true })
+		writeFileSync(projectPath, JSON.stringify({ apiKey: "", llmEndpoint: "" }))
+
+		const config = loadConfig({ configPath: globalPath, cwd: projectDir })
+		expect(config.apiKey).toBe("global-key")
+		expect(config.llmEndpoint).toBe("https://global.example.com")
+
+		rmSync(globalDir, { recursive: true, force: true })
+		rmSync(projectDir, { recursive: true, force: true })
+	})
+
+	it("does not walk up the directory tree from a subfolder", () => {
+		const globalDir = mkdtempSync(join(tmpdir(), "kimchi-test-"))
+		const rootDir = mkdtempSync(join(tmpdir(), "kimchi-test-"))
+		const subDir = join(rootDir, "src", "components")
+		const globalPath = join(globalDir, "config.json")
+		const rootProjectPath = join(rootDir, ".kimchi", "config.json")
+
+		writeFileSync(globalPath, JSON.stringify({ apiKey: "global-key" }))
+		mkdirSync(dirname(rootProjectPath), { recursive: true })
+		writeFileSync(rootProjectPath, JSON.stringify({ apiKey: "root-project-key" }))
+		mkdirSync(subDir, { recursive: true })
+
+		// cwd is a subfolder that does NOT have .kimchi/config.json
+		const config = loadConfig({ configPath: globalPath, cwd: subDir })
+		// Should NOT pick up rootDir/.kimchi/config.json
+		// Falls back to global only
+		expect(config.apiKey).toBe("global-key")
+
+		rmSync(globalDir, { recursive: true, force: true })
+		rmSync(rootDir, { recursive: true, force: true })
+	})
+
+	it("reads global onboarding state", () => {
+		writeFileSync(
+			configPath,
+			JSON.stringify({
+				onboarding: {
+					sessionModeWizardSeenAt: "2026-05-19T09:30:00.000Z",
+					hideSessionModeDialog: true,
+				},
+			}),
+		)
+
+		const config = loadConfig({ configPath })
+
+		expect(config.onboarding.sessionModeWizardSeenAt).toBe("2026-05-19T09:30:00.000Z")
+		expect(config.onboarding.hideSessionModeDialog).toBe(true)
+	})
+
+	it("does not read project onboarding state as global first-run state", () => {
+		const globalDir = mkdtempSync(join(tmpdir(), "kimchi-test-"))
+		const projectDir = mkdtempSync(join(tmpdir(), "kimchi-test-"))
+		const globalPath = join(globalDir, "config.json")
+		const projectPath = join(projectDir, ".kimchi", "config.json")
+
+		writeFileSync(globalPath, JSON.stringify({ apiKey: "global-key" }))
+		mkdirSync(dirname(projectPath), { recursive: true })
+		writeFileSync(projectPath, JSON.stringify({ onboarding: { sessionModeWizardSeenAt: "project" } }))
+
+		const config = loadConfig({ configPath: globalPath, cwd: projectDir })
+		expect(config.onboarding.sessionModeWizardSeenAt).toBeUndefined()
+
+		rmSync(globalDir, { recursive: true, force: true })
+		rmSync(projectDir, { recursive: true, force: true })
+	})
+})
+
+describe("writeApiKey", () => {
+	let tempDir: string
+	let configPath: string
+
+	beforeEach(() => {
+		tempDir = mkdtempSync(join(tmpdir(), "kimchi-test-"))
+		configPath = join(tempDir, "config.json")
+	})
+
+	afterEach(() => {
+		rmSync(tempDir, { recursive: true, force: true })
+	})
+
+	it("round-trips the API key", () => {
+		writeApiKey("sekrit-42", configPath)
+		const raw = readFileSync(configPath, "utf-8")
+		expect(JSON.parse(raw).apiKey).toBe("sekrit-42")
+	})
+
+	it("overwrites any previous value", () => {
+		writeFileSync(configPath, JSON.stringify({ apiKey: "first" }))
+		writeApiKey("second", configPath)
+		const raw = readFileSync(configPath, "utf-8")
+		expect(JSON.parse(raw).apiKey).toBe("second")
+	})
+
+	it("can persist the Kimchi API endpoint with the API key", () => {
+		writeApiKey("sekrit-42", configPath, { llmEndpoint: " https://custom.kimchi.example " })
+		const raw = JSON.parse(readFileSync(configPath, "utf-8"))
+		expect(raw.apiKey).toBe("sekrit-42")
+		expect(raw.llmEndpoint).toBe("https://custom.kimchi.example")
+	})
+
+	it("clears llmEndpoint when no endpoint is provided (prevents stale endpoint after browser login)", () => {
+		writeFileSync(configPath, JSON.stringify({ apiKey: "old-key", llmEndpoint: "https://custom.example" }))
+		writeApiKey("new-browser-token", configPath)
+		const raw = JSON.parse(readFileSync(configPath, "utf-8"))
+		expect(raw.apiKey).toBe("new-browser-token")
+		expect(raw.llmEndpoint).toBeUndefined()
+	})
+})
+
+describe("clearApiKey", () => {
+	let tempDir: string
+	let configPath: string
+
+	beforeEach(() => {
+		tempDir = mkdtempSync(join(tmpdir(), "kimchi-test-"))
+		configPath = join(tempDir, "config.json")
+	})
+
+	afterEach(() => {
+		rmSync(tempDir, { recursive: true, force: true })
+	})
+
+	it("removes both apiKey and api_key fields", () => {
+		writeFileSync(configPath, JSON.stringify({ apiKey: "a", api_key: "b", other: 1 }))
+		clearApiKey(configPath)
+		const raw = JSON.parse(readFileSync(configPath, "utf-8"))
+		expect(raw).not.toHaveProperty("apiKey")
+		expect(raw).not.toHaveProperty("api_key")
+		expect(raw.other).toBe(1)
+	})
+
+	it("is a no-op when the file does not exist", () => {
+		expect(() => clearApiKey(join(tempDir, "missing.json"))).not.toThrow()
+	})
+})
+
+describe("writeDeviceId", () => {
+	let tempDir: string
+	let configPath: string
+
+	beforeEach(() => {
+		tempDir = mkdtempSync(join(tmpdir(), "kimchi-test-device-"))
+		configPath = join(tempDir, "config.json")
+	})
+
+	afterEach(() => {
+		rmSync(tempDir, { recursive: true, force: true })
+	})
+
+	it("writes deviceId field", () => {
+		writeDeviceId("550e8400-e29b-41d4-a716-446655440000", configPath)
+		const raw = JSON.parse(readFileSync(configPath, "utf-8"))
+		expect(raw.deviceId).toBe("550e8400-e29b-41d4-a716-446655440000")
+	})
+
+	it("clears legacy device_id field", () => {
+		writeFileSync(configPath, JSON.stringify({ device_id: "old-uuid", other: 1 }))
+		writeDeviceId("new-uuid", configPath)
+		const raw = JSON.parse(readFileSync(configPath, "utf-8"))
+		expect(raw.deviceId).toBe("new-uuid")
+		expect(raw).not.toHaveProperty("device_id")
+	})
+
+	it("overwrites any previous value", () => {
+		writeDeviceId("first-uuid", configPath)
+		writeDeviceId("second-uuid", configPath)
+		const raw = JSON.parse(readFileSync(configPath, "utf-8"))
+		expect(raw.deviceId).toBe("second-uuid")
+	})
+})
+
+describe("readTelemetryConfig", () => {
+	let tempDir: string
+	let configPath: string
+	let savedApiKey: string | undefined
+	let savedTelemetryEnabled: string | undefined
+
+	beforeEach(() => {
+		tempDir = mkdtempSync(join(tmpdir(), "kimchi-telemetry-test-"))
+		configPath = join(tempDir, "config.json")
+		savedApiKey = process.env.KIMCHI_API_KEY
+		savedTelemetryEnabled = process.env.KIMCHI_TELEMETRY_ENABLED
+		delete process.env.KIMCHI_API_KEY
+		delete process.env.KIMCHI_TELEMETRY_ENABLED
+	})
+
+	afterEach(() => {
+		rmSync(tempDir, { recursive: true, force: true })
+		if (savedApiKey !== undefined) process.env.KIMCHI_API_KEY = savedApiKey
+		else delete process.env.KIMCHI_API_KEY
+		if (savedTelemetryEnabled !== undefined) process.env.KIMCHI_TELEMETRY_ENABLED = savedTelemetryEnabled
+		else delete process.env.KIMCHI_TELEMETRY_ENABLED
+	})
+
+	it("picks up telemetry.metricsEndpoint when present", () => {
+		writeFileSync(
+			configPath,
+			JSON.stringify({
+				telemetry: {
+					enabled: true,
+					metricsEndpoint: "https://custom.example.com/metrics:ingest",
+				},
+			}),
+		)
+		const config = readTelemetryConfig(configPath)
+		expect(config.metricsEndpoint).toBe("https://custom.example.com/metrics:ingest")
+	})
+
+	it("falls back to default metrics endpoint when absent", () => {
+		writeFileSync(
+			configPath,
+			JSON.stringify({
+				telemetry: {
+					enabled: true,
+				},
+			}),
+		)
+		const config = readTelemetryConfig(configPath)
+		expect(config.metricsEndpoint).toBe("https://api.cast.ai/ai-optimizer/v1beta/metrics:ingest")
+	})
+
+	it("returns defaults with telemetry enabled when no explicit preference", () => {
+		writeFileSync(configPath, JSON.stringify({}))
+		const config = readTelemetryConfig(configPath)
+		expect(config.enabled).toBe(true)
+		expect(config.metricsEndpoint).toBe("https://api.cast.ai/ai-optimizer/v1beta/metrics:ingest")
+	})
+
+	it("injects User-Agent into telemetry headers", () => {
+		writeFileSync(
+			configPath,
+			JSON.stringify({
+				telemetry: {
+					enabled: true,
+					apiKey: "test-api-key",
+				},
+			}),
+		)
+		const config = readTelemetryConfig(configPath)
+		expect(config.headers["User-Agent"]).toBeDefined()
+		expect(config.headers["User-Agent"]).toMatch(/^kimchi\//)
+	})
+
+	it("injects User-Agent even with no apiKey and no custom headers", () => {
+		writeFileSync(
+			configPath,
+			JSON.stringify({
+				telemetry: {
+					enabled: true,
+				},
+			}),
+		)
+		const config = readTelemetryConfig(configPath)
+		expect(config.headers["User-Agent"]).toBeDefined()
+		expect(config.headers["User-Agent"]).toMatch(/^kimchi\//)
+	})
+
+	it("preserves custom user-agent header when user sets one", () => {
+		writeFileSync(
+			configPath,
+			JSON.stringify({
+				telemetry: {
+					enabled: true,
+					headers: {
+						"user-agent": "my-custom-agent/1.0",
+					},
+				},
+			}),
+		)
+		const config = readTelemetryConfig(configPath)
+		expect(config.headers["user-agent"]).toBe("my-custom-agent/1.0")
+		expect(config.headers["User-Agent"]).toBeUndefined()
+	})
+
+	it("injects User-Agent even when telemetry is disabled (config still prepared)", () => {
+		writeFileSync(
+			configPath,
+			JSON.stringify({
+				telemetry: {
+					enabled: false,
+					apiKey: "test-api-key",
+				},
+			}),
+		)
+		const config = readTelemetryConfig(configPath)
+		expect(config.enabled).toBe(false)
+		expect(config.headers["User-Agent"]).toBeDefined()
+		expect(config.headers["User-Agent"]).toMatch(/^kimchi\//)
+	})
+})
+
+describe("writeSessionModeWizardSeenAt", () => {
+	let tempDir: string
+	let configPath: string
+
+	beforeEach(() => {
+		tempDir = mkdtempSync(join(tmpdir(), "kimchi-test-"))
+		configPath = join(tempDir, "config.json")
+	})
+
+	afterEach(() => {
+		rmSync(tempDir, { recursive: true, force: true })
+	})
+
+	it("writes onboarding.sessionModeWizardSeenAt", () => {
+		writeSessionModeWizardSeenAt("2026-05-19T09:30:00.000Z", configPath)
+		const raw = JSON.parse(readFileSync(configPath, "utf-8"))
+		expect(raw.onboarding.sessionModeWizardSeenAt).toBe("2026-05-19T09:30:00.000Z")
+	})
+
+	it("preserves unrelated fields and existing onboarding fields", () => {
+		writeFileSync(
+			configPath,
+			JSON.stringify({
+				apiKey: "key",
+				onboarding: { otherWizardSeenAt: "2026-05-18T10:00:00.000Z" },
+			}),
+		)
+
+		writeSessionModeWizardSeenAt("2026-05-19T09:30:00.000Z", configPath)
+		const raw = JSON.parse(readFileSync(configPath, "utf-8"))
+
+		expect(raw).toEqual({
+			apiKey: "key",
+			onboarding: {
+				otherWizardSeenAt: "2026-05-18T10:00:00.000Z",
+				sessionModeWizardSeenAt: "2026-05-19T09:30:00.000Z",
+			},
+		})
+	})
+})
+
+describe("readHideTips / writeHideTips", () => {
+	let tempDir: string
+	let configPath: string
+
+	beforeEach(() => {
+		tempDir = mkdtempSync(join(tmpdir(), "kimchi-test-"))
+		configPath = join(tempDir, "config.json")
+	})
+
+	afterEach(() => {
+		rmSync(tempDir, { recursive: true, force: true })
+	})
+
+	it("reads hideTips from preferences config", () => {
+		writeFileSync(configPath, JSON.stringify({ preferences: { hideTips: true } }))
+		expect(readHideTips(configPath)).toBe(true)
+	})
+
+	it("returns false when hideTips is absent", () => {
+		expect(readHideTips(configPath)).toBe(false)
+	})
+
+	it("writes preferences.hideTips", () => {
+		writeHideTips(true, configPath)
+		const raw = JSON.parse(readFileSync(configPath, "utf-8"))
+		expect(raw.preferences.hideTips).toBe(true)
+	})
+
+	it("preserves unrelated fields and existing preferences fields", () => {
+		writeFileSync(
+			configPath,
+			JSON.stringify({
+				apiKey: "key",
+				preferences: { hideTips: false },
+			}),
+		)
+
+		writeHideTips(true, configPath)
+		const raw = JSON.parse(readFileSync(configPath, "utf-8"))
+
+		expect(raw).toEqual({
+			apiKey: "key",
+			preferences: {
+				hideTips: true,
+			},
+		})
+	})
+})
+
+describe("readGitToken / writeGitToken", () => {
+	let tempDir: string
+	let configPath: string
+
+	beforeEach(() => {
+		tempDir = mkdtempSync(join(tmpdir(), "kimchi-test-"))
+		configPath = join(tempDir, "config.json")
+	})
+
+	afterEach(() => {
+		rmSync(tempDir, { recursive: true, force: true })
+	})
+
+	it("returns undefined when config file does not exist", () => {
+		expect(readGitToken("github.com", configPath)).toBeUndefined()
+	})
+
+	it("returns undefined when gitTokens section is missing", () => {
+		writeFileSync(configPath, JSON.stringify({ apiKey: "key" }))
+		expect(readGitToken("github.com", configPath)).toBeUndefined()
+	})
+
+	it("returns undefined when host is not in gitTokens", () => {
+		writeFileSync(configPath, JSON.stringify({ gitTokens: { "gitlab.com": "tok" } }))
+		expect(readGitToken("github.com", configPath)).toBeUndefined()
+	})
+
+	it("reads a stored token for a host", () => {
+		writeFileSync(configPath, JSON.stringify({ gitTokens: { "github.com": "ghp_abc" } }))
+		expect(readGitToken("github.com", configPath)).toBe("ghp_abc")
+	})
+
+	it("ignores empty string tokens", () => {
+		writeFileSync(configPath, JSON.stringify({ gitTokens: { "github.com": "" } }))
+		expect(readGitToken("github.com", configPath)).toBeUndefined()
+	})
+
+	it("ignores non-string token values", () => {
+		writeFileSync(configPath, JSON.stringify({ gitTokens: { "github.com": 12345 } }))
+		expect(readGitToken("github.com", configPath)).toBeUndefined()
+	})
+
+	it("writes a token for a new host", () => {
+		writeGitToken("github.com", "ghp_new", configPath)
+		const raw = JSON.parse(readFileSync(configPath, "utf-8"))
+		expect(raw.gitTokens["github.com"]).toBe("ghp_new")
+	})
+
+	it("writes a token preserving existing config", () => {
+		writeFileSync(configPath, JSON.stringify({ apiKey: "key", gitTokens: { "gitlab.com": "gl_tok" } }))
+		writeGitToken("github.com", "ghp_abc", configPath)
+		const raw = JSON.parse(readFileSync(configPath, "utf-8"))
+		expect(raw.apiKey).toBe("key")
+		expect(raw.gitTokens["gitlab.com"]).toBe("gl_tok")
+		expect(raw.gitTokens["github.com"]).toBe("ghp_abc")
+	})
+
+	it("overwrites an existing token for the same host", () => {
+		writeFileSync(configPath, JSON.stringify({ gitTokens: { "github.com": "old" } }))
+		writeGitToken("github.com", "new", configPath)
+		expect(readGitToken("github.com", configPath)).toBe("new")
+	})
+
+	it("round-trips write then read", () => {
+		writeGitToken("github.com", "ghp_roundtrip", configPath)
+		expect(readGitToken("github.com", configPath)).toBe("ghp_roundtrip")
+	})
+})
+
+describe("readTeleportCompactHintEnabled / writeTeleportCompactHintEnabled", () => {
+	let tempDir: string
+	let configPath: string
+
+	beforeEach(() => {
+		tempDir = mkdtempSync(join(tmpdir(), "kimchi-test-"))
+		configPath = join(tempDir, "config.json")
+	})
+
+	afterEach(() => {
+		rmSync(tempDir, { recursive: true, force: true })
+	})
+
+	it("defaults to enabled when config file does not exist", () => {
+		expect(readTeleportCompactHintEnabled(configPath)).toBe(true)
+	})
+
+	it("defaults to enabled when the teleport.compactHint section is missing", () => {
+		writeFileSync(configPath, JSON.stringify({ apiKey: "key" }))
+		expect(readTeleportCompactHintEnabled(configPath)).toBe(true)
+	})
+
+	it("defaults to enabled when config file is corrupt", () => {
+		writeFileSync(configPath, "{ not json")
+		expect(readTeleportCompactHintEnabled(configPath)).toBe(true)
+	})
+
+	it("defaults to enabled when enabled is not a boolean", () => {
+		writeFileSync(configPath, JSON.stringify({ teleport: { compactHint: { enabled: "no" } } }))
+		expect(readTeleportCompactHintEnabled(configPath)).toBe(true)
+	})
+
+	it("reads a stored false", () => {
+		writeFileSync(configPath, JSON.stringify({ teleport: { compactHint: { enabled: false } } }))
+		expect(readTeleportCompactHintEnabled(configPath)).toBe(false)
+	})
+
+	it("round-trips write then read", () => {
+		writeTeleportCompactHintEnabled(false, configPath)
+		expect(readTeleportCompactHintEnabled(configPath)).toBe(false)
+	})
+
+	it("preserves sibling keys when writing", () => {
+		writeFileSync(
+			configPath,
+			JSON.stringify({
+				apiKey: "key",
+				teleport: { otherSetting: true, compactHint: { futureField: 1 } },
+			}),
+		)
+		writeTeleportCompactHintEnabled(false, configPath)
+		const raw = JSON.parse(readFileSync(configPath, "utf-8"))
+		expect(raw.apiKey).toBe("key")
+		expect(raw.teleport.otherSetting).toBe(true)
+		expect(raw.teleport.compactHint).toEqual({ futureField: 1, enabled: false })
+	})
+})
+describe("buildSkillPathOptions", () => {
+	let tempDir: string
+	let originalCwd: string
+
+	beforeEach(() => {
+		originalCwd = process.cwd()
+		tempDir = mkdtempSync(join(tmpdir(), "kimchi-skillpaths-"))
+	})
+
+	afterEach(() => {
+		process.chdir(originalCwd)
+		rmSync(tempDir, { recursive: true, force: true })
+	})
+
+	it("relativizes a cwd-rooted discovered dir so it is not pinned to the wizard's cwd", () => {
+		process.chdir(tempDir)
+		// Resolve through process.cwd() so the test matches macOS symlink-resolved
+		// /private/var paths, exactly as the discoverer (which builds dirs from cwd) does.
+		const skillsDir = join(process.cwd(), ".cursor", "skills")
+		mkdirSync(skillsDir, { recursive: true })
+
+		const options = buildSkillPathOptions([skillsDir])
+
+		expect(options).toContain(join(".cursor", "skills"))
+		expect(options).not.toContain(skillsDir)
+	})
+})
+
+describe("permissions", () => {
+	let tempDir: string
+	let configPath: string
+
+	beforeEach(() => {
+		tempDir = mkdtempSync(join(tmpdir(), "kimchi-perm-test-"))
+		configPath = join(tempDir, "config.json")
+	})
+
+	afterEach(() => {
+		rmSync(tempDir, { recursive: true, force: true })
+	})
+
+	it("writeApiKey produces config.json with mode 0600", () => {
+		writeApiKey("sekrit-key", configPath)
+		const mode = statSync(configPath).mode & 0o777
+		expect(mode).toBe(0o600)
+	})
+
+	it("writeConfigObject (via writeApiKey) chmods even when pre-existing file is loose", () => {
+		writeFileSync(configPath, JSON.stringify({ apiKey: "old" }), { mode: 0o644 })
+		chmodSync(configPath, 0o644)
+		expect(statSync(configPath).mode & 0o777).toBe(0o644)
+
+		writeApiKey("new-key", configPath)
+		expect(statSync(configPath).mode & 0o777).toBe(0o600)
+	})
+
+	it("checkConfigFilePermissions returns undefined for owner-only file", () => {
+		writeFileSync(configPath, JSON.stringify({ apiKey: "k" }), { mode: 0o600 })
+		chmodSync(configPath, 0o600)
+		expect(checkConfigFilePermissions(configPath)).toBeUndefined()
+	})
+
+	it("checkConfigFilePermissions returns warning for group-readable file", () => {
+		writeFileSync(configPath, JSON.stringify({ apiKey: "k" }), { mode: 0o644 })
+		chmodSync(configPath, 0o644)
+		const warning = checkConfigFilePermissions(configPath)
+		expect(warning).toBeDefined()
+		expect(warning).toContain(configPath)
+		expect(warning).toContain("chmod 600")
+	})
+
+	it("checkConfigFilePermissions returns warning for world-writable file", () => {
+		writeFileSync(configPath, JSON.stringify({ apiKey: "k" }), { mode: 0o606 })
+		chmodSync(configPath, 0o606)
+		const warning = checkConfigFilePermissions(configPath)
+		expect(warning).toBeDefined()
+		expect(warning).toContain(configPath)
+	})
+
+	it("checkConfigFilePermissions returns undefined when file does not exist", () => {
+		expect(checkConfigFilePermissions(join(tempDir, "missing.json"))).toBeUndefined()
+	})
+
+	it("loadConfig warns when config.json is group/world-readable", () => {
+		writeFileSync(configPath, JSON.stringify({ apiKey: "leaky-key" }), { mode: 0o644 })
+		chmodSync(configPath, 0o644)
+
+		const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {})
+		loadConfig({ configPath })
+		expect(warnSpy).toHaveBeenCalled()
+		const warning = warnSpy.mock.calls.find((c) => typeof c[0] === "string" && c[0].includes("group/world-readable"))
+		expect(warning).toBeDefined()
+		expect(warning?.[0]).toContain("chmod 600")
+		warnSpy.mockRestore()
+	})
+
+	it("loadConfig does not warn when config.json is owner-only", () => {
+		writeApiKey("safe-key", configPath)
+		expect(statSync(configPath).mode & 0o777).toBe(0o600)
+
+		const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {})
+		loadConfig({ configPath })
+		const permWarning = warnSpy.mock.calls.find(
+			(c) => typeof c[0] === "string" && c[0].includes("group/world-readable"),
+		)
+		expect(permWarning).toBeUndefined()
+		warnSpy.mockRestore()
+	})
+
+	it("readApiKeyFromConfigFile warns when config.json is group/world-readable", () => {
+		writeFileSync(configPath, JSON.stringify({ apiKey: "leaky-key" }), { mode: 0o644 })
+		chmodSync(configPath, 0o644)
+
+		const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {})
+		const key = readApiKeyFromConfigFile(configPath)
+		expect(key).toBe("leaky-key")
+		expect(warnSpy).toHaveBeenCalled()
+		const warning = warnSpy.mock.calls.find((c) => typeof c[0] === "string" && c[0].includes("group/world-readable"))
+		expect(warning).toBeDefined()
+		warnSpy.mockRestore()
+	})
+})
+
+describe("upgradeLegacyRetrySettings", () => {
+	it("seeds the defaults when no retry block exists", () => {
+		expect(upgradeLegacyRetrySettings(undefined)).toEqual(RETRY_DEFAULTS)
+	})
+
+	it("upgrades the legacy kimchi-written block to the current defaults", () => {
+		expect(upgradeLegacyRetrySettings({ maxRetries: 10 })).toEqual(RETRY_DEFAULTS)
+	})
+
+	it("keeps a user-tuned maxRetries while adding the provider block", () => {
+		expect(upgradeLegacyRetrySettings({ maxRetries: 5 })).toEqual({ ...RETRY_DEFAULTS, maxRetries: 5 })
+	})
+
+	it("keeps other user-tuned keys and maxRetries when the block is not exactly legacy", () => {
+		expect(upgradeLegacyRetrySettings({ enabled: false, maxRetries: 10 })).toEqual({
+			...RETRY_DEFAULTS,
+			enabled: false,
+			maxRetries: 10,
+		})
+	})
+
+	it("drops invalid legacy retry keys instead of writing them to pi settings", () => {
+		expect(
+			upgradeLegacyRetrySettings({
+				enabled: "false",
+				baseDelayMs: "1000",
+				maxRetries: 10,
+				extra: "ignored",
+			}),
+		).toEqual({
+			...RETRY_DEFAULTS,
+			maxRetries: 10,
+		})
+	})
+
+	it("leaves a block with a provider section alone", () => {
+		expect(upgradeLegacyRetrySettings({ maxRetries: 10, provider: { maxRetries: 1 } })).toBeUndefined()
+	})
+
+	it("leaves a non-object retry value alone", () => {
+		expect(upgradeLegacyRetrySettings(false)).toBeUndefined()
+		expect(upgradeLegacyRetrySettings(null)).toBeUndefined()
+	})
+})
+
+describe("ensureHideThinkingBlockDefault", () => {
+	it("seeds hideThinkingBlock when the key is absent", () => {
+		const settings: Record<string, unknown> = { statusLine: { pinned: [] } }
+		expect(ensureHideThinkingBlockDefault(settings)).toBe(true)
+		expect(settings.hideThinkingBlock).toBe(true)
+	})
+
+	it("leaves an explicit hideThinkingBlock value alone", () => {
+		const hidden = { hideThinkingBlock: true }
+		expect(ensureHideThinkingBlockDefault(hidden)).toBe(false)
+		expect(hidden.hideThinkingBlock).toBe(true)
+
+		const visible = { hideThinkingBlock: false }
+		expect(ensureHideThinkingBlockDefault(visible)).toBe(false)
+		expect(visible.hideThinkingBlock).toBe(false)
+	})
+})
+
+describe("ensureQuietStartupDefault", () => {
+	it("seeds quietStartup when the key is absent", () => {
+		const settings: Record<string, unknown> = { statusLine: { pinned: [] } }
+		expect(ensureQuietStartupDefault(settings)).toBe(true)
+		expect(settings.quietStartup).toBe(true)
+	})
+
+	it("leaves an explicit quietStartup value alone", () => {
+		const quiet = { quietStartup: true }
+		expect(ensureQuietStartupDefault(quiet)).toBe(false)
+		expect(quiet.quietStartup).toBe(true)
+
+		const verbose = { quietStartup: false }
+		expect(ensureQuietStartupDefault(verbose)).toBe(false)
+		expect(verbose.quietStartup).toBe(false)
+	})
+})

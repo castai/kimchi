@@ -1,0 +1,408 @@
+/**
+ * Hides <think></think> text tags from the UI without affecting LLM context.
+ *
+ * Some models (DeepSeek, QwQ, etc.) emit reasoning inside <think>...</think>
+ * tags in regular text content. This extension transforms those for display
+ * while preserving the original content in the LLM context via a shadow map.
+ *
+ * Native `thinking` content blocks (type: "thinking") are handled by the
+ * upstream framework and are NOT touched by this extension.
+ *
+ * Behaviour controlled by `hideThinkingBlock` in settings.json:
+ * - true (default): hides thinking content entirely from display
+ * - false: strips tags, dims content (last 5 lines shown)
+ *
+ * Architecture:
+ * - message_start: initialises per-message streaming state
+ * - message_update: mutates block.text in-place with ANSI dim codes so the
+ *   TUI (which renders AFTER extensions) shows dimmed thinking and hidden
+ *   tags during streaming. Tracks the un-modified original text per block.
+ * - message_end: applies the final transform (strip or dim based on setting)
+ *   using the tracked originals, stores in shadow map.
+ * - context: restores original text before LLM calls (emitContext uses
+ *   structuredClone, so matching is content-based, not reference-based)
+ */
+
+import { readFileSync } from "node:fs"
+import { resolve } from "node:path"
+
+import type { AssistantMessage } from "@earendil-works/pi-ai"
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
+import { ANSI, fg } from "../ansi.js"
+import { isSubagent } from "./prompt-construction/prompt-enrichment.js"
+
+interface ThinkTagVariant {
+	open: string
+	close: string
+}
+
+const THINK_TAG_VARIANTS: ThinkTagVariant[] = [
+	{ open: "<think>", close: "</think>" },
+	{ open: "<thinking>", close: "</thinking>" },
+	{ open: "<mm:think>", close: "</mm:think>" },
+]
+
+const THINK_TAG_PATTERN = /<think(?:ing)?>[\s\S]*?<\/think(?:ing)?>|<mm:think>[\s\S]*?<\/mm:think>/g
+
+// Orphaned close tags: some models (observed with kimi-k2.x when thinking is
+// off) emit reasoning as plain text terminated by a close tag with no
+// matching open tag. After the closed-block replace pass has consumed all
+// balanced pairs, any remaining close tag is unmatched by definition and is
+// never meaningful prose, so it is safe to strip it for display.
+const ORPHAN_CLOSE_TAG_PATTERN = new RegExp(
+	`</(?:${THINK_TAG_VARIANTS.map((v) => v.close.slice(2, -1)).join("|")})>`,
+	"g",
+)
+
+function stripOrphanCloseTags(text: string): string {
+	return text.replace(ORPHAN_CLOSE_TAG_PATTERN, "")
+}
+
+function containsCloseTag(text: string): boolean {
+	return THINK_TAG_VARIANTS.some((v) => text.includes(v.close))
+}
+
+function containsAnyThinkTag(text: string): boolean {
+	return THINK_TAG_VARIANTS.some((v) => text.includes(v.open)) || containsCloseTag(text)
+}
+
+function getOpenTag(match: string): string {
+	return THINK_TAG_VARIANTS.find((v) => match.startsWith(v.open))?.open ?? "<think>"
+}
+
+function getCloseTag(match: string): string {
+	return THINK_TAG_VARIANTS.find((v) => match.endsWith(v.close))?.close ?? "</think>"
+}
+
+// ---------------------------------------------------------------------------
+// Settings
+// ---------------------------------------------------------------------------
+
+function getSettingsPath(): string | undefined {
+	const agentDir = process.env.KIMCHI_CODING_AGENT_DIR
+	if (!agentDir) return undefined
+	return resolve(agentDir, "settings.json")
+}
+
+/** Override for tests — bypasses settings.json when set. */
+let hideThinkingOverride: boolean | undefined
+
+// Exposed so the ACP replay path can consult the same setting without
+// re-implementing the override + settings.json read. Native ThinkingContent
+// blocks are not routed through filterThinkingForDisplay (which is text-tag
+// only), so callers that want a "should this thinking be shown?" predicate
+// should read the flag directly instead of probing the formatter with a
+// synthetic <think> wrapper — that wrapper breaks if the inner thinking text
+// itself contains </think>.
+export function isHideThinkingEnabled(): boolean {
+	return readHideThinkingSetting()
+}
+
+function readHideThinkingSetting(): boolean {
+	if (hideThinkingOverride !== undefined) return hideThinkingOverride
+	const settingsPath = getSettingsPath()
+	if (!settingsPath) return true
+	try {
+		const raw = readFileSync(settingsPath, "utf-8")
+		const parsed = JSON.parse(raw)
+		if (parsed && typeof parsed === "object" && "hideThinkingBlock" in parsed) {
+			return (parsed as { hideThinkingBlock?: unknown }).hideThinkingBlock === true
+		}
+		return true
+	} catch (error) {
+		if (error instanceof Error && (error as NodeJS.ErrnoException).code === "ENOENT") {
+			return true
+		}
+		console.warn(`[hide-thinking] could not read ${settingsPath}:`, error)
+		return true
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Text transforms
+// ---------------------------------------------------------------------------
+
+function lastNLines(text: string, n: number): string {
+	const lines = text.split("\n")
+	if (lines.length <= n) return text.trimEnd()
+	return lines.slice(-n).join("\n").trimEnd()
+}
+
+function stripThinkingTags(text: string): string {
+	return stripOrphanCloseTags(text.replace(THINK_TAG_PATTERN, ""))
+}
+
+/**
+ * Dim thinking content for display.
+ *
+ * The TUI's Markdown renderer splits text into paragraph tokens before
+ * applying ANSI, so a single ANSI open-code wrapping multi-paragraph content
+ * only colours the first paragraph — subsequent paragraphs start fresh with
+ * no colour. Prepending the dim code to every non-empty line ensures each
+ * paragraph token begins with the correct ANSI state regardless of how the
+ * lexer splits the input.
+ */
+function dimThinkingContent(text: string): string {
+	const lines = text.split("\n")
+	const dimmed = lines.map((line) => (line ? fg(ANSI.dim, line) : line))
+	return dimmed.join("\n")
+}
+
+/**
+ * Strip markdown syntax from thinking content so the TUI's Markdown renderer
+ * treats it as plain text. Without this, constructs like `backtick spans`,
+ * **bold**, _italic_, and # headings inside a dim ANSI wrapper get re-styled
+ * by the Markdown renderer's theme colors, overriding our dim.
+ */
+function stripMarkdownSyntax(text: string): string {
+	return (
+		text
+			// Inline code: `foo` → foo
+			.replace(/`([^`]*)`/g, "$1")
+			// Bold+italic: ***foo*** or ___foo___
+			.replace(/\*{3}([^*]+)\*{3}/g, "$1")
+			.replace(/_{3}([^_]+)_{3}/g, "$1")
+			// Bold: **foo** or __foo__
+			.replace(/\*{2}([^*]+)\*{2}/g, "$1")
+			.replace(/_{2}([^_]+)_{2}/g, "$1")
+			// Italic: *foo* or _foo_
+			.replace(/\*([^*]+)\*/g, "$1")
+			.replace(/_([^_]+)_/g, "$1")
+			// ATX headings: # Heading → Heading
+			.replace(/^#{1,6}\s+/gm, "")
+			// Setext headings: underline rows
+			.replace(/^[=-]{2,}\s*$/gm, "")
+			// Blockquotes: > text → text
+			.replace(/^>+\s?/gm, "")
+			// Horizontal rules
+			.replace(/^[-*_]{3,}\s*$/gm, "")
+			// Links: [text](url) → text
+			.replace(/\[([^\]]+)\]\([^)]*\)/g, "$1")
+			// Images: ![alt](url) → alt
+			.replace(/!\[([^\]]*?)\]\([^)]*\)/g, "$1")
+	)
+}
+
+function replaceThinkingTagsWithDimmed(text: string): string {
+	const replaced = text.replace(THINK_TAG_PATTERN, (match, offset, fullString) => {
+		const openTag = getOpenTag(match)
+		const closeTag = getCloseTag(match)
+		const content = stripMarkdownSyntax(match.slice(openTag.length, -closeTag.length))
+		const visible = lastNLines(content, 5)
+		if (!visible) return ""
+		const after = fullString.slice(offset + match.length)
+		const separator = after.trimStart().length > 0 ? "\n\n" : ""
+		return dimThinkingContent(visible) + separator
+	})
+	return stripOrphanCloseTags(replaced)
+}
+
+/**
+ * Streaming display transform — applied on every message_update.
+ * When hideThinking is true, strips thinking content entirely.
+ * When false, dims content and hides tags. Unlike the final transform
+ * this keeps all lines (no last-5-lines truncation) so the display is
+ * stable during streaming.
+ */
+function applyStreamingDisplay(text: string, hideThinking: boolean): string {
+	// 1. Replace fully closed <think>…</think> and <mm:think>…</mm:think> blocks
+	let result = text.replace(THINK_TAG_PATTERN, (match, offset, fullString) => {
+		if (hideThinking) return ""
+		const openTag = getOpenTag(match)
+		const closeTag = getCloseTag(match)
+		const inner = stripMarkdownSyntax(match.slice(openTag.length, -closeTag.length))
+		if (!inner) return ""
+		const after = fullString.slice(offset + match.length)
+		const separator = after.trimStart().length > 0 ? "\n\n" : ""
+		return dimThinkingContent(inner) + separator
+	})
+	// 2. Handle unclosed open tags (thinking content still streaming)
+	for (const openTag of THINK_TAG_VARIANTS.map((v) => v.open)) {
+		const openIdx = result.indexOf(openTag)
+		if (openIdx !== -1) {
+			const before = result.slice(0, openIdx)
+			if (hideThinking) {
+				result = before
+			} else {
+				const inner = stripMarkdownSyntax(result.slice(openIdx + openTag.length))
+				result = before + (inner ? dimThinkingContent(inner) : "")
+			}
+			break
+		}
+	}
+	// 3. Strip orphaned close tags (e.g. kimi-k2.x thinking=off fragments).
+	return stripOrphanCloseTags(result)
+}
+
+export function filterThinkingForDisplay(text: string): string {
+	return applyStreamingDisplay(text, readHideThinkingSetting())
+}
+
+// ---------------------------------------------------------------------------
+// Shadow map — transformed display text → original text with thinking tags.
+// Used by the context handler to restore originals before LLM calls.
+// emitContext() deep-clones messages, so we match by text content, not
+// object reference.
+// ---------------------------------------------------------------------------
+
+const displayToOriginal = new Map<string, string>()
+
+// ---------------------------------------------------------------------------
+// Streaming state — reset per assistant message.
+// Tracks the un-modified original text for each content block so that
+// message_end can apply the final transform from clean source.
+// ---------------------------------------------------------------------------
+
+interface StreamingBlockState {
+	/** Accumulated original text (no ANSI modifications). */
+	original: string
+	/** Length of block.text after our last in-place mutation. */
+	lastDisplayLength: number
+}
+
+let streamingBlocks: Map<number, StreamingBlockState> | null = null
+
+// ---------------------------------------------------------------------------
+// Test helpers
+// ---------------------------------------------------------------------------
+
+export function _setHideThinking(value: boolean | undefined): void {
+	hideThinkingOverride = value
+}
+
+export function _resetState(): void {
+	hideThinkingOverride = undefined
+	displayToOriginal.clear()
+	streamingBlocks = null
+}
+
+/** Exposed for assertions only. */
+export function _getDisplayToOriginal(): ReadonlyMap<string, string> {
+	return displayToOriginal
+}
+
+// ---------------------------------------------------------------------------
+// Extension
+// ---------------------------------------------------------------------------
+
+export default function hideThinkingExtension(pi: ExtensionAPI): void {
+	if (isSubagent()) return
+
+	// Initialise per-message streaming state.
+	pi.on("message_start", (event) => {
+		streamingBlocks = event.message.role === "assistant" ? new Map() : null
+	})
+
+	// During streaming: mutate block.text in-place so the TUI renders dimmed
+	// thinking content with hidden tags. Extensions run before TUI listeners
+	// (_emitExtensionEvent then _emit), so our mutation is visible in the
+	// same render frame.
+	pi.on("message_update", (event) => {
+		if (!streamingBlocks || event.message.role !== "assistant") return
+		const msg = event.message as AssistantMessage
+
+		for (let i = 0; i < msg.content.length; i++) {
+			const block = msg.content[i]
+			if (block.type !== "text") continue
+
+			let state = streamingBlocks.get(i)
+			if (!state) {
+				state = { original: "", lastDisplayLength: 0 }
+				streamingBlocks.set(i, state)
+			}
+
+			// New content = everything the provider appended after our last mutation.
+			const newContent = block.text.slice(state.lastDisplayLength)
+			if (!newContent) continue
+			state.original += newContent
+
+			// Only touch the block when there is (or might be) a think tag —
+			// including orphaned close tags emitted without an opener.
+			if (!containsAnyThinkTag(state.original)) {
+				state.lastDisplayLength = block.text.length
+				continue
+			}
+
+			const display = applyStreamingDisplay(state.original, readHideThinkingSetting())
+			block.text = display
+			state.lastDisplayLength = display.length
+		}
+	})
+
+	// At message_end: apply the final transform using clean originals from
+	// streaming state (or from the message directly when no streaming state
+	// is available, e.g. resumed sessions).
+	pi.on("message_end", (event) => {
+		if (event.message.role !== "assistant") return
+		const msg = event.message as AssistantMessage
+		const currentStreaming = streamingBlocks
+		streamingBlocks = null
+
+		// Collect original text for each block that contains thinking tags.
+		const blockOriginals = new Map<number, string>()
+		for (let i = 0; i < msg.content.length; i++) {
+			const block = msg.content[i]
+			if (block.type !== "text") continue
+
+			const streamState = currentStreaming?.get(i)
+			if (streamState) {
+				// Capture any trailing content added after our last message_update.
+				const remaining = block.text.slice(streamState.lastDisplayLength)
+				const fullOriginal = streamState.original + remaining
+				if (containsAnyThinkTag(fullOriginal)) {
+					blockOriginals.set(i, fullOriginal)
+				}
+			} else if (containsAnyThinkTag(block.text)) {
+				blockOriginals.set(i, block.text)
+			}
+		}
+
+		if (blockOriginals.size === 0) return
+
+		const hideThinking = readHideThinkingSetting()
+		let changed = false
+		const displayContent = msg.content.map((block, i) => {
+			const original = blockOriginals.get(i)
+			if (!original || block.type !== "text") return block
+			const displayText = hideThinking ? stripThinkingTags(original) : replaceThinkingTagsWithDimmed(original)
+			if (displayText !== original) {
+				displayToOriginal.set(displayText, original)
+				changed = true
+				return { ...block, text: displayText }
+			}
+			return block
+		})
+
+		if (changed) {
+			return { message: { ...msg, content: displayContent } }
+		}
+	})
+
+	// Restore original thinking content before LLM calls so it stays in context.
+	pi.on("context", (event) => {
+		if (displayToOriginal.size === 0) return
+
+		let modified = false
+		const messages = event.messages.map((msg) => {
+			if (msg.role !== "assistant") return msg
+			const assistantMsg = msg as AssistantMessage
+			let blockModified = false
+			const content = assistantMsg.content.map((block) => {
+				if (block.type !== "text") return block
+				const original = displayToOriginal.get(block.text)
+				if (original) {
+					blockModified = true
+					return { ...block, text: original }
+				}
+				return block
+			})
+			if (blockModified) {
+				modified = true
+				return { ...assistantMsg, content }
+			}
+			return msg
+		})
+
+		if (modified) return { messages }
+	})
+}

@@ -1,0 +1,759 @@
+import { getModels } from "@earendil-works/pi-ai/compat"
+import { InteractiveMode, initTheme } from "@earendil-works/pi-coding-agent"
+import { Text } from "@earendil-works/pi-tui"
+import { afterEach, beforeAll, beforeEach, expect, it, vi } from "vitest"
+import * as configModule from "./config.js"
+import * as loginPatch from "./login-command-patch.js"
+import * as modelsModule from "./models.js"
+import * as piAuthModule from "./pi-auth.js"
+
+const { oauthDelegate, warningDelegate } = loginPatch
+
+let synchronizedApiKey = ""
+
+vi.mock("@earendil-works/pi-ai/compat", async () => {
+	const actual = await vi.importActual("@earendil-works/pi-ai/compat")
+	return {
+		...(actual as object),
+		getModels: vi.fn().mockReturnValue([]),
+	}
+})
+
+beforeAll(() => {
+	initTheme("default")
+})
+
+beforeEach(() => {
+	vi.stubEnv("KIMCHI_CODING_AGENT_DIR", "/tmp/kimchi-api-login-test")
+	// Auth tests should be independent of the developer machine's real config.
+	vi.spyOn(configModule, "loadConfig").mockReturnValue({ apiKey: "" } as ReturnType<typeof configModule.loadConfig>)
+	vi.spyOn(configModule, "writeApiKey").mockImplementation(() => {})
+	vi.spyOn(configModule, "clearApiKey").mockImplementation(() => {})
+	vi.spyOn(modelsModule, "updateModelsConfig").mockResolvedValue({ models: [] })
+	synchronizedApiKey = ""
+	vi.spyOn(piAuthModule, "syncPiAuth").mockImplementation(async (_authPath, _modelsPath, apiKey) => {
+		synchronizedApiKey = apiKey
+	})
+})
+
+afterEach(() => {
+	vi.unstubAllEnvs()
+	vi.restoreAllMocks()
+	vi.mocked(getModels).mockReturnValue([])
+})
+
+function makeFakeModelRegistry() {
+	// ModelRegistry delegates getAll()→runtime.getModels() and
+	// getAvailable()→runtime.getAvailableSnapshot(). Tests set expectations on
+	// the runtime methods; the registry-level aliases share the same mock fn so
+	// pre-wrapper assertions still work.
+	const getAllMock = vi.fn().mockReturnValue([])
+	const getAvailableMock = vi.fn().mockReturnValue([])
+	return {
+		getAuth: vi.fn(async () =>
+			synchronizedApiKey ? { auth: { apiKey: synchronizedApiKey, headers: {} }, env: {} } : undefined,
+		),
+		logout: vi.fn().mockResolvedValue(undefined),
+		refresh: vi.fn(),
+		getModels: getAllMock,
+		getAvailableSnapshot: getAvailableMock,
+		getAll: getAllMock,
+		getAvailable: getAvailableMock,
+		getProviderAuthStatus: vi.fn().mockReturnValue({ configured: false }),
+	}
+}
+
+// biome-ignore lint/suspicious/noExplicitAny: intentionally permissive fake object for testing prototype patches
+type FakeIm = Record<string, any>
+
+function makeFakeInteractiveMode(registry: ReturnType<typeof makeFakeModelRegistry>) {
+	const children: unknown[] = []
+	const fakeIm: FakeIm = {
+		showError: vi.fn(),
+		showStatus: vi.fn(),
+		showLoginDialog: vi.fn().mockResolvedValue(undefined),
+		showExtensionInput: vi.fn(),
+		getLoginProviderOptions: vi.fn().mockReturnValue([]),
+		getLogoutProviderOptions: vi.fn().mockResolvedValue([]),
+		updateAvailableProviderCount: vi.fn().mockResolvedValue(undefined),
+		chatContainer: {
+			addChild: vi.fn((child: unknown) => children.push(child)),
+			children,
+		},
+		ui: {
+			requestRender: vi.fn(),
+		},
+		session: {
+			modelRuntime: registry,
+			setModel: vi.fn().mockResolvedValue(undefined),
+		},
+		showSelector: vi.fn((build: (done: () => void) => { component: unknown; focus?: unknown }) => {
+			const result = build(() => {
+				fakeIm.selectorDone = true
+			})
+			fakeIm.selectorComponent = result.component
+			fakeIm.selectorFocus = result.focus
+		}),
+	}
+	return fakeIm
+}
+
+function getFeedbackMessages(fakeIm: FakeIm): string[] {
+	return fakeIm.chatContainer.children
+		.filter((c: unknown): c is Text => c instanceof Text)
+		.map((c: Text) => (c as unknown as { text: string }).text)
+}
+
+async function flushAsyncLogin(): Promise<void> {
+	await new Promise((resolve) => setTimeout(resolve, 0))
+	await Promise.resolve()
+}
+
+function waitForMockCall(spy: { mock: { calls: unknown[][] } }, timeout = 1000): Promise<void> {
+	return new Promise((resolve, reject) => {
+		const start = Date.now()
+		const interval = setInterval(() => {
+			if (spy.mock.calls.length > 0) {
+				clearInterval(interval)
+				resolve()
+			} else if (Date.now() - start > timeout) {
+				clearInterval(interval)
+				reject(new Error(`Timeout waiting for mock call after ${timeout}ms`))
+			}
+		}, 2)
+	})
+}
+
+async function selectCurrentLoginOption(fakeIm: FakeIm): Promise<void> {
+	fakeIm.selectorComponent.handleInput("\n")
+	await flushAsyncLogin()
+}
+
+async function selectApiKeyLoginOption(fakeIm: FakeIm): Promise<void> {
+	fakeIm.selectorComponent.handleInput("j")
+	fakeIm.selectorComponent.handleInput("\n")
+	await flushAsyncLogin()
+}
+
+async function selectSubscriptionLoginOption(fakeIm: FakeIm): Promise<void> {
+	fakeIm.selectorComponent.handleInput("j")
+	fakeIm.selectorComponent.handleInput("j")
+	fakeIm.selectorComponent.handleInput("\n")
+	await Promise.resolve()
+}
+
+it("intercepts the user-facing /login command and runs Kimchi browser auth", async () => {
+	vi.stubEnv("KIMCHI_CODING_AGENT_DIR", "/tmp/kimchi-login-test")
+	const cliAuthModule = await import("./cli-auth/index.js")
+	const authSpy = vi.spyOn(cliAuthModule, "authenticateViaBrowser").mockResolvedValue({ token: "test-token-123" })
+
+	const registry = makeFakeModelRegistry()
+	let refreshed = false
+	registry.refresh.mockImplementation(async () => {
+		await Promise.resolve()
+		refreshed = true
+	})
+	registry.getAvailable.mockImplementation(() => (refreshed ? [{ id: "kimi-k2.6", provider: "kimchi-dev" }] : []))
+
+	const fakeIm = makeFakeInteractiveMode(registry)
+	// biome-ignore lint/suspicious/noExplicitAny: not present in public type
+	const patched = (InteractiveMode.prototype as any).handleLoginCommand
+	await patched.call(fakeIm)
+	await selectCurrentLoginOption(fakeIm)
+
+	expect(fakeIm.showSelector).toHaveBeenCalledOnce()
+	expect(authSpy).toHaveBeenCalledOnce()
+	expect(fakeIm.showStatus).toHaveBeenCalledWith("Opening browser for Kimchi login...")
+	expect(piAuthModule.syncPiAuth).toHaveBeenCalledWith(
+		"/tmp/kimchi-login-test/auth.json",
+		"/tmp/kimchi-login-test/models.json",
+		"test-token-123",
+	)
+	expect(registry.refresh).toHaveBeenCalledOnce()
+	expect(fakeIm.session.setModel).toHaveBeenCalledWith({
+		id: "kimi-k2.6",
+		provider: "kimchi-dev",
+	})
+	expect(getFeedbackMessages(fakeIm)).toContain(
+		"Logged in to Kimchi. Selected kimi-k2.6. Credentials saved to /tmp/kimchi-login-test/auth.json",
+	)
+})
+
+it("does not reuse a saved Kimchi key for explicit /login", async () => {
+	vi.mocked(configModule.loadConfig).mockReturnValue({
+		apiKey: "stale-saved-token",
+	} as ReturnType<typeof configModule.loadConfig>)
+	const cliAuthModule = await import("./cli-auth/index.js")
+	const authSpy = vi.spyOn(cliAuthModule, "authenticateViaBrowser").mockResolvedValue({ token: "fresh-token" })
+
+	const registry = makeFakeModelRegistry()
+	registry.getAvailable.mockReturnValue([{ id: "kimi-k2.6", provider: "kimchi-dev" }])
+
+	const fakeIm = makeFakeInteractiveMode(registry)
+	// biome-ignore lint/suspicious/noExplicitAny: not present in public type
+	const patched = (InteractiveMode.prototype as any).showOAuthSelector
+	await patched.call(fakeIm, "login")
+	await selectCurrentLoginOption(fakeIm)
+
+	expect(authSpy).toHaveBeenCalledOnce()
+	expect(fakeIm.showStatus).toHaveBeenCalledWith("Opening browser for Kimchi login...")
+	expect(fakeIm.showStatus).not.toHaveBeenCalledWith("Refreshing Kimchi models with existing login...")
+	expect(configModule.writeApiKey).toHaveBeenCalledWith("fresh-token")
+	expect(piAuthModule.syncPiAuth).toHaveBeenCalledWith(
+		"/tmp/kimchi-api-login-test/auth.json",
+		"/tmp/kimchi-api-login-test/models.json",
+		"fresh-token",
+	)
+	expect(fakeIm.session.setModel).toHaveBeenCalledWith({
+		id: "kimi-k2.6",
+		provider: "kimchi-dev",
+	})
+})
+
+it("surfaces the login URL in the TUI so it can be copied into the right browser/profile", async () => {
+	const loginUrl = "https://app.kimchi.dev/cli-auth?callback=http%3A%2F%2Flocalhost%3A51234&state=abc123"
+	const cliAuthModule = await import("./cli-auth/index.js")
+	vi.spyOn(cliAuthModule, "authenticateViaBrowser").mockImplementation(async (options) => {
+		options?.onBrowserUrl?.(loginUrl)
+		return { token: "test-token-url" }
+	})
+
+	const registry = makeFakeModelRegistry()
+	registry.getAvailable.mockReturnValue([{ id: "kimi-k2.6", provider: "kimchi-dev" }])
+
+	const fakeIm = makeFakeInteractiveMode(registry)
+	// biome-ignore lint/suspicious/noExplicitAny: not present in public type
+	const patched = (InteractiveMode.prototype as any).showOAuthSelector
+	await patched.call(fakeIm, "login")
+	await selectCurrentLoginOption(fakeIm)
+
+	// Must be an intact OSC 8 hyperlink target (BEL-terminated, like upstream
+	// showAuth) so "Copy Link" yields the full URL even when the visible text
+	// wraps; a raw wrapped URL injects a newline that corrupts the state param.
+	// The `id=` param groups the wrapped rows so the whole URL highlights as one link.
+	const msg = getFeedbackMessages(fakeIm).find((m) => m.includes(`;${loginUrl}\x07`))
+	expect(msg).toBeDefined()
+	expect(msg).toContain("\x1b]8;id=kimchi-login-")
+})
+
+it("falls back to the first available model when the default is not present", async () => {
+	const cliAuthModule = await import("./cli-auth/index.js")
+	vi.spyOn(cliAuthModule, "authenticateViaBrowser").mockResolvedValue({
+		token: "test-token-456",
+	})
+
+	const registry = makeFakeModelRegistry()
+	registry.getAvailable.mockReturnValue([{ id: "other-model", provider: "kimchi-dev" }])
+
+	const fakeIm = makeFakeInteractiveMode(registry)
+	// biome-ignore lint/suspicious/noExplicitAny: not present in public type
+	const patched = (InteractiveMode.prototype as any).showOAuthSelector
+	await patched.call(fakeIm, "login")
+	await selectCurrentLoginOption(fakeIm)
+
+	expect(fakeIm.session.setModel).toHaveBeenCalledWith({
+		id: "other-model",
+		provider: "kimchi-dev",
+	})
+	expect(getFeedbackMessages(fakeIm)).toContainEqual(
+		expect.stringContaining("Logged in to Kimchi. Selected other-model. Credentials saved to "),
+	)
+})
+
+it("reports failure when no models are available for the provider", async () => {
+	const cliAuthModule = await import("./cli-auth/index.js")
+	vi.spyOn(cliAuthModule, "authenticateViaBrowser").mockResolvedValue({
+		token: "test-token-789",
+	})
+
+	const registry = makeFakeModelRegistry()
+	registry.getAvailable.mockReturnValue([])
+
+	const fakeIm = makeFakeInteractiveMode(registry)
+	// biome-ignore lint/suspicious/noExplicitAny: not present in public type
+	const patched = (InteractiveMode.prototype as any).showOAuthSelector
+	await patched.call(fakeIm, "login")
+	await selectCurrentLoginOption(fakeIm)
+
+	expect(fakeIm.showError).toHaveBeenCalledWith(
+		"Kimchi login did not configure any available models. Your API key was saved; try again.",
+	)
+	expect(getFeedbackMessages(fakeIm)).not.toContain("✓ Login successful. API key saved.")
+	expect(fakeIm.session.setModel).not.toHaveBeenCalled()
+})
+
+it("shows error when browser auth fails", async () => {
+	const cliAuthModule = await import("./cli-auth/index.js")
+	vi.spyOn(cliAuthModule, "authenticateViaBrowser").mockRejectedValue(new Error("Browser closed"))
+
+	const registry = makeFakeModelRegistry()
+	const fakeIm = makeFakeInteractiveMode(registry)
+	// biome-ignore lint/suspicious/noExplicitAny: not present in public type
+	const patched = (InteractiveMode.prototype as any).showOAuthSelector
+	await patched.call(fakeIm, "login")
+	await selectCurrentLoginOption(fakeIm)
+
+	expect(fakeIm.showError).toHaveBeenCalledWith("Kimchi login failed: Browser closed")
+	expect(piAuthModule.syncPiAuth).not.toHaveBeenCalled()
+})
+
+it("prompts for Kimchi API key and endpoint with the default endpoint", async () => {
+	vi.stubEnv("KIMCHI_CODING_AGENT_DIR", "/tmp/kimchi-api-login-test")
+
+	const registry = makeFakeModelRegistry()
+	registry.getAvailable.mockReturnValue([{ id: "kimi-k2.6", provider: "kimchi-dev" }])
+
+	const fakeIm = makeFakeInteractiveMode(registry)
+	fakeIm.showExtensionInput.mockResolvedValueOnce("api-key-123").mockResolvedValueOnce("")
+
+	// biome-ignore lint/suspicious/noExplicitAny: not present in public type
+	const patched = (InteractiveMode.prototype as any).showOAuthSelector
+	await patched.call(fakeIm, "login")
+	await selectApiKeyLoginOption(fakeIm)
+	await waitForMockCall(fakeIm.session.setModel)
+
+	expect(fakeIm.showExtensionInput).toHaveBeenNthCalledWith(1, "Kimchi API Key:", "Enter your Kimchi API key")
+	expect(fakeIm.showExtensionInput).toHaveBeenNthCalledWith(
+		2,
+		"Kimchi endpoint (press Enter to use https://llm.kimchi.dev):",
+		"",
+	)
+	expect(fakeIm.showStatus).toHaveBeenCalledWith("Refreshing Kimchi models from https://llm.kimchi.dev...")
+	expect(configModule.writeApiKey).toHaveBeenCalledWith("api-key-123", undefined, {
+		llmEndpoint: "https://llm.kimchi.dev",
+	})
+	expect(modelsModule.updateModelsConfig).toHaveBeenCalledWith(
+		"/tmp/kimchi-api-login-test/models.json",
+		"api-key-123",
+		{
+			allowCachedFallback: false,
+			endpoint: "https://llm.kimchi.dev",
+		},
+	)
+	expect(piAuthModule.syncPiAuth).toHaveBeenCalledWith(
+		"/tmp/kimchi-api-login-test/auth.json",
+		"/tmp/kimchi-api-login-test/models.json",
+		"api-key-123",
+	)
+	expect(fakeIm.session.setModel).toHaveBeenCalledWith({
+		id: "kimi-k2.6",
+		provider: "kimchi-dev",
+	})
+})
+
+it("uses a custom Kimchi endpoint for API-key model discovery and config persistence", async () => {
+	vi.stubEnv("KIMCHI_CODING_AGENT_DIR", "/tmp/kimchi-api-login-test")
+
+	const registry = makeFakeModelRegistry()
+	registry.getAvailable.mockReturnValue([{ id: "custom-model", provider: "kimchi-dev" }])
+
+	const fakeIm = makeFakeInteractiveMode(registry)
+	fakeIm.showExtensionInput.mockResolvedValueOnce(" api-key-456 ").mockResolvedValueOnce(" https://custom.example/ ")
+
+	// biome-ignore lint/suspicious/noExplicitAny: not present in public type
+	const patched = (InteractiveMode.prototype as any).showOAuthSelector
+	await patched.call(fakeIm, "login")
+	await selectApiKeyLoginOption(fakeIm)
+	await waitForMockCall(fakeIm.session.setModel)
+
+	expect(fakeIm.showStatus).toHaveBeenCalledWith("Refreshing Kimchi models from https://custom.example/...")
+	expect(modelsModule.updateModelsConfig).toHaveBeenCalledWith(
+		"/tmp/kimchi-api-login-test/models.json",
+		"api-key-456",
+		{
+			allowCachedFallback: false,
+			endpoint: "https://custom.example/",
+		},
+	)
+	expect(configModule.writeApiKey).toHaveBeenCalledWith("api-key-456", undefined, {
+		llmEndpoint: "https://custom.example/",
+	})
+	expect(piAuthModule.syncPiAuth).toHaveBeenCalledWith(
+		"/tmp/kimchi-api-login-test/auth.json",
+		"/tmp/kimchi-api-login-test/models.json",
+		"api-key-456",
+	)
+	expect(fakeIm.session.setModel).toHaveBeenCalledWith({ id: "custom-model", provider: "kimchi-dev" })
+})
+
+it("does not persist API-key login when model discovery rejects an invalid key", async () => {
+	vi.stubEnv("KIMCHI_CODING_AGENT_DIR", "/tmp/kimchi-api-login-test")
+	vi.mocked(modelsModule.updateModelsConfig).mockRejectedValueOnce(
+		new modelsModule.ModelsFetchError("Failed to fetch models: 401 Unauthorized", {
+			status: 401,
+			transient: false,
+		}),
+	)
+
+	const registry = makeFakeModelRegistry()
+	const fakeIm = makeFakeInteractiveMode(registry)
+	fakeIm.showExtensionInput.mockResolvedValueOnce("bad-key").mockResolvedValueOnce("https://llm.kimchi.dev")
+
+	// biome-ignore lint/suspicious/noExplicitAny: not present in public type
+	const patched = (InteractiveMode.prototype as any).showOAuthSelector
+	await patched.call(fakeIm, "login")
+	await selectApiKeyLoginOption(fakeIm)
+	await waitForMockCall(fakeIm.showError)
+
+	expect(fakeIm.showError).toHaveBeenCalledWith(
+		"Invalid API key. Please check your key and try again. No changes were saved.",
+	)
+	expect(configModule.writeApiKey).not.toHaveBeenCalled()
+	expect(piAuthModule.syncPiAuth).not.toHaveBeenCalled()
+	expect(registry.refresh).not.toHaveBeenCalled()
+	expect(fakeIm.session.setModel).not.toHaveBeenCalled()
+})
+
+it("does not persist API-key login when the endpoint is unreachable", async () => {
+	vi.stubEnv("KIMCHI_CODING_AGENT_DIR", "/tmp/kimchi-api-login-test")
+	vi.mocked(modelsModule.updateModelsConfig).mockRejectedValueOnce(
+		new modelsModule.ModelsFetchError("Failed to fetch models: network down", { transient: true }),
+	)
+
+	const registry = makeFakeModelRegistry()
+	const fakeIm = makeFakeInteractiveMode(registry)
+	fakeIm.showExtensionInput.mockResolvedValueOnce("api-key-123").mockResolvedValueOnce("https://offline.example")
+
+	// biome-ignore lint/suspicious/noExplicitAny: not present in public type
+	const patched = (InteractiveMode.prototype as any).showOAuthSelector
+	await patched.call(fakeIm, "login")
+	await selectApiKeyLoginOption(fakeIm)
+	await waitForMockCall(fakeIm.showError)
+
+	expect(fakeIm.showError).toHaveBeenCalledWith(
+		"Kimchi endpoint is unreachable or temporarily unavailable (Failed to fetch models: network down). Check the endpoint and try again. No changes were saved.",
+	)
+	expect(configModule.writeApiKey).not.toHaveBeenCalled()
+	expect(piAuthModule.syncPiAuth).not.toHaveBeenCalled()
+	expect(registry.refresh).not.toHaveBeenCalled()
+	expect(fakeIm.session.setModel).not.toHaveBeenCalled()
+})
+
+it("keeps the validated API key persisted when registry refresh rejects", async () => {
+	const registry = makeFakeModelRegistry()
+	registry.getAll.mockReturnValue([{ id: "kimi-k2.6", provider: "kimchi-dev/castai" }])
+	registry.refresh.mockRejectedValue(new Error("registry refresh failed"))
+
+	const fakeIm = makeFakeInteractiveMode(registry)
+	fakeIm.showExtensionInput.mockResolvedValueOnce("api-key-123").mockResolvedValueOnce("https://llm.kimchi.dev")
+
+	// biome-ignore lint/suspicious/noExplicitAny: not present in public type
+	const patched = (InteractiveMode.prototype as any).showOAuthSelector
+	await patched.call(fakeIm, "login")
+	await selectApiKeyLoginOption(fakeIm)
+	await waitForMockCall(fakeIm.showError)
+
+	expect(fakeIm.showError).toHaveBeenCalledWith(
+		"Kimchi model refresh failed: registry refresh failed. Your API key was saved; wait a moment and try again.",
+	)
+	expect(piAuthModule.syncPiAuth).toHaveBeenCalledWith(
+		"/tmp/kimchi-api-login-test/auth.json",
+		"/tmp/kimchi-api-login-test/models.json",
+		"api-key-123",
+	)
+	expect(configModule.writeApiKey).toHaveBeenCalledWith("api-key-123", undefined, {
+		llmEndpoint: "https://llm.kimchi.dev",
+	})
+})
+
+it("keeps the validated API key persisted when no Kimchi models become available", async () => {
+	vi.stubEnv("KIMCHI_CODING_AGENT_DIR", "/tmp/kimchi-api-login-test")
+
+	const registry = makeFakeModelRegistry()
+	registry.getAvailable.mockReturnValue([{ id: "gpt-4", provider: "openai" }])
+
+	const fakeIm = makeFakeInteractiveMode(registry)
+	fakeIm.showExtensionInput.mockResolvedValueOnce("api-key-123").mockResolvedValueOnce("https://llm.kimchi.dev")
+
+	// biome-ignore lint/suspicious/noExplicitAny: not present in public type
+	const patched = (InteractiveMode.prototype as any).showOAuthSelector
+	await patched.call(fakeIm, "login")
+	await selectApiKeyLoginOption(fakeIm)
+	await waitForMockCall(fakeIm.showError)
+
+	expect(fakeIm.showError).toHaveBeenCalledWith(
+		"Kimchi login did not configure any available models. Your API key was saved; try again.",
+	)
+	expect(piAuthModule.syncPiAuth).toHaveBeenCalledWith(
+		"/tmp/kimchi-api-login-test/auth.json",
+		"/tmp/kimchi-api-login-test/models.json",
+		"api-key-123",
+	)
+	expect(configModule.writeApiKey).toHaveBeenCalledWith("api-key-123", undefined, {
+		llmEndpoint: "https://llm.kimchi.dev",
+	})
+	expect(fakeIm.session.setModel).not.toHaveBeenCalled()
+})
+
+it("routes the subscription option to OpenAI Codex without showing internal Kimchi providers", async () => {
+	const registry = makeFakeModelRegistry()
+	const fakeIm = makeFakeInteractiveMode(registry)
+	fakeIm.getLoginProviderOptions.mockReturnValue([
+		{ id: "kimchi-dev", name: "Kimchi", authType: "oauth" },
+		{ id: "kimchi-dev/openai", name: "Kimchi", authType: "oauth" },
+		{ id: "kimchi-dev/anthropic", name: "Kimchi", authType: "oauth" },
+		{ id: "openai-codex", name: "OpenAI Codex", authType: "oauth" },
+	])
+
+	// biome-ignore lint/suspicious/noExplicitAny: not present in public type
+	const patched = (InteractiveMode.prototype as any).showOAuthSelector
+	await patched.call(fakeIm, "login")
+	await selectSubscriptionLoginOption(fakeIm)
+	fakeIm.selectorComponent.handleInput("\n")
+	await waitForMockCall(fakeIm.showLoginDialog)
+
+	expect(fakeIm.getLoginProviderOptions).toHaveBeenCalledWith("oauth")
+	expect(fakeIm.showLoginDialog).toHaveBeenCalledWith("openai-codex", "OpenAI Codex")
+})
+
+it("shows one Kimchi entry in generic configure and logout provider lists", async () => {
+	const providers = [
+		{ id: "kimchi-dev", name: "Kimchi", auth: { apiKey: { name: "API key" } } },
+		{ id: "kimchi-dev/openai", name: "Kimchi", auth: { apiKey: { name: "API key" } } },
+		{ id: "kimchi-dev/anthropic", name: "Kimchi", auth: { apiKey: { name: "API key" } } },
+		{ id: "anthropic", name: "Anthropic", auth: { apiKey: { name: "API key" } } },
+	]
+	const modelRuntime = {
+		getProvider: (providerId: string) => providers.find((provider) => provider.id === providerId),
+		getProviderAuthStatus: () => ({ configured: false }),
+		getProviders: () => providers,
+		isUsingOAuth: () => false,
+		listCredentials: async () => providers.map((provider) => ({ providerId: provider.id, type: "api_key" as const })),
+	}
+	const mode = { session: { modelRuntime } }
+	// biome-ignore lint/suspicious/noExplicitAny: private upstream prototype methods are patched by design
+	const prototype = InteractiveMode.prototype as any
+
+	expect(
+		prototype.getLoginProviderOptions
+			.call(mode, "api_key")
+			.map(({ id }: { id: string }) => id)
+			.sort(),
+	).toEqual(["anthropic", "kimchi-dev"])
+	expect((await prototype.getLogoutProviderOptions.call(mode)).map(({ id }: { id: string }) => id).sort()).toEqual([
+		"anthropic",
+		"kimchi-dev",
+	])
+})
+
+it("pre-populates subscription provider models in models.json before upstream login", async () => {
+	const piAi = await import("@earendil-works/pi-ai/compat")
+	const getModelsMock = vi.mocked(piAi.getModels)
+	getModelsMock.mockReturnValue([
+		{
+			id: "codex",
+			name: "Codex",
+			provider: "openai",
+			api: "openai-chat",
+			baseUrl: "https://api.openai.com/v1/chat/completions",
+			input: ["text"],
+			contextWindow: 200000,
+			maxTokens: 8192,
+			reasoning: false,
+			cost: { input: 3, output: 12, cacheRead: 0, cacheWrite: 0 },
+		},
+	] as ReturnType<typeof getModelsMock>)
+
+	const modelsModule = await import("./models.js")
+	const syncSpy = vi.spyOn(modelsModule, "syncProviderModels").mockImplementation(() => {})
+
+	const registry = makeFakeModelRegistry()
+	const fakeIm = makeFakeInteractiveMode(registry)
+	fakeIm.getLoginProviderOptions.mockReturnValue([{ id: "openai", name: "OpenAI", authType: "oauth" }])
+
+	vi.stubEnv("KIMCHI_CODING_AGENT_DIR", "/tmp/kimchi-test-models")
+
+	// biome-ignore lint/suspicious/noExplicitAny: not present in public type
+	const patched = (InteractiveMode.prototype as any).showOAuthSelector
+	await patched.call(fakeIm, "login")
+	await selectSubscriptionLoginOption(fakeIm)
+	fakeIm.selectorComponent.handleInput("\n")
+	await waitForMockCall(fakeIm.showLoginDialog)
+
+	expect(fakeIm.showLoginDialog).toHaveBeenCalledWith("openai", "OpenAI")
+	expect(syncSpy).toHaveBeenCalledOnce()
+	const [_path, providerId, configs, providerConfig] = syncSpy.mock.calls[0] as unknown as [
+		string,
+		string,
+		unknown[],
+		unknown,
+	]
+	expect(providerId).toBe("openai")
+	expect(providerConfig).toMatchObject({
+		api: "openai-chat",
+		baseUrl: "https://api.openai.com/v1/chat/completions",
+	})
+	expect(configs).toHaveLength(1)
+	expect(configs[0]).toMatchObject({
+		id: "codex",
+		name: "Codex",
+		provider: "openai",
+		input: ["text"],
+		contextWindow: 200000,
+		maxTokens: 8192,
+		reasoning: false,
+	})
+	syncSpy.mockRestore()
+	getModelsMock.mockReturnValue([])
+})
+
+it("does not crash when registry.getAvailable returns empty after subscription login", async () => {
+	const modelsModule = await import("./models.js")
+	const syncSpy = vi.spyOn(modelsModule, "syncProviderModels").mockImplementation(() => {})
+
+	const registry = makeFakeModelRegistry()
+	registry.getAvailable.mockResolvedValue([])
+
+	const fakeIm = makeFakeInteractiveMode(registry)
+	fakeIm.getLoginProviderOptions.mockReturnValue([{ id: "openai", name: "OpenAI", authType: "oauth" }])
+
+	// biome-ignore lint/suspicious/noExplicitAny: not present in public type
+	const patched = (InteractiveMode.prototype as any).showOAuthSelector
+	await patched.call(fakeIm, "login")
+	await selectSubscriptionLoginOption(fakeIm)
+	fakeIm.selectorComponent.handleInput("\n")
+	await waitForMockCall(fakeIm.showLoginDialog)
+
+	expect(fakeIm.showLoginDialog).toHaveBeenCalled()
+	expect(syncSpy).not.toHaveBeenCalled()
+
+	syncSpy.mockRestore()
+})
+
+it("does not crash when registry.getAvailable throws after subscription login", async () => {
+	const modelsModule = await import("./models.js")
+	const syncSpy = vi.spyOn(modelsModule, "syncProviderModels").mockImplementation(() => {})
+
+	const registry = makeFakeModelRegistry()
+	registry.getAvailable.mockRejectedValue(new Error("registry unavailable"))
+
+	const fakeIm = makeFakeInteractiveMode(registry)
+	fakeIm.getLoginProviderOptions.mockReturnValue([{ id: "openai", name: "OpenAI", authType: "oauth" }])
+
+	// biome-ignore lint/suspicious/noExplicitAny: not present in public type
+	const patched = (InteractiveMode.prototype as any).showOAuthSelector
+	await patched.call(fakeIm, "login")
+	await selectSubscriptionLoginOption(fakeIm)
+	fakeIm.selectorComponent.handleInput("\n")
+	await waitForMockCall(fakeIm.showLoginDialog)
+
+	expect(fakeIm.showLoginDialog).toHaveBeenCalled()
+	expect(syncSpy).not.toHaveBeenCalled()
+
+	syncSpy.mockRestore()
+})
+
+it("clears every persisted Kimchi credential from the running session on logout", async () => {
+	const registry = makeFakeModelRegistry()
+	registry.getAll.mockReturnValue([
+		{ id: "sol", provider: "kimchi-dev" },
+		{ id: "claude", provider: "kimchi-dev/anthropic" },
+	])
+	const fakeIm = makeFakeInteractiveMode(registry)
+	fakeIm.getLogoutProviderOptions.mockResolvedValue([
+		{ id: "kimchi-dev", name: "Kimchi", authType: "api_key", status: { configured: true } },
+	])
+
+	// biome-ignore lint/suspicious/noExplicitAny: not present in public type
+	const patched = (InteractiveMode.prototype as any).showOAuthSelector
+	await patched.call(fakeIm, "logout")
+	fakeIm.selectorComponent.handleInput("\n")
+	await waitForMockCall(fakeIm.showStatus)
+
+	expect(configModule.clearApiKey).toHaveBeenCalledOnce()
+	expect(piAuthModule.syncPiAuth).toHaveBeenCalledWith(
+		"/tmp/kimchi-api-login-test/auth.json",
+		"/tmp/kimchi-api-login-test/models.json",
+		"",
+	)
+	expect(registry.refresh).toHaveBeenCalledOnce()
+	expect(registry.logout).not.toHaveBeenCalled()
+	expect(fakeIm.showStatus).toHaveBeenCalledWith("Logged out of Kimchi")
+})
+
+it("preserves upstream logout behavior for non-Kimchi providers", async () => {
+	const registry = makeFakeModelRegistry()
+	const fakeIm = makeFakeInteractiveMode(registry)
+	fakeIm.getLogoutProviderOptions.mockResolvedValue([
+		{ id: "openai-codex", name: "OpenAI Codex", authType: "oauth", status: { configured: true } },
+	])
+
+	// biome-ignore lint/suspicious/noExplicitAny: not present in public type
+	const patched = (InteractiveMode.prototype as any).showOAuthSelector
+	await patched.call(fakeIm, "logout")
+	fakeIm.selectorComponent.handleInput("\n")
+	await waitForMockCall(registry.logout)
+
+	expect(registry.logout).toHaveBeenCalledWith("openai-codex", { signal: expect.any(AbortSignal) })
+	expect(configModule.clearApiKey).not.toHaveBeenCalled()
+	expect(piAuthModule.syncPiAuth).not.toHaveBeenCalled()
+	expect(fakeIm.showStatus).toHaveBeenCalledWith("Logged out of OpenAI Codex")
+})
+
+it("delegates logout to upstream when required selector internals are unavailable", async () => {
+	const stub = vi.fn().mockResolvedValue(undefined)
+	const saved = oauthDelegate.original
+	oauthDelegate.original = stub
+
+	try {
+		const fakeIm = makeFakeInteractiveMode(makeFakeModelRegistry())
+		fakeIm.showSelector = undefined
+
+		// biome-ignore lint/suspicious/noExplicitAny: not present in public type
+		const patched = (InteractiveMode.prototype as any).showOAuthSelector
+		await patched.call(fakeIm, "logout")
+
+		expect(stub).toHaveBeenCalledOnce()
+		expect(stub).toHaveBeenCalledWith("logout")
+	} finally {
+		oauthDelegate.original = saved
+	}
+})
+
+it("reports when there are no stored credentials to remove", async () => {
+	const fakeIm = makeFakeInteractiveMode(makeFakeModelRegistry())
+
+	// biome-ignore lint/suspicious/noExplicitAny: not present in public type
+	const patched = (InteractiveMode.prototype as any).showOAuthSelector
+	await patched.call(fakeIm, "logout")
+
+	expect(fakeIm.showStatus).toHaveBeenCalledWith("No stored credentials to remove.")
+	expect(fakeIm.showSelector).not.toHaveBeenCalled()
+})
+
+it("suppresses stale startup no-model warning after startup auth selected a model", () => {
+	const stub = vi.fn()
+	const saved = warningDelegate.original
+	warningDelegate.original = stub
+
+	try {
+		const fakeIm = makeFakeInteractiveMode(makeFakeModelRegistry())
+		fakeIm.session.model = { id: "kimi-k2.6", provider: "kimchi-dev" }
+
+		// biome-ignore lint/suspicious/noExplicitAny: not present in public type
+		const patched = (InteractiveMode.prototype as any).showWarning
+		patched.call(fakeIm, "No models available. Use /login to log into a provider via OAuth or API key.")
+
+		expect(stub).not.toHaveBeenCalled()
+	} finally {
+		warningDelegate.original = saved
+	}
+})
+
+it("keeps real no-model warnings when no model became available", () => {
+	const stub = vi.fn()
+	const saved = warningDelegate.original
+	warningDelegate.original = stub
+
+	try {
+		const fakeIm = makeFakeInteractiveMode(makeFakeModelRegistry())
+
+		// biome-ignore lint/suspicious/noExplicitAny: not present in public type
+		const patched = (InteractiveMode.prototype as any).showWarning
+		patched.call(fakeIm, "No models available. Use /login to log into a provider via OAuth or API key.")
+
+		expect(stub).toHaveBeenCalledOnce()
+	} finally {
+		warningDelegate.original = saved
+	}
+})

@@ -1,0 +1,67 @@
+{
+	"$schema": "https://biomejs.dev/schemas/2.5.3/schema.json",
+	"files": {
+		"includes": [
+			"**",
+			"!dist/",
+			"!node_modules/",
+			"!src/core/export-html/",
+			"!src/extensions/mcp-adapter/app-bridge.bundle.js"
+		]
+	},
+	"vcs": {
+		"enabled": true,
+		"clientKind": "git",
+		"useIgnoreFile": true
+	},
+	"linter": {
+		"rules": {
+			"preset": "recommended",
+			"complexity": {
+				"noBannedTypes": "off"
+			},
+			"performance": {
+				"noDelete": "warn"
+			},
+			"suspicious": {
+				"noFocusedTests": "off"
+			}
+		}
+	},
+	"formatter": {
+		"indentStyle": "tab",
+		"lineWidth": 120
+	},
+	"javascript": {
+		"formatter": {
+			"quoteStyle": "double",
+			"semicolons": "asNeeded"
+		}
+	},
+	"overrides": [
+		{
+			"includes": ["src/**/*.test.ts"],
+			"linter": {
+				"rules": {
+					"correctness": {
+						"noUnsafeOptionalChaining": "off"
+					},
+					"suspicious": {
+						"noFocusedTests": "on",
+						"noTemplateCurlyInString": "off"
+					}
+				}
+			}
+		},
+		{
+			"includes": ["src/extensions/tool-rendering.ts"],
+			"linter": {
+				"rules": {
+					"suspicious": {
+						"noControlCharactersInRegex": "off"
+					}
+				}
+			}
+		}
+	]
+}

@@ -1,0 +1,305 @@
+import type { Api, Model } from "@earendil-works/pi-ai"
+import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
+import { Type } from "typebox"
+import { startNewInteractiveSessionWithModel } from "./interactive-model-session.js"
+import { findModelByRef, refFromModel, splitModelRef } from "./model-catalog/ref-utils.js"
+import {
+	contextFitsModel,
+	getLatestMessages,
+	getLatestMessagesTimestamp,
+	getSafeContextWindow,
+	resolveContextTokens,
+	sessionHasImages,
+} from "./model-guard.js"
+import { setMultiModelEnabled } from "./multi-model.js"
+import { MODEL_CAPABILITIES } from "./orchestration/model-registry/builtin-models.js"
+import type { ModelTier } from "./orchestration/model-registry/types.js"
+import { getOrchestratorModel, getOrchestratorModelRef } from "./orchestration/model-roles.js"
+import { resolveEffectiveModel } from "./router/state.js"
+
+/** Prevents model_select handler from re-checking what set_model tool already validated. */
+let suppressModelSelectGuard = false
+
+/** Suppress the model_select guard temporarily (e.g. when /multi-model calls setModel). */
+export async function withSuppressedModelSelectGuard<T>(fn: () => Promise<T>): Promise<T> {
+	suppressModelSelectGuard = true
+	return fn().finally(() => {
+		suppressModelSelectGuard = false
+	})
+}
+
+/** Recursion guard — true while our own revert is in progress. */
+let isRevertingModel = false
+
+/** Resets module state between tests. */
+export function __resetModelSwitchStateForTest(): void {
+	suppressModelSelectGuard = false
+	isRevertingModel = false
+}
+
+/**
+ * Extract tier from a model descriptor via MODEL_CAPABILITIES.
+ * In tests, pass the capabilities map explicitly to avoid module-isolation issues.
+ */
+export function getModelTier(
+	model: Model<Api> | undefined,
+	capsMap: ReadonlyMap<string, unknown> = MODEL_CAPABILITIES,
+): ModelTier | undefined {
+	if (!model) return undefined
+	const caps = capsMap.get(model.id)
+	if (!caps || caps === "ignored") return undefined
+	return (caps as { tier: ModelTier }).tier
+}
+
+type StartNewSessionWithModel = (
+	sessionManager: ExtensionContext["sessionManager"],
+	model: Model<Api>,
+) => Promise<boolean>
+
+export default function modelSwitchExtension(
+	pi: ExtensionAPI,
+	startNewSessionWithModel: StartNewSessionWithModel = startNewInteractiveSessionWithModel,
+) {
+	pi.registerTool({
+		name: "set_model",
+		label: "Switch Model",
+		description:
+			'Change the active AI model to a different one. Provide the model in provider/id format, e.g. "kimchi-dev/kimi-k2.6". Uses pi.setModel() internally.',
+		parameters: Type.Object({
+			model: Type.String({
+				description:
+					'Target model identifier in "provider/modelId" format (e.g. "kimchi-dev/kimi-k2.6", "anthropic/claude-sonnet-4-20250514").',
+			}),
+		}),
+		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+			const sessionId = ctx.sessionManager.getSessionId()
+			const { model } = params
+
+			if (model === "multi-model") {
+				const {
+					model: orchestrator,
+					modelId: orchId,
+					modelRef: orchRef,
+				} = getOrchestratorModel(sessionId, ctx.modelRegistry)
+				if (!orchestrator) {
+					return {
+						content: [{ type: "text" as const, text: `Multi-model orchestrator (${orchRef}) is not available.` }],
+						details: null,
+					}
+				}
+				setMultiModelEnabled(sessionId, true)
+				suppressModelSelectGuard = true
+				try {
+					await pi.setModel(orchestrator)
+				} finally {
+					suppressModelSelectGuard = false
+				}
+				return {
+					content: [
+						{
+							type: "text" as const,
+							text: `Switched to multi-model mode (orchestrator: ${orchId})`,
+						},
+					],
+					details: null,
+				}
+			}
+
+			if (!splitModelRef(model)) {
+				const available = ctx.modelRegistry
+					.getAvailable()
+					.map((m) => refFromModel(m))
+					.sort()
+				return {
+					content: [
+						{
+							type: "text" as const,
+							text: `Invalid model format: "${model}". Expected "provider/modelId" or "multi-model".\n\nAvailable models:\nmulti-model\n${available.join("\n")}`,
+						},
+					],
+					details: null,
+				}
+			}
+
+			const target = findModelByRef(ctx.modelRegistry, model)
+			if (!target) {
+				const available = ctx.modelRegistry
+					.getAvailable()
+					.map((m) => refFromModel(m))
+					.sort()
+				return {
+					content: [
+						{
+							type: "text" as const,
+							text: `Model not found: ${model}\n\nAvailable models:\n${available.join("\n")}`,
+						},
+					],
+					details: null,
+				}
+			}
+
+			// When switching TO Auto, resolve the effective (routed) concrete model so
+			// the guards validate against the real window/modalities, not Auto's
+			// conservative catalog floor. Keep pi.setModel(target) so Auto stays selected.
+			const effectiveTarget = resolveEffectiveModel(target, sessionId) ?? target
+
+			const usage = ctx.getContextUsage()
+			// getLatestMessages() returns the most recent context from model-guard's
+			// "context" handler. It is updated on every LLM call, so data is fresh
+			// as long as the session has processed at least one context event.
+			const messages = getLatestMessages()
+			if (messages.length > 0 && getLatestMessagesTimestamp() === 0) {
+				// Defensive: messages array is non-empty but timestamp is unset
+				// (should never happen). Treat as stale and skip local estimate.
+				console.warn("[model-switch] getLatestMessages() has messages but no timestamp — treating as stale")
+			}
+			const tokens = resolveContextTokens(usage, messages)
+			if (tokens != null && !contextFitsModel(tokens, effectiveTarget.contextWindow)) {
+				return {
+					content: [
+						{
+							type: "text" as const,
+							text: `Current context (${tokens} tokens) exceeds the target model "${model}" safe context limit (${getSafeContextWindow(effectiveTarget.contextWindow)} of ${effectiveTarget.contextWindow} tokens). Switch rejected to prevent data loss. Use /compact to reduce context size, then retry.`,
+						},
+					],
+					details: null,
+				}
+			}
+
+			// Vision compatibility guard
+			if (sessionHasImages() && !effectiveTarget.input.includes("image") && ctx.model?.input.includes("image")) {
+				return {
+					content: [
+						{
+							type: "text" as const,
+							text: `Current conversation contains images but target model "${model}" does not support vision input. Run /strip-images to replace images with text descriptions, then retry.`,
+						},
+					],
+					details: null,
+				}
+			}
+
+			setMultiModelEnabled(sessionId, false)
+			let ok: boolean
+			suppressModelSelectGuard = true
+			try {
+				ok = await pi.setModel(target)
+			} finally {
+				suppressModelSelectGuard = false
+			}
+			if (!ok) {
+				return {
+					content: [
+						{
+							type: "text" as const,
+							text: `Failed to switch to ${refFromModel(target)} — no API key available for this model's provider.`,
+						},
+					],
+					details: null,
+				}
+			}
+
+			return {
+				content: [
+					{
+						type: "text" as const,
+						text: `Switched to model ${refFromModel(target)} (${target.name})`,
+					},
+				],
+				details: null,
+			}
+		},
+	})
+
+	pi.on("model_select", async (event, ctx) => {
+		// Skip if a revert is already in progress
+		if (isRevertingModel) return
+		// Skip if set_model tool initiated this (already validated)
+		if (suppressModelSelectGuard) return
+		// Session recovery must restore the persisted model without prompting.
+		if (event.source === "restore") return
+		// Nothing to revert to
+		if (!event.previousModel) return
+
+		const sessionId = ctx.sessionManager.getSessionId()
+		const effectiveTarget = resolveEffectiveModel(event.model, sessionId) ?? event.model
+		const usage = ctx.getContextUsage?.()
+
+		// Context window guard — block if current tokens exceed target safe context window.
+		// Falls back to local estimate when upstream tokens are null (post-compaction).
+		const messages = getLatestMessages()
+		const tokens = resolveContextTokens(usage, messages)
+		if (tokens != null && !contextFitsModel(tokens, effectiveTarget.contextWindow)) {
+			isRevertingModel = true
+			try {
+				await pi.setModel(event.previousModel)
+			} finally {
+				isRevertingModel = false
+			}
+
+			const limit = getSafeContextWindow(effectiveTarget.contextWindow)
+			const excess = tokens - limit
+			if (!ctx.hasUI) {
+				ctx.ui.notify(
+					`Current context (${tokens.toLocaleString()} tokens) exceeds the ${event.model.id} safe context limit (${limit.toLocaleString()} of ${effectiveTarget.contextWindow.toLocaleString()} tokens) by ${excess.toLocaleString()} tokens. Start a new session or compact before switching.`,
+					"error",
+				)
+				return
+			}
+
+			const compactAndSwitch = "Compact conversation and switch"
+			const startNewSession = "Start a new session"
+			const choice = await ctx.ui.select(
+				`Context is ${excess.toLocaleString()} tokens over ${event.model.id}'s safe limit (${tokens.toLocaleString()} current vs ${limit.toLocaleString()} safe)`,
+				ctx.mode === "tui" ? [compactAndSwitch, startNewSession] : [compactAndSwitch],
+			)
+
+			if (choice === compactAndSwitch) {
+				try {
+					await new Promise<void>((resolve, reject) => {
+						ctx.compact({ force: true, onComplete: () => resolve(), onError: reject })
+					})
+					await withSuppressedModelSelectGuard(() => pi.setModel(event.model))
+					ctx.ui.notify(`Compacted context and switched to ${refFromModel(event.model)}.`, "info")
+				} catch {
+					ctx.ui.notify("Compaction failed; the previous model remains active.", "error")
+				}
+				return
+			}
+
+			if (choice === startNewSession) {
+				if (!(await startNewSessionWithModel(ctx.sessionManager, event.model))) {
+					ctx.ui.notify("Could not start a new session; the previous model remains active.", "error")
+				}
+				return
+			}
+
+			ctx.ui.notify("Model switch cancelled.", "info")
+			return
+		}
+
+		// Vision guard — block if session has images but target lacks vision support
+		if (
+			sessionHasImages() &&
+			!effectiveTarget.input.includes("image") &&
+			event.previousModel?.input.includes("image")
+		) {
+			isRevertingModel = true
+			await pi.setModel(event.previousModel)
+			isRevertingModel = false
+			ctx.ui?.notify(
+				`Session contains images but ${event.model.id} does not support vision. Run /strip-images to unlock non-vision models, or use a vision-capable model.`,
+				"error",
+			)
+			return
+		}
+
+		if (event.source === "set") {
+			const orchRef = getOrchestratorModelRef(sessionId)
+			const selectedRef = `${event.model.provider}/${event.model.id}`
+			if (selectedRef !== orchRef) {
+				setMultiModelEnabled(sessionId, false)
+			}
+		}
+	})
+}

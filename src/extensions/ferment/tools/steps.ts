@@ -1,0 +1,923 @@
+/**
+ * Step tools: start_ferment_step, complete_ferment_step, verify_ferment_step, skip_ferment_step, fail_ferment_step.
+ *
+ * complete_ferment_step is the largest - it auto-runs the verification command (with
+ * a 60s timeout), routes non-zero exits through the judge for pass/retry/fail
+ * classification, then grades the step.
+ */
+
+import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
+import type { Static } from "typebox"
+import { determineNextAction } from "../../../ferment/engine.js"
+import type { Ferment, Phase, Step, StepResult } from "../../../ferment/types.js"
+import { getAgentRecordForTaskValidation } from "../../agents/index.js"
+import { FERMENT_WORKER_BUDGETS, type FermentWorkerBudgetTier } from "../../agents/worker-budget-policy.js"
+import { withBlocked } from "../../herdr-events.js"
+import { getMultiModelEnabled } from "../../multi-model.js"
+import { getEffectiveModel } from "../../router/state.js"
+import { withWorkingHidden } from "../../ui.js"
+import { askUserForm, createJudgeDecisionRecorder } from "../ask-user.js"
+import { validateFsmTransitionWithFerment } from "../fsm-adapter.js"
+import { renderGateGuidance } from "../gate-registry.js"
+import { assertGateFieldsPresent, validateGatesOrErr } from "../gate-validation.js"
+import { type JudgeVerdict, judgeStepVerification } from "../judge.js"
+import { onStepCompleted } from "../nudge.js"
+import { captureGitHead, gatherPhaseEvidence, type PhaseEvidence } from "../phase-evidence.js"
+import { promptEditor } from "../prompt-ui.js"
+import { defaultFermentRuntime, type FermentRuntime } from "../runtime.js"
+import { safeSendMessage } from "../safe-send.js"
+import {
+	createApplyAndPersist,
+	failedToolResult,
+	resolvePhase,
+	resolveStep,
+	toolErr,
+	toolErrWithNextAction,
+	toolOk,
+	withNextActionHint,
+} from "../tool-helpers.js"
+import { FERMENT_TOOLS } from "../tool-names.js"
+import { CompleteStepParams, FailStepParams, StepActionParams, VerifyParams } from "../tool-schemas.js"
+import { buildWorkerContext } from "../worker-prompt.js"
+
+const VERIFY_TIMEOUT_MS = 60_000
+
+function sendStepBreadcrumb(pi: ExtensionAPI, text: string, variant: "step" | "warning" = "step"): void {
+	safeSendMessage(
+		pi,
+		{
+			customType: "ferment_breadcrumb",
+			content: [{ type: "text", text }],
+			display: true,
+			details: { text, variant },
+		},
+		{ triggerTurn: false },
+	)
+}
+
+type StepActionArgs = Static<typeof StepActionParams>
+type CompleteStepArgs = Static<typeof CompleteStepParams>
+
+type ToolResult = ReturnType<typeof toolOk> | ReturnType<typeof toolErr>
+
+/**
+ * Record a step-level pending compaction unless this was the last step of its
+ * phase. When determineNextAction returns complete_phase for the same phase,
+ * the phase-level compaction (recorded by completePhase) will fire at the next
+ * turn_end and summarise the same session — firing a step-level compaction now
+ * would produce a redundant back-to-back compaction with only a one-turn
+ * delta, so skip it. The handoff entry for the phase boundary is still
+ * appended by the phase-compaction path.
+ *
+ * Invariant: the `ferment` argument MUST be the post-completion ferment
+ * returned by `applyAndPersist` (completeOutcome.ferment or
+ * verifyOutcome.ferment), not the pre-completion copy. determineNextAction is
+ * a pure function of ferment state, so calling it on the post-completion
+ * ferment yields the same next-action decision the broader completeStep logic
+ * will act upon — if it says complete_phase, the phase IS complete and the
+ * phase-compaction path WILL fire.
+ */
+function maybeRecordStepCompaction(
+	runtime: FermentRuntime,
+	ferment: Ferment,
+	phase: Phase,
+	step: Step,
+	workerDelegated?: boolean,
+): void {
+	const next = determineNextAction(ferment)
+	if (next?.kind === "complete_phase" && next.phaseId === phase.id) return
+	// Worker-delegated steps keep their tool-call residue (file reads, build
+	// output, test logs) inside the worker session — the main thread only gains
+	// the worker's report summary. Forced per-step compaction was built for the
+	// direct-execution era, where the residue landed HERE; firing it after a
+	// delegated step mostly costs a summarization call and collapses the
+	// orchestrator's own reasoning (work-order designs, verdicts) — the spine
+	// workers depend on. Measured run 019ff5cc: main context held 55–85K with
+	// delegation, far below any pressure threshold. Phase-boundary compaction
+	// and the mid-turn pressure path remain the safety nets.
+	if (workerDelegated) return
+	runtime.setPendingCompaction(ferment.id, {
+		kind: "step",
+		fermentId: ferment.id,
+		phaseId: phase.id,
+		stepId: step.id,
+		completedAt: runtime.nowIso(),
+	})
+}
+
+export interface VerificationExecution {
+	ctx: ExtensionContext
+	command: string
+	signal?: AbortSignal
+	onUpdate?: unknown
+}
+
+export interface VerificationResult {
+	exitCode: number
+	stdout: string
+	stderr: string
+}
+
+export interface StepHandlerServices {
+	captureGitHead(): string | undefined
+	gatherEvidence(ref: string): PhaseEvidence | undefined
+	judgeStepVerification(
+		stepDescription: string,
+		verificationCommand: string,
+		stdout: string,
+		stderr: string,
+		exitCode: number,
+	): Promise<JudgeVerdict>
+	onStepCompleted(runtime: FermentRuntime): void
+	buildWorkerContext: (
+		ferment: Ferment,
+		phase: Phase,
+		step: Step,
+		sessionId: string,
+		opts?: { includeDecisions?: boolean; includeMemories?: boolean },
+	) => string
+	runVerification(args: VerificationExecution): Promise<VerificationResult>
+}
+
+export interface StepExecutionContext {
+	pi: ExtensionAPI
+	ctx: ExtensionContext
+	signal?: AbortSignal
+	onUpdate?: unknown
+}
+
+export const defaultStepHandlerServices: StepHandlerServices = {
+	captureGitHead,
+	gatherEvidence: gatherPhaseEvidence,
+	judgeStepVerification,
+	onStepCompleted,
+	buildWorkerContext,
+	runVerification: runVerificationCommand,
+}
+
+const validateFsmTransition = (
+	f: Parameters<typeof validateFsmTransitionWithFerment>[0],
+	event: Parameters<typeof validateFsmTransitionWithFerment>[1],
+	params?: Parameters<typeof validateFsmTransitionWithFerment>[2],
+): string | null => validateFsmTransitionWithFerment(f, event, params).error ?? null
+
+function validateLinkedWorker(params: CompleteStepArgs): string | null {
+	// When worker_agent_id is omitted, the orchestrator executed the step
+	// directly (no subagent was spawned). Skip worker validation in that case.
+	if (!params.worker_agent_id) {
+		return null
+	}
+	const record = getAgentRecordForTaskValidation(params.worker_agent_id)
+	if (!record) {
+		return `Worker Agent "${params.worker_agent_id}" was not found. Spawn a linked Agent with task_ref for this ferment step, or retrieve the correct background Agent ID.`
+	}
+	const ref = record.taskRef
+	if (
+		ref?.kind !== "ferment_step" ||
+		ref.ferment_id !== params.ferment_id ||
+		ref.phase_id !== params.phase_id ||
+		ref.step_id !== params.step_id
+	) {
+		return `Worker Agent "${params.worker_agent_id}" is not linked to this Ferment step. Spawn a new Agent with task_ref { kind: "ferment_step", ferment_id: "${params.ferment_id}", phase_id: "${params.phase_id}", step_id: "${params.step_id}" }.`
+	}
+	const latest = record.latestOutcome
+	if (!latest) {
+		return `Worker Agent "${params.worker_agent_id}" has no recorded outcome yet. Use get_subagent_result with wait: true, then retry complete_ferment_step.`
+	}
+	if (latest.outcome === "completed") {
+		if (!latest.report) {
+			return `Worker Agent "${params.worker_agent_id}" completed without submit_agent_report. Call resume_subagent with only agent_id and purpose "finalize_report"; the host supplies its fixed report-only prompt and limits.`
+		}
+		if (latest.report.status !== "completed") {
+			return `Worker Agent "${params.worker_agent_id}" outcome is completed, but submit_agent_report status is "${latest.report.status}". Complete requires report.status "completed"; inspect remaining_steps and resume, spawn a linked replacement, or stop/report.`
+		}
+		return null
+	}
+	if (latest.outcome === "budget_exhausted") {
+		return `Worker Agent "${params.worker_agent_id}" exhausted its budget (${latest.reason ?? "budget"}). Do not complete this step from an aborted result. Inspect agent_outcome.report first: call resume_subagent with a bounded steering prompt when remaining_steps are a direct continuation; use a changed-approach continuation when the same thread still matters but the prior approach stalled; spawn a new linked Agent when remaining_steps have a clean narrower task boundary; use purpose "finalize_report" if the report is missing; or stop/report if blocked. Complete only from a linked worker whose latest outcome and report.status are completed.`
+	}
+	return `Worker Agent "${params.worker_agent_id}" outcome is ${latest.outcome}${latest.reason ? ` (${latest.reason})` : ""}. Complete requires a linked worker whose latest outcome is completed. Spawn a corrected linked replacement Agent or stop and report the failure.`
+}
+
+export async function runVerificationCommand({
+	command,
+	signal,
+	onUpdate,
+	ctx,
+}: VerificationExecution): Promise<VerificationResult> {
+	let exitCode = 0
+	let stdout = ""
+	let stderr = ""
+	// biome-ignore lint/suspicious/noExplicitAny: accessing controller tools
+	const controller = (ctx as any)?.controller
+	if (controller?.tools?.bash?.execute) {
+		const verifySignal = signal
+			? AbortSignal.any([signal, AbortSignal.timeout(VERIFY_TIMEOUT_MS)])
+			: AbortSignal.timeout(VERIFY_TIMEOUT_MS)
+		try {
+			// biome-ignore lint/suspicious/noExplicitAny: tool execution
+			const execResult = await (controller.tools.bash.execute as any)("", { command }, verifySignal, onUpdate, ctx)
+			stdout = execResult.stdout ?? ""
+			stderr = execResult.stderr ?? ""
+			exitCode = execResult.exitCode ?? 0
+		} catch (e) {
+			exitCode = 1
+			stderr =
+				e instanceof Error && e.name === "TimeoutError"
+					? "Verification command timed out after 60s"
+					: "bash execution threw an exception"
+		}
+	}
+	return { exitCode, stdout, stderr }
+}
+
+/** Shared conservative default; callers may select another centralized tier. */
+export function suggestWorkerLimits(
+	_description: string,
+	_verifyCommand?: string,
+	tier: FermentWorkerBudgetTier = "standard",
+) {
+	return { ...FERMENT_WORKER_BUDGETS[tier] }
+}
+
+export async function startStep(
+	runtime: FermentRuntime,
+	params: StepActionArgs,
+	{ pi, ctx }: StepExecutionContext,
+	services: StepHandlerServices = defaultStepHandlerServices,
+): Promise<ToolResult> {
+	const applyAndPersist = createApplyAndPersist(runtime)
+	const f = runtime.getStorage().get(params.ferment_id)
+	if (!f) return toolErr("Ferment not found.")
+	const phase = resolvePhase(f, params.phase_id)
+	if (!phase) return toolErr("Phase not found.")
+	const step = resolveStep(phase, params.step_id)
+	if (!step) {
+		return toolErr(
+			`Step not found. Steps: ${phase.steps.map((st) => `[${st.id}] ${st.index}. ${st.description}`).join(", ")}`,
+		)
+	}
+
+	const multiModelEnabled = getMultiModelEnabled(ctx.sessionManager)
+	const fsmError = validateFsmTransition(f, "START_STEP", { phaseId: phase.id, stepId: step.id })
+	if (fsmError) return toolErrWithNextAction(fsmError, f, multiModelEnabled)
+
+	const startCount = runtime.bumpStepStart(f.id, phase.id, step.id)
+	if (startCount >= 3) {
+		const title = `Step ${step.index}: "${step.description}" has been started ${startCount} times without completing.`
+		const response = await askUserForm(
+			title,
+			undefined,
+			[
+				{
+					id: "escalation",
+					type: "single",
+					prompt: title,
+					options: [
+						{ id: "retry", label: "Retry" },
+						{ id: "skip", label: "Skip step" },
+						{ id: "pause", label: "Pause ferment" },
+					],
+				},
+			],
+			{ ferment: f, pi, ctx, runtime, recordJudgeDecision: createJudgeDecisionRecorder(runtime) },
+		)
+
+		if (response.failed) {
+			// No audience could be reached. Fall back to the headless error.
+			return toolErr(
+				`⚠ Stuck loop detected: ${title}
+
+What should we do?
+
+1) Retry
+2) Skip step
+3) Pause ferment
+
+Do NOT call start_ferment_step again without user input.`,
+			)
+		}
+
+		const choice = response.answers?.[0]?.value
+
+		if (choice === "pause") {
+			const pauseOutcome = applyAndPersist(f.id, { type: "pause" })
+			if (!pauseOutcome.ok) return failedToolResult(pauseOutcome.error, undefined, multiModelEnabled)
+			return toolOk(withNextActionHint("Ferment paused at user request.", pauseOutcome.ferment, multiModelEnabled))
+		}
+
+		if (choice === "skip") {
+			const skipOutcome = applyAndPersist(f.id, {
+				type: "skip_step",
+				phaseId: phase.id,
+				stepId: step.id,
+			})
+			if (!skipOutcome.ok) return failedToolResult(skipOutcome.error, undefined, multiModelEnabled)
+			runtime.clearStepStart(f.id, phase.id, step.id)
+			services.onStepCompleted(runtime)
+			return toolOk(
+				withNextActionHint(
+					`Step ${step.index}: "${step.description}" skipped at user request.`,
+					skipOutcome.ferment,
+					multiModelEnabled,
+				),
+			)
+		}
+
+		// choice === "retry"
+		runtime.clearStepStart(f.id, phase.id, step.id)
+	}
+
+	const outcome = applyAndPersist(params.ferment_id, {
+		type: "start_step",
+		phaseId: phase.id,
+		stepId: step.id,
+	})
+	if (!outcome.ok) {
+		if (outcome.error.code === "CONCURRENT_NON_PARALLEL_STEP") {
+			return toolErrWithNextAction(
+				`Cannot start step ${step.index} - step ${outcome.error.runningStepIndex} ("${outcome.error.runningDescription}") is already running and is not parallel-safe. Complete or skip it first.`,
+				f,
+				multiModelEnabled,
+			)
+		}
+		return failedToolResult(outcome.error, f, multiModelEnabled)
+	}
+
+	const stepHeadRef = services.captureGitHead()
+	if (stepHeadRef) runtime.setStepStartRef(params.ferment_id, phase.id, step.id, stepHeadRef)
+
+	const freshPhase = outcome.ferment.phases.find((p) => p.id === phase.id)
+	const freshStep = freshPhase?.steps.find((s) => s.id === step.id)
+
+	const prevStep = freshPhase?.steps.find((st) => st.index === step.index - 1)
+	const lowGradeCaution =
+		prevStep?.grade && ["C", "D", "F"].includes(prevStep.grade.grade)
+			? `\n\n⚠️  Previous step (${prevStep.index}: "${prevStep.description}") received grade ${prevStep.grade.grade}: ${prevStep.grade.rationale}. Apply extra scrutiny to this step - verify edge cases, error handling, and completeness before reporting done.`
+			: ""
+
+	const parallelSiblings =
+		freshStep?.parallel && freshStep.groupIndex !== undefined
+			? (freshPhase?.steps ?? [])
+					.filter(
+						(st) =>
+							st.id !== step.id && st.status === "pending" && st.parallel && st.groupIndex === freshStep.groupIndex,
+					)
+					.map((st) => ({
+						step_id: st.id,
+						description: st.description,
+					}))
+			: []
+
+	const parallelNote =
+		parallelSiblings.length > 0
+			? `\nparallel_siblings: ${JSON.stringify(parallelSiblings)}\n\nThese steps are independent - call start_ferment_step for each one now and launch their Agents concurrently. Do not wait for one to finish before starting the next.`
+			: ""
+
+	const workerContext =
+		freshPhase && freshStep
+			? services.buildWorkerContext(outcome.ferment, freshPhase, freshStep, ctx.sessionManager.getSessionId())
+			: ""
+	const contextBlock = workerContext ? `\n\nWorker context (pass to subagent verbatim):\n${workerContext}` : ""
+	const taskRef = {
+		kind: "ferment_step" as const,
+		ferment_id: outcome.ferment.id,
+		phase_id: phase.id,
+		step_id: step.id,
+		budget_tier: params.budget_tier ?? "standard",
+	}
+
+	const workerLimits = suggestWorkerLimits(step.description, step.verification?.command, taskRef.budget_tier)
+	const limitsHint = `\n\nSelected worker budget: budget_tier=${taskRef.budget_tier}, max_turns=${workerLimits.maxTurns}, max_duration=${workerLimits.maxDuration}s, token_budget=${workerLimits.tokenBudget}, cumulative_token_budget=${workerLimits.cumulativeTokenBudget}. Set all three execution limits exactly on the Agent call. Select the tier explicitly on start_ferment_step from the scoped work shape; never infer it from description keywords. Do not complete the step from an exhausted worker. Inspect its structured report, then use resume_subagent for a bounded direct continuation, spawn a narrower linked replacement for separable remaining work, or stop/report when blocked. Do not raise the limits and retry the same broad task.`
+
+	// Build a condensed summary of prior steps so the orchestrator's planning
+	// is informed by what previous steps completed.
+	const completedPriorSteps = (freshPhase?.steps ?? [])
+		.filter((s) => s.index < step.index && (s.status === "done" || s.status === "verified" || s.status === "skipped"))
+		.map((s) => {
+			const tag = s.status === "skipped" ? `⊘${s.index}` : `✓${s.index}`
+			const summary = (s.summary ?? "").trim()
+			const detail = summary.length > 120 ? `${summary.slice(0, 120)}…` : summary
+			return detail ? `${tag} "${s.description}" — ${detail}` : `${tag} "${s.description}"`
+		})
+	const priorContext =
+		completedPriorSteps.length > 0 ? `\n• Prior steps: ${completedPriorSteps.join("; ")}. Build on their output.` : ""
+
+	const planFirstPreamble = `📋 Plan first (every start of this step):
+• Write a brief 2-4 bullet inline plan for this step's work.
+• Include a verification sub-task that checks exact expected output, not just substring grep. Match the verify command's precision.
+• If the artifact has behavior no script can decide (rendered output, interactive behavior), include an inspection sub-task: exercise the artifact in its native medium and record what you observed (S2 'inspected' class).
+• If the step compiles or builds artifacts, include a cleanup sub-task to remove intermediate files from output directories.
+• Batch all step-todo state changes into a single update_todos call per turn, paired with your next work tool call — never emit a turn whose only action is a todo update.
+• Embed the plan in the worker Agent's prompt at dispatch time.${priorContext}`
+
+	const isMultiModelEnabled = getMultiModelEnabled(ctx.sessionManager)
+	return toolOk(
+		withNextActionHint(
+			`${planFirstPreamble}\n\nStep ${step.index}: "${step.description}" started. ${isMultiModelEnabled ? `Spawn a subagent with the persona that matches this step's intent. Pass task_ref: ${JSON.stringify(taskRef)} and use the selected limits. The worker will receive its Agent ID and must call submit_agent_report before its final answer. When it returns with agent_outcome.outcome "completed" and agent_outcome.report.status "completed", call complete_ferment_step with worker_agent_id and the report summary.` : `Execute this step directly with bash/edit/write — measured run 019ff530 showed direct execution is fastest at bench scale (28 steps in 109 min, A/B grades) and you already hold the project context. Delegate to a linked subagent worker ONLY when the step would dump heavy residue into this session: long builds, large suite output, many large file reads, or independent parallelizable units (use run_in_background). If you delegate: spawn the persona matching this step's intent, pass task_ref: ${JSON.stringify(taskRef)} and the selected limits (the worker receives its Agent ID and must call submit_agent_report before its final answer). When a subagent returns with agent_outcome.outcome "completed" and agent_outcome.report.status "completed", call complete_ferment_step with worker_agent_id and the report summary. For direct execution, call complete_ferment_step with just the summary and gates (worker_agent_id is optional).`}${lowGradeCaution}${parallelNote}${limitsHint}${contextBlock}`,
+			outcome.ferment,
+			multiModelEnabled,
+		),
+	)
+}
+
+/**
+ * Subsumed completion path (step granularity): the step's work was already
+ * performed by another step in the same phase (absorbed_by). Worker linking
+ * and step gates are skipped — the guardrails are (a) the absorber must be a
+ * done/verified step in the same phase and (b) this step's verification
+ * command is re-run; a failed re-run refuses the subsumption and the work
+ * must happen for real. This gives agents an honest, auditable way to close
+ * steps that turned out redundant instead of mock-completing them.
+ */
+async function completeStepAsSubsumed(
+	runtime: FermentRuntime,
+	params: CompleteStepArgs,
+	{ pi, ctx, signal, onUpdate }: StepExecutionContext,
+	services: StepHandlerServices,
+	phase: Phase,
+	step: Step,
+	multiModelEnabled: boolean,
+): Promise<ToolResult> {
+	if (!params.absorbed_by) {
+		return toolErr(
+			"subsumed=true requires absorbed_by: the step_id (same phase, done/verified) whose work covered this step.",
+		)
+	}
+	if (params.absorbed_by === step.id) {
+		return toolErr("absorbed_by must name a different step that covered this step's work.")
+	}
+	const absorber = phase.steps.find((s) => s.id === params.absorbed_by)
+	if (!absorber) {
+		return toolErr(`absorbed_by step id not found in ${phase.id}: ${params.absorbed_by}.`)
+	}
+	if (absorber.status !== "done" && absorber.status !== "verified") {
+		return toolErr(
+			`Absorbing step must be done or verified; step "${absorber.description}" is ${absorber.status}. Complete it first, or complete this step normally.`,
+		)
+	}
+	if (!step.verification) {
+		return toolErr(
+			"subsumed=true requires this step to declare a verification command (the absorption claim is re-verified by running it). This step has none — complete it normally.",
+		)
+	}
+
+	const { exitCode, stdout, stderr } = await services.runVerification({
+		command: step.verification.command,
+		signal,
+		onUpdate,
+		ctx,
+	})
+	if (exitCode !== 0) {
+		return toolErr(
+			`Subsumption not verified: re-running step "${step.description}" verify command against the absorbing step's work exited ${exitCode}. The claim that step ${absorber.index} covered this step does not hold — do the work, then complete normally.\n\nstderr (tail):\n${stderr.slice(-800)}`,
+		)
+	}
+
+	const summary = `[Subsumed by step ${absorber.index}: "${absorber.description}"] ${params.summary ?? ""}`.trim()
+	const verifyResult: StepResult = {
+		success: true,
+		exitCode,
+		stdout,
+		stderr,
+		completedAt: runtime.nowIso(),
+	}
+	const applyAndPersist = createApplyAndPersist(runtime)
+	const verifyOutcome = applyAndPersist(params.ferment_id, {
+		type: "verify_step",
+		phaseId: phase.id,
+		stepId: step.id,
+		result: verifyResult,
+		summary,
+	})
+	if (!verifyOutcome.ok) return failedToolResult(verifyOutcome.error, undefined, multiModelEnabled)
+	runtime.clearStepStart(params.ferment_id, phase.id, step.id)
+	runtime.bumpStepCompleteAttempt(params.ferment_id, phase.id, step.id)
+	maybeRecordStepCompaction(runtime, verifyOutcome.ferment, phase, step)
+	services.onStepCompleted(runtime)
+	sendStepBreadcrumb(pi, `Step ${step.index} ✓ done — subsumed by step ${absorber.index} and verified`)
+	return toolOk(
+		withNextActionHint(
+			`Step ${step.index}: "${step.description}" done ✓ Subsumed by step ${absorber.index}; verification re-run passed.`,
+			verifyOutcome.ferment,
+			multiModelEnabled,
+		),
+	)
+}
+
+export async function completeStep(
+	runtime: FermentRuntime,
+	params: CompleteStepArgs,
+	{ pi, ctx, signal, onUpdate }: StepExecutionContext,
+	services: StepHandlerServices = defaultStepHandlerServices,
+): Promise<ToolResult> {
+	const applyAndPersist = createApplyAndPersist(runtime)
+	runtime.captureJudgeContext(getEffectiveModel(ctx), ctx.modelRegistry, getMultiModelEnabled(ctx.sessionManager))
+
+	const f = runtime.getStorage().get(params.ferment_id)
+	if (!f) return toolErr("Ferment not found.")
+	const phase = resolvePhase(f, params.phase_id)
+	if (!phase) return toolErr("Phase not found.")
+	const step = resolveStep(phase, params.step_id)
+	if (!step) return toolErr("Step not found.")
+
+	const multiModelEnabled = getMultiModelEnabled(ctx.sessionManager)
+	const fsmError = validateFsmTransition(f, "COMPLETE_STEP", { phaseId: phase.id, stepId: step.id })
+	if (fsmError) return toolErrWithNextAction(fsmError, f, multiModelEnabled)
+
+	if (params.subsumed) {
+		return completeStepAsSubsumed(
+			runtime,
+			params,
+			{ pi, ctx, signal, onUpdate },
+			services,
+			phase,
+			step,
+			multiModelEnabled,
+		)
+	}
+
+	const workerError = validateLinkedWorker(params)
+	if (workerError) return toolErrWithNextAction(workerError, f, multiModelEnabled)
+
+	// Gate validation runs BEFORE any state mutation. Step-level flags don't
+	// feed the phase retry/escalation pipeline - they just refuse this single
+	// call, and the agent has to fix the underlying issue and re-call.
+	const gateError = validateGatesOrErr(params.gates, {
+		turn: "complete_ferment_step",
+		flagPolicy: "block-on-flag",
+		renderFlagError: (count, lines) =>
+			`Step ${step.index}: "${step.description}" cannot complete - agent self-flagged on ${count} step gate(s):\n\n${lines}\n\nResolve the underlying issue and re-call complete_ferment_step with verdicts of 'pass' (or 'omitted' with rationale if a gate truly does not apply).`,
+	})
+	if (gateError) return gateError
+
+	if (!step.verification) {
+		// No verification command - gate verdicts are the only signal. Trust
+		// them and advance. Phase-level F1 will catch the case where the
+		// whole phase was unverified.
+		const completeOutcome = applyAndPersist(params.ferment_id, {
+			type: "complete_step",
+			phaseId: phase.id,
+			stepId: step.id,
+			summary: params.summary,
+		})
+		if (!completeOutcome.ok) return failedToolResult(completeOutcome.error, f, multiModelEnabled)
+		runtime.clearStepStart(f.id, phase.id, step.id)
+		runtime.bumpStepCompleteAttempt(f.id, phase.id, step.id)
+		maybeRecordStepCompaction(runtime, completeOutcome.ferment, phase, step, params.worker_agent_id != null)
+		services.onStepCompleted(runtime)
+		sendStepBreadcrumb(pi, `Step ${step.index} ✓ ${step.description}`)
+		return toolOk(
+			withNextActionHint(
+				`Step ${step.index}: "${step.description}" done.  ${params.summary ?? ""}`,
+				completeOutcome.ferment,
+				multiModelEnabled,
+			),
+		)
+	}
+
+	const { exitCode, stdout, stderr } = await services.runVerification({
+		command: step.verification.command,
+		signal,
+		onUpdate,
+		ctx,
+	})
+	const verifyResult: StepResult = {
+		success: exitCode === 0,
+		exitCode,
+		stdout,
+		stderr,
+		completedAt: runtime.nowIso(),
+	}
+
+	const verifyOutcome = applyAndPersist(params.ferment_id, {
+		type: "verify_step",
+		phaseId: phase.id,
+		stepId: step.id,
+		result: verifyResult,
+		summary: params.summary,
+	})
+	if (!verifyOutcome.ok) return failedToolResult(verifyOutcome.error, f, multiModelEnabled)
+	runtime.clearStepStart(f.id, phase.id, step.id)
+
+	if (exitCode === 0) {
+		// Verification passed + all gates pass → silent advance. No LLM call.
+		runtime.bumpStepCompleteAttempt(f.id, phase.id, step.id)
+		maybeRecordStepCompaction(runtime, verifyOutcome.ferment, phase, step, params.worker_agent_id != null)
+		services.onStepCompleted(runtime)
+		sendStepBreadcrumb(pi, `Step ${step.index} ✓ verified - ${step.description}`)
+		return toolOk(
+			withNextActionHint(
+				`Step ${step.index}: "${step.description}" done and verified ✓`,
+				verifyOutcome.ferment,
+				multiModelEnabled,
+			),
+		)
+	}
+
+	// Non-zero verify exit. judgeStepVerification is tactical (pass/retry/fail
+	// classification of a failed command), not grading - it stays.
+	const judgeVerdict = await services.judgeStepVerification(
+		step.description,
+		step.verification.command,
+		stdout,
+		stderr,
+		exitCode,
+	)
+
+	if (judgeVerdict.verdict === "pass") {
+		// Tactical pass: command exited non-zero but the judge says the work
+		// is acceptable (e.g. linter noise on an unrelated file). Gate
+		// verdicts already passed above, so advance.
+		runtime.bumpStepCompleteAttempt(f.id, phase.id, step.id)
+		maybeRecordStepCompaction(runtime, verifyOutcome.ferment, phase, step, params.worker_agent_id != null)
+		services.onStepCompleted(runtime)
+		sendStepBreadcrumb(pi, `Step ${step.index} ✓  Judge passed: ${judgeVerdict.reason}`)
+		return toolOk(
+			withNextActionHint(
+				`Step ${step.index}: "${step.description}" done ✓  Judge: ${judgeVerdict.reason}`,
+				verifyOutcome.ferment,
+				multiModelEnabled,
+			),
+		)
+	}
+
+	const failOutcome = applyAndPersist(params.ferment_id, {
+		type: "fail_step",
+		phaseId: phase.id,
+		stepId: step.id,
+		error: `Verification failed (exit ${exitCode}): ${judgeVerdict.reason}`,
+	})
+	if (!failOutcome.ok) return failedToolResult(failOutcome.error, f, multiModelEnabled)
+
+	sendStepBreadcrumb(pi, `Step ${step.index} ✗ failed verification - ${judgeVerdict.reason}`, "warning")
+
+	// D19: surface a recovery dropdown so the user picks an action explicitly
+	// instead of leaving the planner guessing. hasUI implies a dialog-capable
+	// UI, so only prompt when we won't emit a herdr blocked pair without one
+	// (see herdr-events.ts PROTOCOL).
+	if (ctx.hasUI) {
+		const retryLabel = "Retry"
+		const skipLabel = "Skip step"
+		const editLabel = "Edit prompt and retry"
+		const abandonLabel = "Abandon phase"
+		const cancelLabel = "Cancel (keep step failed)"
+		const title = `Step ${step.index} "${step.description}" failed verification.\nJudge: ${judgeVerdict.reason}`
+		// Hide the cooking animation while the recovery dropdown is shown.
+		const choice = await withBlocked(pi.events, `Ferment step ${step.index} failed`, () =>
+			withWorkingHidden(ctx, () => ctx.ui.select(title, [retryLabel, skipLabel, editLabel, abandonLabel, cancelLabel])),
+		)
+		runtime.markHumanInput()
+
+		if (choice === retryLabel) {
+			const retryOut = applyAndPersist(params.ferment_id, {
+				type: "start_step",
+				phaseId: phase.id,
+				stepId: step.id,
+			})
+			if (!retryOut.ok) return failedToolResult(retryOut.error, undefined, multiModelEnabled)
+			runtime.clearStepStart(f.id, phase.id, step.id)
+			return toolOk(
+				`Step ${step.index} reset to running at user request. Retry the work - spawn a worker and call complete_step when done.`,
+			)
+		}
+
+		if (choice === skipLabel) {
+			const skipOut = applyAndPersist(params.ferment_id, {
+				type: "skip_step",
+				phaseId: phase.id,
+				stepId: step.id,
+			})
+			if (!skipOut.ok) return failedToolResult(skipOut.error, undefined, multiModelEnabled)
+			services.onStepCompleted(runtime)
+			return toolOk(`Step ${step.index} skipped at user request.`)
+		}
+
+		if (choice === editLabel) {
+			const newPrompt = await promptEditor(ctx, "Revised step description:", { prefill: step.description })
+			runtime.markHumanInput()
+			if (newPrompt?.trim()) {
+				const editOut = applyAndPersist(params.ferment_id, {
+					type: "update_step_description",
+					phaseId: phase.id,
+					stepId: step.id,
+					description: newPrompt.trim(),
+				})
+				if (!editOut.ok) return failedToolResult(editOut.error, undefined, multiModelEnabled)
+				const retryOut = applyAndPersist(params.ferment_id, {
+					type: "start_step",
+					phaseId: phase.id,
+					stepId: step.id,
+				})
+				if (!retryOut.ok) return failedToolResult(retryOut.error, undefined, multiModelEnabled)
+				runtime.clearStepStart(f.id, phase.id, step.id)
+				pi.sendUserMessage(`Retry step ${step.index} with this revised approach: ${newPrompt.trim()}`, {
+					deliverAs: "followUp",
+				})
+				return toolOk(`Step ${step.index} reset with revised approach. Awaiting planner re-execution.`)
+			}
+			return toolOk(`Step ${step.index} remains failed (no revised approach provided).`)
+		}
+
+		if (choice === abandonLabel) {
+			const phaseFailOut = applyAndPersist(params.ferment_id, {
+				type: "fail_phase",
+				phaseId: phase.id,
+				reason: `Step ${step.index} failed: ${judgeVerdict.reason}`,
+			})
+			if (!phaseFailOut.ok) return failedToolResult(phaseFailOut.error, undefined, multiModelEnabled)
+			return toolOk(`Phase ${phase.index} marked failed at user request after step ${step.index} verification failure.`)
+		}
+
+		// Cancel, Esc/dismiss, or any unrecognised choice → no-op. The step is
+		// already in failed state from the fail_step above; preserve the phase
+		// and let the planner decide the next move.
+		return toolOk(
+			`Step ${step.index} remains failed. User dismissed the recovery dropdown without choosing an action - phase preserved.`,
+		)
+	}
+
+	if (judgeVerdict.verdict === "retry") {
+		return toolErr(
+			`Step ${step.index} verification failed - retry suggested.\nExit: ${exitCode}\nJudge: ${judgeVerdict.reason}\nstdout: ${stdout.slice(0, 500)}\nstderr: ${stderr.slice(0, 500)}`,
+		)
+	}
+	return toolErr(
+		`Step ${step.index} failed verification.\nExit: ${exitCode}\nJudge: ${judgeVerdict.reason}\nstdout: ${stdout.slice(0, 500)}\nstderr: ${stderr.slice(0, 500)}`,
+	)
+}
+
+export function registerStepTools(pi: ExtensionAPI, runtime: FermentRuntime = defaultFermentRuntime): void {
+	const applyAndPersist = createApplyAndPersist(runtime)
+	const stepServices: StepHandlerServices = {
+		...defaultStepHandlerServices,
+		onStepCompleted: () => onStepCompleted(runtime),
+	}
+	pi.registerTool({
+		name: FERMENT_TOOLS.START_STEP,
+		label: "Start Step",
+		description:
+			"Mark a step as running. Returns parallel_siblings. See planner instructions in the system prompt for orchestration details.",
+		parameters: StepActionParams,
+		async execute(_, params, _signal, _onUpdate, ctx) {
+			return startStep(runtime, params, { pi, ctx }, stepServices)
+		},
+	})
+
+	pi.registerTool({
+		name: FERMENT_TOOLS.COMPLETE_STEP,
+		label: "Complete Step",
+		description: `Mark step as done. If the step has a verification command it runs automatically - no need to call verify_ferment_step separately. You must produce verdicts for the three step-scope gates below. A "flag" verdict blocks step completion.
+
+${renderGateGuidance("complete_ferment_step")}`,
+		parameters: CompleteStepParams,
+		prepareArguments: assertGateFieldsPresent,
+		async execute(_, params, signal, onUpdate, ctx) {
+			return completeStep(runtime, params, { pi, ctx, signal, onUpdate }, stepServices)
+		},
+	})
+
+	pi.registerTool({
+		name: FERMENT_TOOLS.VERIFY_STEP,
+		label: "Verify Step",
+		description: "Run verification command and record result.",
+		parameters: VerifyParams,
+		async execute(_, params, signal, onUpdate, ctx) {
+			const f = runtime.getStorage().get(params.ferment_id)
+			if (!f) return toolErr("Ferment not found.")
+			const phase = resolvePhase(f, params.phase_id)
+			if (!phase) return toolErr("Phase not found.")
+			const step = resolveStep(phase, params.step_id)
+			if (!step) return toolErr("Step not found.")
+
+			const multiModelEnabled = getMultiModelEnabled(ctx.sessionManager)
+
+			// FSM validation: ensure step verification is allowed
+			const fsmError = validateFsmTransition(f, "VERIFY_STEP", { phaseId: phase.id, stepId: step.id })
+			if (fsmError) return toolErrWithNextAction(fsmError, f, multiModelEnabled)
+
+			let exitCode = 0
+			let stdout = ""
+			let stderr = ""
+
+			// biome-ignore lint/suspicious/noExplicitAny: accessing controller tools
+			const controller = (ctx as any).controller
+			if (controller?.tools?.bash?.execute) {
+				const verifySignal = signal
+					? AbortSignal.any([signal, AbortSignal.timeout(VERIFY_TIMEOUT_MS)])
+					: AbortSignal.timeout(VERIFY_TIMEOUT_MS)
+				try {
+					// biome-ignore lint/suspicious/noExplicitAny: tool execution
+					const execResult = await (controller.tools.bash.execute as any)(
+						"",
+						{ command: params.command },
+						verifySignal,
+						onUpdate,
+						ctx,
+					)
+					stdout = execResult.stdout ?? ""
+					stderr = execResult.stderr ?? ""
+					exitCode = execResult.exitCode ?? 0
+				} catch {
+					exitCode = 1
+				}
+			} else {
+				stdout = params.command
+			}
+
+			const result: StepResult = {
+				success: exitCode === 0,
+				exitCode,
+				stdout,
+				stderr,
+				completedAt: runtime.nowIso(),
+			}
+
+			const outcome = applyAndPersist(params.ferment_id, {
+				type: "verify_step",
+				phaseId: phase.id,
+				stepId: step.id,
+				result,
+				summary: params.summary,
+			})
+			if (!outcome.ok) return failedToolResult(outcome.error, f, multiModelEnabled)
+			onStepCompleted(runtime)
+
+			if (result.success)
+				return toolOk(withNextActionHint(`✓ "${step.description}" verified.`, outcome.ferment, multiModelEnabled))
+			return toolErrWithNextAction(
+				`✗ "${step.description}" failed (exit ${exitCode}).`,
+				outcome.ferment,
+				multiModelEnabled,
+			)
+		},
+	})
+
+	pi.registerTool({
+		name: FERMENT_TOOLS.SKIP_STEP,
+		label: "Skip Step",
+		description: "Skip a step.",
+		parameters: StepActionParams,
+		async execute(_, params, _signal, _onUpdate, ctx) {
+			const f = runtime.getStorage().get(params.ferment_id)
+			if (!f) return toolErr("Ferment not found.")
+			const phase = resolvePhase(f, params.phase_id)
+			if (!phase) return toolErr("Phase not found.")
+			const step = resolveStep(phase, params.step_id)
+			if (!step) return toolErr("Step not found.")
+
+			const multiModelEnabled = getMultiModelEnabled(ctx.sessionManager)
+
+			// FSM validation: ensure step skip is allowed
+			const fsmError = validateFsmTransition(f, "SKIP_STEP", { phaseId: phase.id, stepId: step.id })
+			if (fsmError) return toolErrWithNextAction(fsmError, f, multiModelEnabled)
+
+			const outcome = applyAndPersist(params.ferment_id, {
+				type: "skip_step",
+				phaseId: phase.id,
+				stepId: step.id,
+			})
+			if (!outcome.ok) return failedToolResult(outcome.error, f, multiModelEnabled)
+			runtime.clearStepStart(f.id, phase.id, step.id)
+			onStepCompleted(runtime)
+			return toolOk(withNextActionHint("Step skipped.", outcome.ferment, multiModelEnabled))
+		},
+	})
+
+	pi.registerTool({
+		name: FERMENT_TOOLS.FAIL_STEP,
+		label: "Fail Step",
+		description: "Mark a step as failed with an error message.",
+		parameters: FailStepParams,
+		async execute(_, params, _signal, _onUpdate, ctx) {
+			const f = runtime.getStorage().get(params.ferment_id)
+			if (!f) return toolErr("Ferment not found.")
+			const phase = resolvePhase(f, params.phase_id)
+			if (!phase) return toolErr("Phase not found.")
+			const step = resolveStep(phase, params.step_id)
+			if (!step) return toolErr("Step not found.")
+
+			const multiModelEnabled = getMultiModelEnabled(ctx.sessionManager)
+
+			// FSM validation: ensure step fail is allowed
+			const fsmError = validateFsmTransition(f, "FAIL_STEP", { phaseId: phase.id, stepId: step.id })
+			if (fsmError) return toolErrWithNextAction(fsmError, f, multiModelEnabled)
+
+			const outcome = applyAndPersist(params.ferment_id, {
+				type: "fail_step",
+				phaseId: phase.id,
+				stepId: step.id,
+				error: params.error,
+			})
+			if (!outcome.ok) return failedToolResult(outcome.error, f, multiModelEnabled)
+			onStepCompleted(runtime)
+			return toolOk(
+				withNextActionHint(
+					`Step ${step.index}: "${step.description}" marked as failed. Use skip_ferment_step to skip it, or retry the work and call start_ferment_step again.`,
+					outcome.ferment,
+					multiModelEnabled,
+				),
+			)
+		},
+	})
+}
