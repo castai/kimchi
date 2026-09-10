@@ -397,28 +397,64 @@ export interface McpPanelResult {
 }
 
 /**
+ * Provider-side tool names must match ^[a-zA-Z0-9_-]{1,128}$ (Anthropic custom-tool
+ * contract; violations come back as `tools.N.custom.name: String should match pattern
+ * '^[a-zA-Z0-9_-]{1,128}$'` with HTTP 400). MCP server names are free-form user config
+ * (e.g. "Atlassian Rovo") and server-provided tool names are arbitrary strings, so the
+ * wire name must be sanitized here — otherwise every request carrying the tool fails
+ * server-side validation and the turn dies.
+ */
+export const MAX_TOOL_NAME_LENGTH = 128
+
+const INVALID_TOOL_NAME_CHAR = /[^a-zA-Z0-9_-]/g
+
+function sanitizeNamePart(value: string): string {
+	return value.replace(INVALID_TOOL_NAME_CHAR, "_")
+}
+
+/**
  * Get server prefix based on tool prefix mode.
  */
 export function getServerPrefix(serverName: string, mode: "server" | "none" | "short"): string {
 	if (mode === "none") return ""
 	if (mode === "short") {
-		let short = serverName.replace(/-?mcp$/i, "").replace(/-/g, "_")
+		let short = sanitizeNamePart(serverName.replace(/-?mcp$/i, "").replace(/-/g, "_"))
 		if (!short) short = "mcp"
 		return short
 	}
-	return serverName.replace(/-/g, "_")
+	return sanitizeNamePart(serverName.replace(/-/g, "_"))
 }
 
+const warnedTruncatedNames = new Set<string>()
+
 /**
- * Format a tool name with server prefix.
+ * Format a tool name with server prefix. The result always matches
+ * ^[a-zA-Z0-9_-]{1,128}$: structurally valid names pass through byte-for-byte
+ * (hyphens in the tool name are kept), anything else is replaced with "_".
  */
 export function formatToolName(toolName: string, serverName: string, prefix: "server" | "none" | "short"): string {
+	const t = sanitizeNamePart(toolName) || "tool"
 	const p = getServerPrefix(serverName, prefix)
-	return p ? `${p}_${toolName}` : toolName
+	const name = p ? `${p}_${t}` : t
+	if (name.length <= MAX_TOOL_NAME_LENGTH) return name
+	const limited =
+		t.length >= MAX_TOOL_NAME_LENGTH
+			? t.slice(0, MAX_TOOL_NAME_LENGTH)
+			: `${name.slice(0, MAX_TOOL_NAME_LENGTH - t.length - 1)}_${t}`
+	if (!warnedTruncatedNames.has(limited)) {
+		warnedTruncatedNames.add(limited)
+		console.warn(
+			`MCP: tool name "${name}" exceeds ${MAX_TOOL_NAME_LENGTH} chars; truncated to "${limited}" — may collide with similarly-named tools`,
+		)
+	}
+	return limited
 }
 
 function normalizeToolName(value: string): string {
-	return value.replace(/-/g, "_")
+	// Fuzzy matching for exclusions: hyphens and invalid characters all
+	// normalize to "_" so user-written excludes match either the raw or the
+	// sanitized wire form.
+	return value.replace(/[^a-zA-Z0-9_]/g, "_")
 }
 
 export function isToolExcluded(
