@@ -24,7 +24,7 @@ You are editing the kimchi coding harness. This repo extends the pi-mono SDK (`@
 
 ## Live harness checks
 
-Use the bundled [kimchi-tmux skill](resources/skills/kimchi-tmux/SKILL.md) when developing or verifying harness commands, menus, and TUI workflows. Follow the skill for setup, controller usage, and cleanup.
+Use the bundled `kimchi-tmux` when developing or verifying harness commands, menus, and TUI workflows. Follow the skill for setup, controller usage, and cleanup.
 
 ## CLI arguments
 
