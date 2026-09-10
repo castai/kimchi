@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest"
-import { formatToolName, getServerPrefix, isToolExcluded, MAX_TOOL_NAME_LENGTH } from "./types.js"
+import { formatToolName, getServerPrefix, isToolExcluded, MAX_TOOL_NAME_LENGTH } from "./tool-names.js"
 
 // Provider-side contract (Anthropic custom tools): ^[a-zA-Z0-9_-]{1,128}$
 const PROVIDER_PATTERN = /^[a-zA-Z0-9_-]{1,128}$/
@@ -54,6 +54,15 @@ describe("formatToolName", () => {
 		expect(formatToolName("a.b/c", "srv:dev", "server")).toBe("srv_dev_a_b_c")
 	})
 
+	it("collapses distinct originals onto one wire name (sanitization is not injective)", () => {
+		// "get issue" and "get_issue" both format to "rovo_get_issue" — a
+		// wire-name collision that registration layers must detect and skip
+		// (see the seenNames guard in direct-tools.ts and the origin check in
+		// index.ts' registerAndActivate).
+		expect(formatToolName("get issue", "rovo", "server")).toBe("rovo_get_issue")
+		expect(formatToolName("get_issue", "rovo", "server")).toBe("rovo_get_issue")
+	})
+
 	it("sanitizes the short-mode prefix too", () => {
 		const name = formatToolName("list", "Atlassian Rovo-mcp", "short")
 		expect(name).toBe("Atlassian_Rovo_list")
@@ -99,6 +108,12 @@ describe("formatToolName", () => {
 		formatToolName("t".repeat(30), "w".repeat(120), "server")
 		formatToolName("t".repeat(30), "w".repeat(120), "server")
 		expect(warn).toHaveBeenCalledTimes(1)
+		// A DIFFERENT overlong original that truncates to the SAME limited result:
+		// the warn-once cache is keyed on the original name (not the truncated
+		// result), so this one warns again — two distinct tools colliding onto
+		// one wire name each deserve a warning.
+		formatToolName("t".repeat(30), "w".repeat(121), "server")
+		expect(warn).toHaveBeenCalledTimes(2)
 		warn.mockRestore()
 	})
 })

@@ -5,8 +5,8 @@ import { toolNamesFromSection } from "../prompt-construction/test-utils.js"
 import mcpAdapter from "./index.js"
 import { executeCall, executeDescribe, executeSearch } from "./proxy-modes.js"
 import type { McpExtensionState } from "./state.js"
+import { formatToolName } from "./tool-names.js"
 import type { DirectToolSpec, ToolMetadata } from "./types.js"
-import { formatToolName } from "./types.js"
 
 // Gate tests need control over the REGISTERED
 // proxy surface, which is derived from loadMcpConfig() at factory time.
