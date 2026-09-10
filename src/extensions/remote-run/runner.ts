@@ -7,6 +7,8 @@
  */
 
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
+import { isWindows } from "../../utils/os-metadata.js"
+import { isInSandboxCluster } from "../../utils/sandbox.js"
 import {
 	buildRemoteExecutionStats,
 	getActiveManager,
@@ -22,12 +24,16 @@ const PREVIEW_MAX = 500
 const DISABLE_VALUES = new Set(["0", "false"])
 
 /**
- * Remote run is enabled by default. Setting KIMCHI_REMOTE_RUN to an explicit
- * falsy value ("0", "false" — case-insensitive) disables it. Unset, empty,
- * "1", "true", or any other value keeps it enabled (legacy opt-in values are
- * harmless no-ops).
+ * Remote run is enabled by default. It is disabled when:
+ * - running inside a sandbox cluster or on Windows — the same environments
+ *   where the teleport extension is disabled, since spawning remote sandbox
+ *   workers from there is not meaningful, or
+ * - KIMCHI_REMOTE_RUN is set to an explicit falsy value ("0", "false" —
+ *   case-insensitive). Unset, empty, "1", "true", or any other value keeps
+ *   it enabled (legacy opt-in values are harmless no-ops).
  */
 export function isRemoteRunEnabled(): boolean {
+	if (isInSandboxCluster() || isWindows()) return false
 	const value = process.env.KIMCHI_REMOTE_RUN?.trim().toLowerCase()
 	if (value === undefined || value === "") return true
 	return !DISABLE_VALUES.has(value)

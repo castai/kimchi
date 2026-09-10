@@ -1,3 +1,4 @@
+import os from "node:os"
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { isRemoteRunEnabled, runCloudAgent } from "./runner.js"
@@ -43,6 +44,7 @@ describe("isRemoteRunEnabled", () => {
 	afterEach(() => {
 		if (orig === undefined) delete process.env.KIMCHI_REMOTE_RUN
 		else process.env.KIMCHI_REMOTE_RUN = orig
+		vi.unstubAllEnvs()
 	})
 
 	it("returns true when KIMCHI_REMOTE_RUN is unset (enabled by default)", () => {
@@ -75,6 +77,22 @@ describe("isRemoteRunEnabled", () => {
 		expect(isRemoteRunEnabled()).toBe(false)
 		process.env.KIMCHI_REMOTE_RUN = " false "
 		expect(isRemoteRunEnabled()).toBe(false)
+	})
+
+	it("returns false inside the sandbox cluster", () => {
+		delete process.env.KIMCHI_REMOTE_RUN
+		vi.stubEnv("KIMCHI_SANDBOX", "1")
+		expect(isRemoteRunEnabled()).toBe(false)
+	})
+
+	it("returns false on Windows", () => {
+		delete process.env.KIMCHI_REMOTE_RUN
+		const osTypeMock = vi.spyOn(os, "type").mockReturnValue("Windows_NT")
+		try {
+			expect(isRemoteRunEnabled()).toBe(false)
+		} finally {
+			osTypeMock.mockRestore()
+		}
 	})
 })
 
