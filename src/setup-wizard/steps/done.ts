@@ -1,6 +1,5 @@
 import { resolve } from "node:path"
 import { log, note, outro, spinner } from "@clack/prompts"
-import { getApiKeyMismatchWarning } from "../../config.js"
 import { byId } from "../../integrations/registry.js"
 import type { ToolId } from "../../integrations/types.js"
 import { type ModelMetadata, updateModelsConfig } from "../../models.js"
@@ -43,9 +42,6 @@ export async function runDoneStep(state: WizardState): Promise<ApplyOutcome> {
 		telemetryEnabled: state.telemetryEnabled,
 		models,
 	})
-
-	const warning = getApiKeyMismatchWarning()
-	if (warning) log.warn(warning)
 
 	const summaryLines = [
 		state.selectedTools.length > 0

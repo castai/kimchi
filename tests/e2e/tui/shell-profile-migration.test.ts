@@ -19,6 +19,31 @@ function seedProfile(homeDir: string) {
 	return { env: { SHELL: "/bin/bash" } }
 }
 
+test("API key mismatch warning appears only after answering the migration dialog", async ({ terminal }) => {
+	const warning = "KIMCHI_API_KEY differs from your saved key. Using the environment key."
+	await runKimchiSession(
+		terminal,
+		{
+			artifactName: "shell-profile-migration-warning",
+			startupText: MIGRATION_PROMPT,
+			responses: [{ stream: ["Ready after migration."] }],
+			seedHome(homeDir) {
+				seedProfile(homeDir)
+				return { env: { SHELL: "/bin/bash", KIMCHI_API_KEY: "legacy-test-key" } }
+			},
+		},
+		async (_fixture, trace) => {
+			expect(fullText(terminal)).not.toContain(warning)
+			trace.step("migration dialog is visible without the mismatch warning")
+			terminal.keyDown()
+			terminal.submit("")
+			await waitForText(terminal, warning)
+			await waitForText(terminal, PROMPT_READY, { full: false })
+			trace.step("answering No displays the mismatch warning and opens the prompt")
+		},
+	)
+})
+
 test("Yes removes the legacy key while preserving valid Bash startup and other settings", async ({ terminal }) => {
 	const profileName = PROFILE_NAME
 	const settings = [

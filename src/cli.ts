@@ -22,6 +22,7 @@ import {
 } from "./cli-args.js"
 import { applyPostMainInfrastructureExitPolicy } from "./cli-infrastructure-exit.js"
 import { dispatchSubcommand } from "./commands/dispatch.js"
+import { isKnownCommand } from "./commands/registry.js"
 // IMPORTANT: must be first local import — patches InteractiveMode.prototype
 // before any module can construct an InteractiveMode instance.
 import "./login-command-patch.js"
@@ -276,7 +277,20 @@ class SetupCancelled extends Error {}
 
 try {
 	const apiKeyWarning = helpOrVersion ? undefined : getApiKeyMismatchWarning()
-	if (apiKeyWarning) console.warn(`Warning: ${apiKeyWarning}`)
+	const terminalIo = {
+		stdinIsTTY: process.stdin.isTTY === true,
+		stdoutIsTTY: process.stdout.isTTY === true,
+	}
+	// Only chat TUI sessions load the warning extension after startup dialogs.
+	// Setup commands render their own Clack warning; other subcommands exit before extensions load.
+	if (
+		apiKeyWarning &&
+		originalArgs[0] !== "setup-tools" &&
+		originalArgs[0] !== "setup" &&
+		(isKnownCommand(originalArgs[0]) || !isTerminalUiMode(originalArgs, terminalIo))
+	) {
+		console.warn(`Warning: ${apiKeyWarning}`)
+	}
 	// Top-level kimchi subcommands (setup, claude, opencode, …) and the
 	// top-level --help take ownership before any harness setup runs.
 	// `--version` falls through to pi-coding-agent's main below so it prints
@@ -533,10 +547,6 @@ try {
 		}
 		const rawArgsWithoutMultiModel = stripMultiModelArgs(rawArgs)
 
-		const terminalIo = {
-			stdinIsTTY: process.stdin.isTTY === true,
-			stdoutIsTTY: process.stdout.isTTY === true,
-		}
 		// Probe runs here (before pi-mono takes stdin) so the result is cached for
 		// the kimchi-minimal-tints and terminal-colors extensions. Skip non-TUI
 		// modes: stdout belongs to the caller, and OSC escapes corrupt it.
@@ -615,7 +625,6 @@ try {
 			// First so its session_start handler syncs project trust onto the
 			// settings watcher before any other handler reads settings.
 			settingsTrustSyncExtension,
-			createApiKeyWarningExtension(apiKeyWarning),
 			autoUpdateSettingsExtension,
 			startupUpdateExtension,
 			packageInstallGuardExtension,
@@ -629,6 +638,8 @@ try {
 			createRejectedApiKeyExtension(apiKeyRejected ? currentApiKey : undefined),
 			startupAuthGate,
 			shellProfileMigrationExtension,
+			// session_start handlers are awaited in order; warn after the migration dialog closes.
+			createApiKeyWarningExtension(apiKeyWarning),
 			loopGuardExtension,
 			explorationGuardExtension,
 			reviewWriteGuardExtension,
