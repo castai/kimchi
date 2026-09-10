@@ -89,6 +89,8 @@ export interface AuthenticateOptions {
 
 export interface ListWorkspacesOptions extends AuthenticateOptions {
 	signal?: AbortSignal
+	/** Pre-resolved organization id — skips the verifyKey round-trip. */
+	orgId?: string
 }
 
 export interface GetQuotaUsageOptions extends AuthenticateOptions {

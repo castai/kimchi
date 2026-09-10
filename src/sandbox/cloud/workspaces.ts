@@ -16,7 +16,10 @@ export async function listWorkspaces(apiKey: string, options?: ListWorkspacesOpt
 	const signal = options?.signal
 
 	try {
-		const orgId = await verifyApiKey(apiKey, { ...options, fetch: fetchImpl })
+		// Callers that already verified the key (e.g. /remote-sessions, which
+		// caches orgId for its refresh loop) pass it through to skip the
+		// duplicate verifyKey round-trip.
+		const orgId = options?.orgId ?? (await verifyApiKey(apiKey, { ...options, fetch: fetchImpl }))
 
 		const results: Workspace[] = []
 		let cursor = ""

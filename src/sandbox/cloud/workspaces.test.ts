@@ -75,6 +75,23 @@ describe("listWorkspaces", () => {
 		})
 	})
 
+	it("skips key verification when a pre-resolved orgId is provided", async () => {
+		const mockFetch = vi.fn().mockResolvedValueOnce(
+			new Response(JSON.stringify({ items: [workspaceFixture({ id: "ws-1", description: "feature-x" })] }), {
+				status: 200,
+				headers: { "Content-Type": "application/json" },
+			}),
+		)
+
+		const result = await listWorkspaces("key1", { endpoint: BASE, fetch: mockFetch, orgId: ORG_ID })
+
+		// A single fetch: the list URL — no verifyKey round-trip first.
+		expect(mockFetch).toHaveBeenCalledTimes(1)
+		expect(mockFetch.mock.calls[0][0]).toBe(listUrl())
+		expect(result).toHaveLength(1)
+		expect(result[0]).toMatchObject({ id: "ws-1", name: "feature-x" })
+	})
+
 	it("follows cursor across multiple pages", async () => {
 		const mockFetch = vi
 			.fn()

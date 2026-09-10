@@ -1,12 +1,14 @@
 import type { ExtensionUIContext } from "@earendil-works/pi-coding-agent"
 import { beforeEach, describe, expect, it, vi } from "vitest"
 
-const { listWorkspacesMock, pickWorkspaceMock, getQuotaUsageMock } = vi.hoisted(() => ({
+const { listWorkspacesMock, pickWorkspaceMock, getQuotaUsageMock, verifyApiKeyMock } = vi.hoisted(() => ({
 	listWorkspacesMock: vi.fn(),
 	pickWorkspaceMock: vi.fn(),
 	getQuotaUsageMock: vi.fn(),
+	verifyApiKeyMock: vi.fn(),
 }))
 
+vi.mock("../../../sandbox/cloud/keys.js", () => ({ verifyApiKey: verifyApiKeyMock }))
 vi.mock("../../../sandbox/cloud/workspaces.js", () => ({ listWorkspaces: listWorkspacesMock }))
 vi.mock("../../../sandbox/cloud/quota.js", () => ({ getQuotaUsage: getQuotaUsageMock }))
 vi.mock("../ui/workspaces-panel.js", () => ({ pickWorkspace: pickWorkspaceMock }))
@@ -81,6 +83,7 @@ beforeEach(() => {
 	listWorkspacesMock.mockReset().mockResolvedValue([])
 	pickWorkspaceMock.mockReset()
 	getQuotaUsageMock.mockReset().mockResolvedValue(undefined)
+	verifyApiKeyMock.mockReset().mockResolvedValue("org-1")
 })
 
 describe("isUuid", () => {
@@ -326,6 +329,26 @@ describe("resolveWorkspaceRef", () => {
 		const { ctx } = makeCtx()
 		await resolveWorkspaceRef(ctx, undefined, { onEmpty: { kind: "mint" } })
 		expect(pickWorkspaceMock).toHaveBeenCalledOnce()
+	})
+
+	it("verifies the key once and shares the orgId with list and quota", async () => {
+		listWorkspacesMock.mockResolvedValue([ws({ id: UUID_A })])
+		pickWorkspaceMock.mockResolvedValue({ action: "select", row: { id: UUID_A } })
+		const { ctx } = makeCtx()
+		await resolveWorkspaceRef(ctx, undefined, { onEmpty: { kind: "mint" } })
+		expect(verifyApiKeyMock).toHaveBeenCalledOnce()
+		expect(listWorkspacesMock).toHaveBeenCalledWith(ctx.apiKey, expect.objectContaining({ orgId: "org-1" }))
+		expect(getQuotaUsageMock).toHaveBeenCalledWith(ctx.apiKey, expect.objectContaining({ orgId: "org-1" }))
+	})
+
+	it("refuses when API key verification fails", async () => {
+		verifyApiKeyMock.mockRejectedValue(new Error("bad key"))
+		const { ctx, ui } = makeCtx()
+		await expect(resolveWorkspaceRef(ctx, undefined, { onEmpty: { kind: "mint" } })).rejects.toBeInstanceOf(
+			TeleportRefusal,
+		)
+		expect(ui.notify).toHaveBeenCalledWith(expect.stringContaining("Could not verify API key"), "error")
+		expect(listWorkspacesMock).not.toHaveBeenCalled()
 	})
 
 	it("does not fetch quota when an explicit ref is given (picker cannot open)", async () => {

@@ -417,6 +417,9 @@ describe("runRemoteSessions", () => {
 			ctx.apiKey,
 			expect.objectContaining({ endpoint: ctx.endpoint, orgId: "org-1" }),
 		)
+		// The cached orgId is also shared with the refresh loop's list call so
+		// listWorkspaces skips its own duplicate verifyKey round-trip.
+		expect(listWorkspacesMock).toHaveBeenCalledWith(ctx.apiKey, expect.objectContaining({ orgId: "org-1" }))
 	})
 
 	it("still opens the picker when the quota fetch fails (summary omitted)", async () => {

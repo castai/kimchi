@@ -500,6 +500,23 @@ describe("RemoteSessionsPanel", () => {
 	})
 
 	describe("narrow terminals", () => {
+		it("keeps the NAME flex column at MIN_COL_WIDTH when the fixed resource columns crowd the row", () => {
+			const { panel } = makePanel([
+				node({ row: { id: "ws-long-1", name: "abcdefghijklmnop", status: "active", sessionCount: 0 } }),
+			])
+			const lines = panel.render(60).map(stripAnsi)
+			const line = lines.find((l) => l.includes("> "))
+			// The name truncates but never below MIN_COL_WIDTH: a width-8 cell
+			// still shows 7 name characters plus the ellipsis.
+			expect(line).toContain("abcdefg")
+			// The fixed resource columns are never squeezed: their headers
+			// survive intact on the header row.
+			const header = lines.find((l) => l.includes("NAME / SESSION"))
+			expect(header).toContain("CPU")
+			expect(header).toContain("RAM")
+			expect(header).toContain("PVC")
+		})
+
 		// Regression: border title math produced a negative "─".repeat count
 		// below the title width, crashing with RangeError.
 		for (const width of [1, 2, 3, 4, 5, 8, 10, 16, 24]) {
