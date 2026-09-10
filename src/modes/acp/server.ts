@@ -1298,7 +1298,7 @@ export class KimchiAcpAgent implements Agent {
 					// the session's estimate just moved. Emit here (subject to
 					// emitUsageUpdate's undefined/null skip) so clients track the
 					// context window across chained steps, not just at turn end.
-					this.emitUsageUpdate(entry, turn.usage)
+					this.emitUsageUpdate(entry.session, turn.usage)
 				}
 				return
 			}
@@ -1697,8 +1697,7 @@ export class KimchiAcpAgent implements Agent {
 		})
 	}
 
-	private emitUsageUpdate(entry: SessionRecord, lifetime: TurnUsage): void {
-		const session = entry.session
+	private emitUsageUpdate(session: AgentSession, lifetime: TurnUsage): void {
 		const ctx = session.getContextUsage()
 		// Per the issue doc: skip when getContextUsage() returns undefined or
 		// tokens is null (e.g. right after compaction). ACP requires both `used`
@@ -1735,7 +1734,7 @@ export class KimchiAcpAgent implements Agent {
 		if (!turn) return
 		entry.turn = undefined
 		try {
-			this.emitUsageUpdate(entry, turn.usage)
+			this.emitUsageUpdate(entry.session, turn.usage)
 		} finally {
 			const response: PromptResponse = { stopReason }
 			// usage is v1/experimental-only on PromptResponse (v2 drops it in favor
