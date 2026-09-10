@@ -5,6 +5,7 @@
  */
 
 import { formatSkillsForPrompt, type Skill } from "@earendil-works/pi-coding-agent"
+import { isFermentOneshotRequested, isPrintModeEnabled } from "../print-mode.js"
 import type { ContextFile } from "./context-files.js"
 import { renderSystemPromptBlocks, type SuppressibleSection } from "./system-prompt-blocks.js"
 
@@ -306,7 +307,9 @@ function buildPrompt(parts: PromptParts): string {
 	// 6. Consolidated core sections: output, tool selection, working practices, consent
 	sections.push(buildOutputAndTruncationSection(parts.toolNames))
 	sections.push(buildToolSelectionSection(parts.toolNames))
-	sections.push(WORKING_PRACTICES)
+	if (!(parts.mode === "single" && isPrintModeEnabled() && !isFermentOneshotRequested())) {
+		sections.push(WORKING_PRACTICES)
+	}
 	sections.push(CONSENT_AND_IRREVERSIBLE_ACTIONS)
 	sections.push(HARNESS_NOTES_AND_APPROVAL)
 

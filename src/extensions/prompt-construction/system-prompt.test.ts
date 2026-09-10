@@ -1,5 +1,6 @@
 import type { Skill } from "@earendil-works/pi-coding-agent"
 import { describe, expect, it } from "vitest"
+import { withPrintGate } from "../print-mode.js"
 import { buildSystemPrompt, type EnvironmentInfo, formatEnvironmentSection } from "./system-prompt.js"
 
 const testEnv: EnvironmentInfo = {
@@ -267,6 +268,41 @@ describe("buildSystemPrompt", () => {
 	})
 
 	describe("single-model mode", () => {
+		it("omits Working Practices from normal print prompts but keeps it for subagents and Ferment oneshot", async () => {
+			const prompt = await withPrintGate({ print: true }, () =>
+				buildSystemPrompt({
+					tools,
+					env: testEnv,
+					currentModelId: "minimax-m3",
+					mode: "single",
+				}),
+			)
+			const subagentPrompt = await withPrintGate({ print: true }, () =>
+				buildSystemPrompt({
+					tools,
+					env: testEnv,
+					currentModelId: "minimax-m3",
+					mode: "subagent",
+				}),
+			)
+
+			expect(prompt).not.toContain("## Working Practices")
+			expect(prompt).toContain("Always wrap shell commands with a timeout")
+			expect(prompt).toContain("Never run interactive commands")
+			expect(prompt).toContain("Ask before unrequested actions that publish externally")
+			expect(subagentPrompt).toContain("## Working Practices")
+
+			const fermentPrompt = await withPrintGate({ print: true, fermentOneshot: true }, () =>
+				buildSystemPrompt({
+					tools,
+					env: testEnv,
+					currentModelId: "minimax-m3",
+					mode: "single",
+				}),
+			)
+			expect(fermentPrompt).toContain("## Working Practices")
+		})
+
 		it("does not contain orchestration instructions", () => {
 			const result = buildSystemPrompt({
 				tools,
