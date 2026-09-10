@@ -78,7 +78,7 @@ import {
 	unregisterSessionPermissionFlagController,
 } from "../../extensions/permissions/mode-controller-registry.js"
 import { updateModelsConfig } from "../../models.js"
-import { ACP_REATTACH_MID_TURN_META_KEY } from "../../sandbox/worker/acp-protocol.js"
+import { ACP_LIFETIME_USAGE_META_KEY, ACP_REATTACH_MID_TURN_META_KEY } from "../../sandbox/worker/acp-protocol.js"
 import { AVAILABLE_EXT_METHODS, CAPABILITIES_KEY } from "./capabilities.js"
 import { getAcpPrompter } from "./permission-prompter-registry.js"
 import {
@@ -2204,6 +2204,68 @@ describe("KimchiAcpAgent usage reporting", () => {
 		// turn-end emission — the indicator follows the turn live instead of
 		// updating only once at the end.
 		expect(usageUpdates()).toHaveLength(3)
+	})
+
+	it("attaches cumulative lifetime usage totals to usage_update _meta", async () => {
+		fake.contextUsage = { tokens: 1234, contextWindow: 200000, percent: 0.617 }
+		fake.promptImpl = async () => {
+			fake.emit({ type: "agent_start" })
+			fake.emit(assistantUsageEvent({ input: 100, output: 20, cacheRead: 5, cacheWrite: 3 }))
+			fake.emit(assistantUsageEvent({ input: 50, output: 10, cacheRead: 2, cacheWrite: 1 }))
+			fake.emit(agentEnd())
+		}
+
+		const result = await agent.prompt({ sessionId, prompt: [{ type: "text", text: "hi" }] })
+
+		const usage = usageUpdates()
+		// One per assistant message_end (2), plus the final turn-end emission.
+		expect(usage).toHaveLength(3)
+		// Each snapshot carries the cumulative lifetime totals so far — clients
+		// derive per-notification deltas from consecutive snapshots.
+		expect(usage[0]._meta?.[ACP_LIFETIME_USAGE_META_KEY]).toEqual({
+			input: 100,
+			output: 20,
+			cacheRead: 5,
+			cacheWrite: 3,
+		})
+		expect(usage[1]._meta?.[ACP_LIFETIME_USAGE_META_KEY]).toEqual({
+			input: 150,
+			output: 30,
+			cacheRead: 7,
+			cacheWrite: 4,
+		})
+		// The turn-end emission carries the same final totals.
+		expect(usage[2]._meta?.[ACP_LIFETIME_USAGE_META_KEY]).toEqual({
+			input: 150,
+			output: 30,
+			cacheRead: 7,
+			cacheWrite: 4,
+		})
+		// PromptResponse.usage equals the last cumulative snapshot — a client
+		// tracking _meta deltas owes nothing extra when the prompt resolves.
+		expect(result.usage).toEqual({
+			inputTokens: 150,
+			outputTokens: 30,
+			cachedReadTokens: 7,
+			cachedWriteTokens: 4,
+			totalTokens: 191,
+		})
+	})
+
+	it("omits the _meta usage totals when no usage was collected", async () => {
+		fake.contextUsage = { tokens: 1234, contextWindow: 200000, percent: 0.617 }
+		fake.promptImpl = async () => {
+			fake.emit({ type: "agent_start" })
+			fake.emit(agentEnd())
+		}
+
+		await agent.prompt({ sessionId, prompt: [{ type: "text", text: "hi" }] })
+
+		const usage = usageUpdates()
+		// Only the turn-end emission fires (contextUsage is set) — without any
+		// usage-bearing message it must not advertise a _meta totals object.
+		expect(usage).toHaveLength(1)
+		expect(usage[0]._meta?.[ACP_LIFETIME_USAGE_META_KEY]).toBeUndefined()
 	})
 
 	it("skips usage_update when getContextUsage returns undefined", async () => {

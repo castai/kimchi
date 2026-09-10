@@ -97,6 +97,19 @@ describe("RemoteAgentSession", () => {
 		})
 	})
 
+	describe("setContextUsage", () => {
+		it("getSessionStats reports a null percent before any usage_update", () => {
+			const session = new RemoteAgentSession()
+			expect(session.getSessionStats().contextUsage?.percent).toBeNull()
+		})
+
+		it("getSessionStats computes the percent from the last usage_update", () => {
+			const session = new RemoteAgentSession()
+			session.setContextUsage(50_000, 200_000)
+			expect(session.getSessionStats().contextUsage?.percent).toBe(25)
+		})
+	})
+
 	describe("subscribe / emit", () => {
 		it("delivers emitted events to subscribers", () => {
 			const session = new RemoteAgentSession()

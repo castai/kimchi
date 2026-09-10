@@ -94,7 +94,11 @@ import { KIMCHI_PROVIDER_ID } from "../../kimchi-provider.js"
 import { updateModelsConfig } from "../../models.js"
 import { clearPiAuth, syncPiAuth } from "../../pi-auth.js"
 import { resolveHeadlessProjectTrust } from "../../project-trust.js"
-import { ACP_REATTACH_MID_TURN_META_KEY, buildToolCallId } from "../../sandbox/worker/acp-protocol.js"
+import {
+	ACP_LIFETIME_USAGE_META_KEY,
+	ACP_REATTACH_MID_TURN_META_KEY,
+	buildToolCallId,
+} from "../../sandbox/worker/acp-protocol.js"
 import { getVersion } from "../../utils.js"
 import { createAcpPermissionPrompter } from "./acp-prompter.js"
 import { createAcpUIContext } from "./acp-ui-context.js"
@@ -1294,7 +1298,7 @@ export class KimchiAcpAgent implements Agent {
 					// the session's estimate just moved. Emit here (subject to
 					// emitUsageUpdate's undefined/null skip) so clients track the
 					// context window across chained steps, not just at turn end.
-					this.emitUsageUpdate(entry)
+					this.emitUsageUpdate(entry.session, turn.usage)
 				}
 				return
 			}
@@ -1693,15 +1697,30 @@ export class KimchiAcpAgent implements Agent {
 		})
 	}
 
-	private emitUsageUpdate(entry: SessionRecord): void {
-		const session = entry.session
+	private emitUsageUpdate(session: AgentSession, lifetime: TurnUsage): void {
 		const ctx = session.getContextUsage()
 		// Per the issue doc: skip when getContextUsage() returns undefined or
 		// tokens is null (e.g. right after compaction). ACP requires both `used`
 		// and `size`, so there is no null-safe emission.
 		if (!ctx || ctx.tokens === null) return
+		// Piggyback the turn's cumulative lifetime token totals on the
+		// notification via _meta — usage_update's used/size only describe the
+		// context window, so long-running remote clients would otherwise see no
+		// token consumption until the PromptResponse resolves. Cumulative (not
+		// per-update) totals keep client-side delta computation idempotent across
+		// session/load replays.
+		const usageMeta =
+			lifetime.messages > 0
+				? {
+						input: lifetime.input,
+						output: lifetime.output,
+						cacheRead: lifetime.cacheRead,
+						cacheWrite: lifetime.cacheWrite,
+					}
+				: undefined
 		this.send({
 			sessionId: session.sessionId,
+			...(usageMeta ? { _meta: { [ACP_LIFETIME_USAGE_META_KEY]: usageMeta } } : {}),
 			update: {
 				sessionUpdate: "usage_update",
 				used: ctx.tokens,
@@ -1715,7 +1734,7 @@ export class KimchiAcpAgent implements Agent {
 		if (!turn) return
 		entry.turn = undefined
 		try {
-			this.emitUsageUpdate(entry)
+			this.emitUsageUpdate(entry.session, turn.usage)
 		} finally {
 			const response: PromptResponse = { stopReason }
 			// usage is v1/experimental-only on PromptResponse (v2 drops it in favor

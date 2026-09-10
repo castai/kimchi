@@ -505,6 +505,7 @@ export class AgentManager {
 					addUsage(record.lifetimeUsage, usage)
 					options.onAssistantUsage?.(usage)
 				},
+				onContextUsage: (used, size) => remoteSession.setContextUsage(used, size),
 				onRawNotification: (params) => {
 					options.onRawNotification?.(params)
 				},
@@ -1051,6 +1052,7 @@ export class AgentManager {
 					addUsage(record.lifetimeUsage, usage)
 					options?.callbacks?.onAssistantUsage?.(usage)
 				},
+				onContextUsage: (used, size) => adapter.setContextUsage(used, size),
 			},
 		}).then((result) => {
 			record.recoveryNote = result.recoveryNote
