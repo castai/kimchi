@@ -22,31 +22,9 @@ You are editing the kimchi coding harness. This repo extends the pi-mono SDK (`@
 - **Pre-commit**: `.husky/pre-commit` runs `pnpm run lint` — CI runs full `check` (lint + typecheck)
 - **README changes**: Run `./scripts/copy-resources.js --dev` after editing to propagate to dist/
 
-## Live harness controller (development only)
+## Live harness checks
 
-Use the bundled [kimchi-tmux skill](resources/skills/kimchi-tmux/SKILL.md) and its linked `scripts/harness-live.mjs` when developing a harness feature, command, menu, or TUI workflow. It launches the real harness in tmux, injects input, and operates menus. This is a developer/agent tool, not a test runner: do not wire it into CI or test scripts.
-
-Prerequisites: Node.js 22+, `tmux`, `pnpm run build:binary`, and an existing provider login. For this checkout, set `KIMCHI_BINARY="$PWD/dist/bin/kimchi"`; otherwise the controller uses the installed `kimchi` on PATH. Run from the repository root or invoke the script by absolute path. Each run gets a temporary Git working directory and starts in Plan mode. It uses your existing settings/auth; model requests consume inference credits. Use the model requested by the user; the provider defaults to `kimchi-dev`. No feature resource is required unless checking that feature.
-
-```sh
-export KIMCHI_BINARY="$PWD/dist/bin/kimchi"
-node resources/skills/kimchi-tmux/scripts/harness-live.mjs start <model> [provider]
-node resources/skills/kimchi-tmux/scripts/harness-live.mjs status <run-dir>
-node resources/skills/kimchi-tmux/scripts/harness-live.mjs type <run-dir> '<text without submitting>'
-node resources/skills/kimchi-tmux/scripts/harness-live.mjs send <run-dir> '<prompt or /command to submit>'
-node resources/skills/kimchi-tmux/scripts/harness-live.mjs send <run-dir> '/model'
-node resources/skills/kimchi-tmux/scripts/harness-live.mjs key <run-dir> Down
-node resources/skills/kimchi-tmux/scripts/harness-live.mjs key <run-dir> Escape
-node resources/skills/kimchi-tmux/scripts/harness-live.mjs key <run-dir> Enter
-node resources/skills/kimchi-tmux/scripts/harness-live.mjs stop <run-dir>
-node resources/skills/kimchi-tmux/scripts/harness-live.mjs resume <run-dir>
-```
-
-Inspect `status` between actions. `/model` opens the model menu; `C-p` cycles models instead. `type` also fills menu search fields. Run the script without arguments for supported keys, including arrows, Tab, Shift+Tab (`BTab`), Space, Backspace (`BSpace`), and PageUp/PageDown (`PPage`/`NPage`). Enter selects/submits; Escape dismisses. Ctrl+C (`C-c`) interrupts streaming but only denies the current request inside a permission dialog.
-
-`stop` terminates only the named tmux session and retains artifacts. `resume` selects the latest root session, ignoring newer evaluator children, and restores its saved model. `status` prints the visible terminal and root session path; its header labels the initial model while the pane shows the current model. It does not interpret feature-specific state.
-
-An agent driving the controller needs Default/Auto mode because Plan mode rejects the launch command; the launched harness can remain in Plan mode. Approve only scoped controller calls, never disable all permission checks. Keep prompts scoped to the temporary workdir and forbid project/settings changes during read-only checks. A temporary workdir is not a security sandbox: preserve a dedicated `TMUX_TMPDIR` when using an OS-sandboxed tmux server. Verify visible output and actual state instead of trusting a child agent's claim, and stop only sessions you created.
+Use the bundled [kimchi-tmux skill](resources/skills/kimchi-tmux/SKILL.md) when developing or verifying harness commands, menus, and TUI workflows. Follow the skill for setup, controller usage, and cleanup.
 
 ## CLI arguments
 
