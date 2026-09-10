@@ -45,13 +45,31 @@ describe("isRemoteRunEnabled", () => {
 		else process.env.KIMCHI_REMOTE_RUN = orig
 	})
 
-	it("returns true when KIMCHI_REMOTE_RUN is set", () => {
-		process.env.KIMCHI_REMOTE_RUN = "1"
+	it("returns true when KIMCHI_REMOTE_RUN is unset (enabled by default)", () => {
+		delete process.env.KIMCHI_REMOTE_RUN
 		expect(isRemoteRunEnabled()).toBe(true)
 	})
 
-	it("returns false when KIMCHI_REMOTE_RUN is unset", () => {
-		delete process.env.KIMCHI_REMOTE_RUN
+	it("returns true for legacy opt-in values", () => {
+		process.env.KIMCHI_REMOTE_RUN = "1"
+		expect(isRemoteRunEnabled()).toBe(true)
+		process.env.KIMCHI_REMOTE_RUN = "true"
+		expect(isRemoteRunEnabled()).toBe(true)
+	})
+
+	it("treats empty string as unset", () => {
+		process.env.KIMCHI_REMOTE_RUN = ""
+		expect(isRemoteRunEnabled()).toBe(true)
+	})
+
+	it("returns false when KIMCHI_REMOTE_RUN explicitly disables it", () => {
+		process.env.KIMCHI_REMOTE_RUN = "0"
+		expect(isRemoteRunEnabled()).toBe(false)
+		process.env.KIMCHI_REMOTE_RUN = "false"
+		expect(isRemoteRunEnabled()).toBe(false)
+		process.env.KIMCHI_REMOTE_RUN = "FALSE"
+		expect(isRemoteRunEnabled()).toBe(false)
+		process.env.KIMCHI_REMOTE_RUN = "False"
 		expect(isRemoteRunEnabled()).toBe(false)
 	})
 })

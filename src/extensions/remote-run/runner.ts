@@ -18,9 +18,19 @@ import { trackRemoteExecution } from "../telemetry/index.js"
 /** Max characters for the result preview in the completion notification. */
 const PREVIEW_MAX = 500
 
-/** Returns true when KIMCHI_REMOTE_RUN env var is set. */
+/** Values that explicitly disable remote run when set in KIMCHI_REMOTE_RUN. */
+const DISABLE_VALUES = new Set(["0", "false"])
+
+/**
+ * Remote run is enabled by default. Setting KIMCHI_REMOTE_RUN to an explicit
+ * falsy value ("0", "false" — case-insensitive) disables it. Unset, empty,
+ * "1", "true", or any other value keeps it enabled (legacy opt-in values are
+ * harmless no-ops).
+ */
 export function isRemoteRunEnabled(): boolean {
-	return !!process.env.KIMCHI_REMOTE_RUN
+	const value = process.env.KIMCHI_REMOTE_RUN?.trim().toLowerCase()
+	if (value === undefined || value === "") return true
+	return !DISABLE_VALUES.has(value)
 }
 
 /**
