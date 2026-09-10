@@ -1,6 +1,6 @@
 ---
 name: kimchi-tmux
-description: Drive the real Kimchi terminal UI in tmux to develop, reproduce, or verify harness commands, menus, and interactive workflows. Use for live TUI checks, not automated test suites or CI.
+description: Control Kimchi TUI through tmux.
 ---
 
 # Kimchi tmux control
