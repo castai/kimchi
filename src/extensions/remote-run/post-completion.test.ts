@@ -392,6 +392,23 @@ describe("handleRemoteFailure", () => {
 		expect(pi.sendMessage).not.toHaveBeenCalled()
 	})
 
+	it("includes the recovery note's reason in the interactive notification", () => {
+		const pi = makePi()
+		const ctx = makeCtx()
+
+		handleRemoteFailure(pi, ctx, "plan", {
+			error: "the remote run finished while kimchi was closed and its result could not be recovered — outcome unknown",
+			recoveryNote:
+				"Recovery failed: the replayed session contained no final assistant message. The result of the remote run is unknown — before re-running or re-dispatching anything, ask the user how to proceed.",
+		})
+
+		// Without the reason, this failure mode is undiagnosable from the UI.
+		expect(ctx.ui.notify).toHaveBeenCalledWith(
+			"Cloud agent failed: the remote run finished while kimchi was closed and its result could not be recovered — outcome unknown — Recovery failed: the replayed session contained no final assistant message",
+			"error",
+		)
+	})
+
 	it("resumes the paused ferment — a failed cloud run must not leave it paused", () => {
 		const pi = makePi()
 		const ctx = makeCtx()

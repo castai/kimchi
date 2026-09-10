@@ -99,7 +99,14 @@ import { WorkerError } from "../../../sandbox/worker/types.js"
 import { appendTranscriptGapMarker } from "../../remote-run/session-recovery.js"
 import { provisionGitCredential } from "../../teleport/provisioning/git-provision.js"
 import { syncLocalChangesAfterClone } from "../../teleport/provisioning/sync-local-changes.js"
-import { type RemoteRunOptions, runRemoteAgent } from "./remote-agent-runner.js"
+import {
+	type AttachRemoteAgentOptions,
+	attachRemoteAgent,
+	isRemoteSessionConnected,
+	type RemoteRunOptions,
+	type RemoteSessionMeta,
+	runRemoteAgent,
+} from "./remote-agent-runner.js"
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -1526,5 +1533,148 @@ describe("runRemoteAgent", () => {
 			expect(activityState.activeTools.size).toBe(0)
 			expect(activityState.responseText).toBe("")
 		})
+	})
+})
+
+describe("attachRemoteAgent", () => {
+	// Fast backoffs/poll/grace — same rationale as the disconnect-recovery tests.
+	const FAST_BACKOFFS = [10, 20, 40]
+	const GRACE = 30
+	const FAST_POLL = 10
+
+	const META: RemoteSessionMeta = {
+		workspaceId: WORKSPACE_ID,
+		sessionName: "acp-resume01",
+		wsUrl: "wss://worker.example.com",
+		host: "worker.example.com",
+		cwd: "/home/sandbox/acp-resume01",
+	}
+
+	function makeAttachOptions(overrides: Partial<AttachRemoteAgentOptions> = {}): AttachRemoteAgentOptions {
+		return {
+			apiKey: "test-api-key",
+			remoteSession: META,
+			acpSessionId: "remote-acp-1",
+			callbacks: {
+				onTextDelta: vi.fn(),
+				onToolActivity: vi.fn(),
+				onTurnEnd: vi.fn(),
+				onAssistantUsage: vi.fn(),
+			},
+			reconnectBackoffsMs: FAST_BACKOFFS,
+			turnSettleGraceMs: GRACE,
+			pollIntervalMs: FAST_POLL,
+			...overrides,
+		}
+	}
+
+	/** Attach and fire the turn-end signal once the attached client (with
+	 *  onForeignResponse) exists — the realistic exit for resume tests. */
+	async function attachUntilTurnEnd(options: AttachRemoteAgentOptions) {
+		const attachPromise = attachRemoteAgent(options)
+		await vi.waitFor(() => expect(capturedOptions?.onForeignResponse).toBeTypeOf("function"))
+		;(capturedOptions as { onForeignResponse: (response: unknown) => void }).onForeignResponse({ id: 4, result: {} })
+		return attachPromise
+	}
+
+	it("attaches to the still-running session and recovers the result on turn end", async () => {
+		vi.mocked(getSession).mockImplementation(quietRunningFor(10))
+		const onReconnecting = vi.fn()
+
+		const result = await attachUntilTurnEnd(makeAttachOptions({ onReconnecting }))
+
+		expect(result.stopReason).toBe("recovered")
+		expect(result.responseText).toBe("Recovered result text")
+		// Never created a new session, never re-prompted — attach only.
+		expect(createSession).not.toHaveBeenCalled()
+		expect(mockPrompt).not.toHaveBeenCalled()
+		// One attach client (mockInitialize) plus one replay client (inline).
+		expect(mockInitialize).toHaveBeenCalledTimes(1)
+		expect(capturedOptions?.sessionId).toBe("remote-acp-1")
+		// The resumed record can mirror reconnecting → running → completion.
+		expect(onReconnecting).toHaveBeenNthCalledWith(1, true)
+		expect(onReconnecting).toHaveBeenNthCalledWith(2, false)
+		// Confirmed-finished run cleaned up the remote session.
+		expect(deleteSession).toHaveBeenCalledOnce()
+	})
+
+	it("recovers via replay without attaching when the run finished while kimchi was closed", async () => {
+		vi.mocked(getSession).mockResolvedValue({
+			name: "s",
+			agentMode: "ACP",
+			yolo: true,
+			alive: true,
+			agentRunning: false,
+			clientConnected: false,
+			connectedThroughBridge: false,
+			finishedAt: new Date().toISOString(),
+		})
+
+		const result = await attachRemoteAgent(makeAttachOptions())
+
+		expect(result.stopReason).toBe("recovered")
+		expect(result.responseText).toBe("Recovered result text")
+		// No attach client was constructed — the replay client is the only one.
+		expect(mockInitialize).not.toHaveBeenCalled()
+		expect(mockPrompt).not.toHaveBeenCalled()
+		expect(deleteSession).toHaveBeenCalledOnce()
+	})
+
+	it("throws when the session was reaped server-side (404) — result unknown", async () => {
+		vi.mocked(getSession).mockRejectedValue(new WorkerError("not found", 404))
+
+		await expect(attachRemoteAgent(makeAttachOptions())).rejects.toThrow("no longer exists")
+
+		// Unknown outcome — nothing is deleted.
+		expect(deleteSession).not.toHaveBeenCalled()
+	})
+
+	it("throws when the sandbox cannot be revived — session left undeleted", async () => {
+		vi.mocked(getSession).mockResolvedValue({
+			name: "s",
+			agentMode: "ACP",
+			yolo: true,
+			alive: false,
+			agentRunning: false,
+			clientConnected: false,
+			connectedThroughBridge: false,
+		})
+
+		await expect(attachRemoteAgent(makeAttachOptions())).rejects.toThrow("no longer reachable")
+
+		// Unknown outcome — the unreachable session is not deleted.
+		expect(deleteSession).not.toHaveBeenCalled()
+	})
+
+	it("deletes the session best-effort and throws AbortError on user kill", async () => {
+		const controller = new AbortController()
+		vi.mocked(getSession).mockImplementation(quietRunningFor(10))
+
+		const attachPromise = attachRemoteAgent(makeAttachOptions({ signal: controller.signal }))
+		await vi.waitFor(() => expect(capturedOptions?.onForeignResponse).toBeTypeOf("function"))
+		controller.abort()
+
+		await expect(attachPromise).rejects.toMatchObject({ name: "AbortError" })
+		// The remote session must not outlive its owner once the user stops it.
+		expect(deleteSession).toHaveBeenCalledOnce()
+	})
+
+	it("isRemoteSessionConnected returns true only on a positive sighting", async () => {
+		// Positive: another kimchi process holds a live WS on the session.
+		vi.mocked(getSession).mockResolvedValue({
+			name: "s",
+			agentMode: "ACP",
+			yolo: true,
+			alive: true,
+			agentRunning: true,
+			clientConnected: true,
+			connectedThroughBridge: false,
+		})
+		await expect(isRemoteSessionConnected(META, "test-api-key")).resolves.toBe(true)
+
+		// Negative: a failed poll must NOT block the resume — the attach's own
+		// recovery machinery handles the real session state.
+		vi.mocked(getSession).mockRejectedValue(new Error("network down"))
+		await expect(isRemoteSessionConnected(META, "test-api-key")).resolves.toBe(false)
 	})
 })

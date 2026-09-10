@@ -99,6 +99,7 @@ vi.mock("./manager/agent-manager.js", () => {
 				listAgents: vi.fn(() => [...records.values()]),
 				abort: vi.fn(),
 				abortAll: vi.fn(),
+				resumeRemoteRecord: vi.fn(),
 				waitForAll: vi.fn().mockResolvedValue(undefined),
 				clearCompleted: vi.fn(),
 				dispose: vi.fn(),
@@ -166,6 +167,7 @@ import { getAllowedMultiModelRefs, getModelRoles } from "../orchestration/model-
 import { handleRemoteCompletion } from "../remote-run/post-completion.js"
 import agentsExtension from "./index.js"
 import { AgentManager as MockedAgentManager } from "./manager/agent-manager.js"
+import type { RemoteRunState } from "./remote-run-persistence.js"
 import type { Theme } from "./ui/agent-widget.js"
 
 type CapturedHandler = (event?: unknown, ctx?: unknown) => unknown | Promise<unknown>
@@ -186,6 +188,7 @@ function makeMockPi(): ExtensionAPI & {
 		}),
 		registerTool: vi.fn(),
 		registerMessageRenderer: vi.fn(),
+		registerEntryRenderer: vi.fn(),
 		registerCommand: vi.fn(),
 		sendMessage,
 		events,
@@ -876,5 +879,166 @@ describe("user abort suppresses the remote completion dropdown", () => {
 		manager.onComplete(makeCloudRecord(5_000))
 
 		expect(vi.mocked(handleRemoteCompletion)).toHaveBeenCalledTimes(1)
+	})
+})
+
+describe("remote run session resume (persisted across kimchi restarts)", () => {
+	beforeEach(() => {
+		vi.clearAllMocks()
+	})
+
+	/** Fire every session_start handler the extension registered. */
+	async function fireSessionStart(pi: ReturnType<typeof makeMockPi>, ctx: unknown): Promise<void> {
+		const handlers = pi._handlers.get("session_start") ?? []
+		expect(handlers.length).toBeGreaterThan(0)
+		for (const handler of handlers) await handler({}, ctx)
+	}
+
+	function currentManager(): {
+		onComplete: (record: unknown) => void
+		abortAll: ReturnType<typeof vi.fn>
+		resumeRemoteRecord: ReturnType<typeof vi.fn>
+	} {
+		const managerInstance = (MockedAgentManager as ReturnType<typeof vi.fn>).mock.results.at(-1)?.value
+		expect(managerInstance).toBeDefined()
+		return managerInstance as {
+			onComplete: (record: unknown) => void
+			abortAll: ReturnType<typeof vi.fn>
+			resumeRemoteRecord: ReturnType<typeof vi.fn>
+		}
+	}
+
+	const RUNNING: RemoteRunState = {
+		id: "resumed-1",
+		description: "cloud: test plan",
+		remoteSession: {
+			workspaceId: "ws-1",
+			sessionName: "acp-resume01",
+			wsUrl: "wss://worker.example.com",
+			host: "worker.example.com",
+			cwd: "/home/sandbox/acp-resume01",
+		},
+		acpSessionId: "remote-acp-1",
+		remoteOrigin: "plan",
+		startedAt: 1_000,
+		status: "running",
+	}
+
+	function entry(data: RemoteRunState): Record<string, unknown> {
+		return { type: "custom", customType: "remote_run:state", data }
+	}
+
+	it("spares remote records on session shutdown", async () => {
+		const pi = makeMockPi()
+		agentsExtension(pi)
+
+		await pi.fireShutdown()
+
+		expect(currentManager().abortAll).toHaveBeenCalledWith({ skipRemote: true })
+	})
+
+	it("resumes persisted remote runs on session start", async () => {
+		const notify = vi.fn()
+		const pi = makeMockPi()
+		agentsExtension(pi)
+
+		const ctx = {
+			cwd: "/work/myrepo",
+			mode: "tui",
+			hasUI: true,
+			ui: { notify },
+			sessionManager: { getBranch: () => [entry(RUNNING)] },
+		}
+		await fireSessionStart(pi, ctx)
+
+		expect(currentManager().resumeRemoteRecord).toHaveBeenCalledTimes(1)
+		expect(currentManager().resumeRemoteRecord).toHaveBeenCalledWith(
+			RUNNING,
+			expect.anything(),
+			expect.objectContaining({ callbacks: expect.anything() }),
+		)
+		expect(notify).toHaveBeenCalledWith(expect.stringContaining("Resumed remote cloud agent"))
+	})
+
+	it("does not resume runs already watched by another kimchi session", async () => {
+		const notify = vi.fn()
+		const setStatus = vi.fn()
+		const pi = makeMockPi()
+		agentsExtension(pi)
+		// The mocked manager reports the ownership guard's skip outcome.
+		currentManager().resumeRemoteRecord.mockResolvedValue("already-watched")
+
+		const ctx = {
+			cwd: "/work/myrepo",
+			mode: "tui",
+			hasUI: true,
+			ui: { notify, setStatus },
+			sessionManager: { getBranch: () => [entry(RUNNING)] },
+		}
+		await fireSessionStart(pi, ctx)
+
+		// The notice is appended as the newest conversation entry (rendered
+		// error-styled by the remote_run:notice renderer) — a toast would drown
+		// in the resume transcript flood.
+		expect(pi.appendEntry).toHaveBeenCalledWith(
+			"remote_run:notice",
+			expect.objectContaining({ message: expect.stringContaining("already being watched") }),
+		)
+		// The renderer is registered so the entry actually shows in the TUI.
+		expect(pi.registerEntryRenderer).toHaveBeenCalledWith("remote_run:notice", expect.any(Function))
+		// It is also pinned as a persistent footer status line.
+		expect(setStatus).toHaveBeenCalledWith(
+			"remote-run",
+			expect.stringContaining("already being watched by another kimchi session"),
+		)
+		// No toast — the entry and the footer replace it.
+		expect(notify).not.toHaveBeenCalled()
+	})
+
+	it("does not resume runs whose last persisted state is terminal", async () => {
+		const pi = makeMockPi()
+		agentsExtension(pi)
+
+		const ctx = {
+			cwd: "/work/myrepo",
+			mode: "tui",
+			hasUI: true,
+			ui: { notify: vi.fn() },
+			sessionManager: { getBranch: () => [entry({ ...RUNNING, status: "completed" })] },
+		}
+		await fireSessionStart(pi, ctx)
+
+		expect(currentManager().resumeRemoteRecord).not.toHaveBeenCalled()
+	})
+
+	it("persists the terminal state when a remote run completes", () => {
+		const pi = makeMockPi()
+		agentsExtension(pi)
+
+		const record = {
+			id: "cloud-1",
+			type: "general-purpose",
+			description: "cloud: test plan",
+			status: "completed",
+			visibility: "user",
+			resultConsumed: false,
+			result: "remote result",
+			triggersRemoteCompletion: true,
+			spawnCtx: { hasUI: true, ui: { notify: vi.fn() } },
+			remote: true,
+			remoteSession: RUNNING.remoteSession,
+			acpSessionId: "remote-acp-1",
+			remoteOrigin: "plan",
+			startedAt: 5_000,
+			completedAt: Date.now(),
+			toolUses: 3,
+			lifetimeUsage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+		}
+		currentManager().onComplete(record)
+
+		expect(pi.appendEntry).toHaveBeenCalledWith(
+			"remote_run:state",
+			expect.objectContaining({ id: "cloud-1", status: "completed" }),
+		)
 	})
 })

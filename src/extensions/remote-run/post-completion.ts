@@ -153,7 +153,11 @@ export function handleRemoteFailure(
 		// A user-initiated stop was already announced by the kill handler
 		// ("Stopped … agent") — don't pile a failure notification on top.
 		if (!opts?.stoppedByUser) {
-			ctx.ui.notify(`Cloud agent failed: ${detail}`, "error")
+			// Include the recovery note's reason (first sentence) — without it, a
+			// failed resume ("result could not be recovered") is undiagnosable
+			// from the UI alone.
+			const reason = opts?.recoveryNote?.split(". ")[0]
+			ctx.ui.notify(`Cloud agent failed: ${detail}${reason ? ` — ${reason}` : ""}`, "error")
 		}
 		return
 	}

@@ -209,6 +209,9 @@ export interface AgentRecord {
 	remote?: boolean
 	/** Remote session metadata (workspace, host, cwd) — set by _runRemote, used by post-completion sync. */
 	remoteSession?: RemoteSessionMeta
+	/** ACP session id for the remote run — captured at onReady; needed to
+	 *  persist the run for resume-after-restart (session/load attaches by id). */
+	acpSessionId?: string
 	/** Recovery note when the result was recovered after a network disconnect. */
 	recoveryNote?: string
 	/** ExtensionContext captured at spawn time — used by the completion handler when

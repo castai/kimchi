@@ -168,6 +168,426 @@ function isTurnInProgressError(err: unknown): boolean {
 /** Union of a normal prompt result and the recovery placeholder shape. */
 type PromptOutcome = { stopReason: string; usage?: RemoteRunResult["usage"] }
 
+// ---------------------------------------------------------------------------
+// Shared recovery engine — the poll/reattach/replay state machine used by
+// BOTH the mid-run disconnect recovery (inside runRemoteAgent) and the
+// fresh-process resume (attachRemoteAgent). One implementation, two entries:
+// a fresh-process attach enters with the same initial conditions as a
+// mid-run disconnect (attached=false, no live WS, known acpSessionId).
+// ---------------------------------------------------------------------------
+
+/** Mutable run state shared between the caller and the recovery engine —
+ *  reauth/reattach swap these in place so every consumer (recovery loop,
+ *  main flow, finally block) sees the latest handles. */
+interface RemoteRecoveryState {
+	creds: WorkspaceCredentials
+	client: WorkerClient
+	/** The live ACP client — undefined for a fresh-process attach (the loop
+	 *  constructs one on the first reattach). */
+	acpClient: AcpSessionClient | undefined
+	/** The ACP session id — session/load attaches by id, never by name. */
+	acpSessionId: string | undefined
+	/** Accumulated response text (kept current by the wrapped onTextDelta). */
+	responseText: string
+	/** Recovery note set when the result was recovered after a disconnect. */
+	recoveryNote: string | undefined
+	/** Remote session metadata (kept in sync with creds by applyRecoveryCreds). */
+	meta: RemoteSessionMeta
+	/** Engine-internal scratch: the last status poll was auth-rejected
+	 *  (401/403) — forces a credentials refresh on the next loop tick. */
+	pollAuthRejected: boolean
+}
+
+/** Immutable configuration for one run of the recovery engine. */
+interface RecoveryConfig {
+	sessionName: string
+	workspaceId: string
+	apiKey: string
+	workspaceName: string
+	endpoint: string | undefined
+	signal: AbortSignal | undefined
+	outputFile: string | undefined
+	cwd: string
+	onReady?: (acpClient: AcpSessionClient, meta: RemoteSessionMeta) => void
+	onReconnecting?: (reconnecting: boolean) => void
+	backoffs: number[]
+	turnSettleGraceMs: number
+	reviveDelayMs: number
+	pollDelayMs: () => number
+	wrappedCallbacks: AcpSessionCallbacks
+}
+
+/** Applies freshly authenticated credentials — the creds handle AND the
+ *  session meta stay in sync, so onReady/remoteSession consumers never see a
+ *  stale endpoint after a revive or reattach moved the workspace. */
+function applyRecoveryCreds(st: RemoteRecoveryState, fresh: WorkspaceCredentials): void {
+	st.creds = fresh
+	st.meta.wsUrl = fresh.wsUrl
+	st.meta.host = fresh.host
+}
+
+/** Fetches the current session status; returns undefined on transient failure. */
+async function safeGetSession(st: RemoteRecoveryState, config: RecoveryConfig): Promise<SessionStatus | undefined> {
+	try {
+		st.pollAuthRejected = false
+		return await getSession(st.client, config.sessionName, config.signal)
+	} catch (err) {
+		if (config.signal?.aborted) throw makeAbortError()
+		// A definitive 404 (session deleted/reaped server-side) is not a
+		// transient failure — fail honestly instead of retrying forever.
+		// (The always-on poller treats 404 as terminal too.)
+		if (err instanceof WorkerError && err.status === 404) {
+			throw new Error("remote session no longer exists — result unknown")
+		}
+		// Auth rejected — the connect token likely expired during the
+		// outage (spec Q6). Flagged so the recovery loop refreshes creds.
+		st.pollAuthRejected = err instanceof WorkerError && (err.status === 401 || err.status === 403)
+		return undefined
+	}
+}
+
+/** Re-authenticates and waits for the sandbox to wake, up to REVIVE_MAX_ATTEMPTS times. */
+async function tryReviveWorkspace(st: RemoteRecoveryState, config: RecoveryConfig): Promise<boolean> {
+	for (let i = 0; i < REVIVE_MAX_ATTEMPTS; i++) {
+		if (config.signal?.aborted) throw makeAbortError()
+		try {
+			applyRecoveryCreds(
+				st,
+				await authenticateWorkspace(config.workspaceId, config.apiKey, config.workspaceName, {
+					endpoint: config.endpoint,
+				}),
+			)
+			await waitForWorkspaceReady({ wsUrl: st.creds.wsUrl, connectToken: st.creds.connectToken, signal: config.signal })
+			await st.client.close().catch(() => {})
+			st.client = new WorkerClient(st.creds)
+			const s = await getSession(st.client, config.sessionName, config.signal)
+			if (s.alive) return true
+		} catch (_err) {
+			if (config.signal?.aborted) throw makeAbortError()
+			// network error or not yet ready — retry after backoff
+		}
+		if (i < REVIVE_MAX_ATTEMPTS - 1) await timersSleep(config.reviveDelayMs, undefined, { signal: config.signal })
+	}
+	return false
+}
+
+/** Replay outcome: the recovered final text, or the reason it failed. */
+type ReplayOutcome = { text: string } | { error: string }
+
+/** Attaches a fresh ACP client to the finished session and extracts the
+ *  final assistant text from the session/load replay. Returns undefined
+ *  when no session id is known or the replay cannot be obtained. */
+async function recoverTextViaReplay(
+	st: RemoteRecoveryState,
+	config: RecoveryConfig,
+): Promise<ReplayOutcome | undefined> {
+	if (!st.acpSessionId) return undefined
+	const replayClient = new AcpSessionClient({
+		sessionName: config.sessionName,
+		credentials: st.creds,
+		signal: config.signal,
+		cwd: config.cwd,
+		sessionId: st.acpSessionId,
+		captureLoadReplay: true,
+	})
+	try {
+		await replayClient.initialize()
+		const text = extractFinalAssistantText(replayClient.loadReplay)
+		return text.trim()
+			? { text }
+			: {
+					error: "the replayed session contained no final assistant message (the turn may still have been running)",
+				}
+	} catch (replayErr) {
+		if (config.signal?.aborted) throw makeAbortError()
+		return {
+			error: `the remote session did not answer session/load (${
+				replayErr instanceof Error ? replayErr.message : String(replayErr)
+			})`,
+		}
+	} finally {
+		replayClient.close()
+	}
+}
+
+/** Shared recovery outcome: recover the result via session/load replay.
+ *  Reads the current creds (mutated by re-auth) at call time. */
+async function recoverOutcome(st: RemoteRecoveryState, config: RecoveryConfig): Promise<PromptOutcome> {
+	// The replay (and the post-recovery deleteSession) hit the worker with
+	// current creds — which can be minutes old after a long watch (connect
+	// tokens expire). Best-effort refresh so the recovery doesn't run on a
+	// stale token.
+	try {
+		if (!config.signal?.aborted) {
+			applyRecoveryCreds(
+				st,
+				await authenticateWorkspace(config.workspaceId, config.apiKey, config.workspaceName, {
+					endpoint: config.endpoint,
+				}),
+			)
+			await st.client.close().catch(() => {})
+			st.client = new WorkerClient(st.creds)
+		}
+	} catch (_refreshErr) {
+		// Cloud API unreachable — replay with the creds we have.
+	}
+	// Recover the result at the protocol level: session/load replays the
+	// finished session's history to a fresh client; the final assistant
+	// message is the answer. (The rsync'd session file is not a source — the
+	// remote kimchi writes it where the worker expects only when its --session
+	// arg is honored, which deployed remotes don't.)
+	const replay = await recoverTextViaReplay(st, config)
+	let gapNote: string
+	let recovered = true
+	if (replay && "text" in replay) {
+		st.responseText = replay.text
+		st.recoveryNote = REPLAY_RECOVERY_NOTE
+		gapNote = "disconnect window — local streaming was interrupted; the final result was recovered via session replay"
+	} else {
+		recovered = false
+		const reason = replay?.error ?? "no session id was captured to replay"
+		st.responseText = `(remote agent completed during disconnect; the result could not be recovered — ${reason})`
+		st.recoveryNote = `Recovery failed: ${reason}. The result of the remote run is unknown — before re-running or re-dispatching anything, ask the user how to proceed.`
+		gapNote = `disconnect window — the result could not be recovered (${reason})`
+	}
+	// The transcript-gap marker is best-effort — never fail the recovery over it.
+	if (config.outputFile) {
+		await appendTranscriptGapMarker(config.outputFile, gapNote).catch(() => {})
+	}
+	return { stopReason: recovered ? "recovered" : "recovery_failed", usage: undefined }
+}
+
+/** Inner recovery loop — throws on any failure (abort or unrecoverable). */
+async function recoverFromDisconnectInner(st: RemoteRecoveryState, config: RecoveryConfig): Promise<PromptOutcome> {
+	config.onReconnecting?.(true)
+	let reattachAttempts = 0
+	let attached = false
+	let turnQuietSince: number | undefined
+	/** Consecutive failed polls — triggers a credentials/client refresh. */
+	let consecutivePollFailures = 0
+	/** True while every poll since the last successful one has failed. */
+	let pollsFailing = false
+	/** Set by the reattached client's foreign-response signal — the remote
+	 *  turn ended while attached. */
+	let remoteTurnEnded = false
+	while (true) {
+		if (config.signal?.aborted) throw makeAbortError()
+
+		const status = await safeGetSession(st, config)
+
+		// Poll failure ≠ confirmed dead (spec Q3: with the local network down,
+		// every HTTP poll fails while the sandbox is fine). Keep retrying
+		// silently at poll cadence — no revive budget, no deadline, and
+		// `attached` stays as-is: the session's state is unknown, not dead.
+		if (!status) {
+			// The connect token may have expired during the outage (spec Q6:
+			// re-auth on 401/403) or the HTTP transport may be wedged —
+			// refresh credentials and rebuild the client so this loop isn't
+			// polling with dead credentials forever. (Pre-fix, the !alive
+			// revive path doubled as this refresh; poll failures no longer
+			// route through it.)
+			if (st.pollAuthRejected || ++consecutivePollFailures >= POLL_FAILURES_BEFORE_REFRESH) {
+				try {
+					applyRecoveryCreds(
+						st,
+						await authenticateWorkspace(config.workspaceId, config.apiKey, config.workspaceName, {
+							endpoint: config.endpoint,
+						}),
+					)
+					await st.client.close().catch(() => {})
+					st.client = new WorkerClient(st.creds)
+					consecutivePollFailures = 0
+				} catch (_refreshErr) {
+					if (config.signal?.aborted) throw makeAbortError()
+					// Cloud API unreachable too — keep polling with what we have.
+				}
+			}
+			pollsFailing = true
+			await timersSleep(config.pollDelayMs(), undefined, { signal: config.signal })
+			continue
+		}
+		consecutivePollFailures = 0
+		// Connectivity regained after failures with a live turn still running —
+		// restore the reattach budget that transient failures burned during the
+		// outage, so the session is live-resumed (onReconnecting(false)) instead
+		// of being watched in "reconnecting" until the turn ends.
+		if (pollsFailing) {
+			pollsFailing = false
+			if (!attached && status.alive && status.agentRunning && reattachAttempts > 0) {
+				reattachAttempts = 0
+			}
+		}
+
+		// Unreachable: a successful poll confirmed the sandbox pod is down or
+		// hibernated. Try to wake it.
+		if (!status.alive) {
+			// Revive replaces creds/client — any earlier attach is stale.
+			attached = false
+			if (await tryReviveWorkspace(st, config)) {
+				// The quiesce clock restarts from a clean post-revive baseline —
+				// the pre-hibernation quiet window must not count against the
+				// just-revived turn (the worker may not have resumed it yet).
+				turnQuietSince = undefined
+				continue
+			}
+			// ponytail: leave the session undeleted — result is unknown and the
+			// session may still be inspectable/recoverable later.
+			throw new Error("remote session no longer reachable — result unknown")
+		}
+
+		// Track continuous turn quiescence. agentRunning comes from the
+		// remote process's agent_start/agent_end events (a UDS independent
+		// of our WS) and honestly reports whether any pi agent turn is live.
+		// It can dip false for milliseconds between chained prompt calls, so
+		// require a sustained quiet window before trusting it.
+		if (status.agentRunning) {
+			turnQuietSince = undefined
+		} else {
+			turnQuietSince ??= Date.now()
+		}
+
+		// Finished while we were disconnected — result is on disk but not yet
+		// fetchable over the gap. Fetch the remote session.jsonl, parse the
+		// final assistant text, and backfill the local transcript gap.
+		if (!status.agentRunning && status.finishedAt) {
+			return recoverOutcome(st, config)
+		}
+
+		// The attached client received a response for a request it never sent —
+		// the ORIGINAL connection's prompt response, i.e. the turn ended while
+		// we were attached. Recover at once, while the remote child is still
+		// alive to answer the replay (the sandbox may reap it shortly after
+		// the turn ends).
+		if (remoteTurnEnded) {
+			st.acpClient?.close()
+			return recoverOutcome(st, config)
+		}
+
+		// Turn quiet past the grace window → the agent's work is done.
+		// (Once the owning client is gone, the ACP turn bookkeeping can
+		// never unwind — observed 4+ minutes of "turn in progress" with the
+		// agent long finished — so quiescence, not attachability, decides.)
+		// Only while UNATTACHED: when attached, the turn's end is observed
+		// directly (the original prompt's response arrives with an unknown
+		// id — remoteTurnEnded) and agentRunning is unreliable (observed
+		// false mid-turn), so the quiet clock would fire while the turn is
+		// still running on long tasks.
+		const quietFor = turnQuietSince === undefined ? 0 : Date.now() - turnQuietSince
+		if (!attached && turnQuietSince !== undefined && quietFor >= config.turnSettleGraceMs) {
+			st.acpClient?.close()
+			return recoverOutcome(st, config)
+		}
+
+		// Alive + still running → attach to the EXISTING ACP session via
+		// session/load — never session/new, and never re-prompt: the original
+		// prompt's turn is owned by the dead connection, so re-sending it
+		// would restart the task from scratch (duplicating side effects).
+		// The attempt budget only covers TRANSPORT failures — a session whose
+		// turn is still in flight is healthy, just not finished yet.
+		if (reattachAttempts >= config.backoffs.length) {
+			if (!status.agentRunning) {
+				// Attach kept failing with the session alive and the turn quiet
+				// (e.g. the remote process died mid-turn). The transcript may
+				// still hold a partial result — recover it instead of failing
+				// with "result unknown".
+				return recoverOutcome(st, config)
+			}
+			// The agent is still running — never recover/delete a live session
+			// (spec Q5). Fall through to watch-only polling below; the
+			// quiesce/finished branches above decide recovery (spec Q4
+			// secondary: poll-until-finished).
+		}
+
+		// Watch cadence: once attached (or out of reattach budget with the
+		// agent still running) this is a steady watch, not a retry — poll at
+		// the spec's ~15s cadence, not the reconnect backoff.
+		const watchOnly = attached || reattachAttempts >= config.backoffs.length
+		await timersSleep(
+			watchOnly ? config.pollDelayMs() : config.backoffs[Math.min(reattachAttempts, config.backoffs.length - 1)],
+			undefined,
+			{ signal: config.signal },
+		)
+
+		if (watchOnly) {
+			// Already attached to the live session — poll only. Turn updates
+			// stream over the attached connection; the quiesce/finished
+			// branches above decide when to recover.
+			continue
+		}
+
+		// Re-authenticate (token may have expired during the disconnect).
+		try {
+			applyRecoveryCreds(
+				st,
+				await authenticateWorkspace(config.workspaceId, config.apiKey, config.workspaceName, {
+					endpoint: config.endpoint,
+				}),
+			)
+		} catch {
+			if (config.signal?.aborted) throw makeAbortError()
+			reattachAttempts++
+			continue
+		}
+		await st.client.close().catch(() => {})
+		st.client = new WorkerClient(st.creds)
+		st.acpClient?.close()
+		const reattachClient = new AcpSessionClient({
+			sessionName: config.sessionName,
+			credentials: st.creds,
+			callbacks: config.wrappedCallbacks,
+			signal: config.signal,
+			cwd: config.cwd,
+			sessionId: st.acpSessionId,
+			// The original connection's prompt response arrives with an id this
+			// client never sent once the turn ends — the turn-end signal.
+			onForeignResponse: () => {
+				remoteTurnEnded = true
+			},
+		})
+		st.acpClient = reattachClient
+		try {
+			await reattachClient.initialize()
+		} catch (err) {
+			reattachClient.close()
+			if (isTurnInProgressError(err)) {
+				// Older remotes reject mid-turn loads. NEVER cancel the turn —
+				// wait for quiesce (handled above) or a settle.
+				continue
+			}
+			reattachAttempts++
+			if (err instanceof RemoteConnectionError) continue
+			throw err
+		}
+		attached = true
+		// Newer remotes allow mid-turn loads: after attaching, the live
+		// turn's updates stream to this connection. Older remotes only
+		// accept a load after the turn settled, in which case the quiesce
+		// branch recovers on the next poll. Either way: rebind, resume UI,
+		// and keep polling — do NOT recover immediately (the turn may
+		// still be running).
+		if (config.onReady) config.onReady(reattachClient, st.meta)
+		config.onReconnecting?.(false)
+	}
+}
+
+/**
+ * Recovery entry point. Wraps the inner loop so that an abort surfaced from
+ * any await point triggers a best-effort `deleteSession` before rethrowing —
+ * a user kill while disconnected (or while resumed) still tries to clean up
+ * the remote session.
+ */
+async function runRecovery(st: RemoteRecoveryState, config: RecoveryConfig): Promise<PromptOutcome> {
+	try {
+		return await recoverFromDisconnectInner(st, config)
+	} catch (err) {
+		if (config.signal?.aborted) {
+			await deleteSession(st.client, config.sessionName).catch(() => {})
+			throw makeAbortError()
+		}
+		throw err
+	}
+}
+
 /**
  * Runs a single-turn prompt on a remote sandbox worker via ACP.
  *
@@ -203,7 +623,7 @@ export async function runRemoteAgent(
 	const cwd = `/home/sandbox/${sessionName}`
 
 	// 1. Authenticate
-	let creds: WorkspaceCredentials = await authenticateWorkspace(workspaceId, apiKey, workspaceName, { endpoint })
+	const creds: WorkspaceCredentials = await authenticateWorkspace(workspaceId, apiKey, workspaceName, { endpoint })
 
 	// 2. Wait for sandbox readiness
 	await waitForWorkspaceReady({
@@ -214,23 +634,16 @@ export async function runRemoteAgent(
 
 	// 4. Connect via AcpSessionClient — always wrap onTextDelta so accumulated
 	// text is captured even when the caller passes no callbacks.
-	let responseText = ""
-	let recoveryNote: string | undefined
 	const wrappedCallbacks: AcpSessionCallbacks = {
 		...callbacks,
 		onTextDelta: (delta, fullText) => {
-			responseText = fullText
+			st.responseText = fullText
 			callbacks?.onTextDelta?.(delta, fullText)
 		},
 	}
 
-	// Mutable handles — reauth/reattach during recovery swaps these in place so
-	// the poll loop and finally block always see the latest client/creds.
-	// acpSessionId is captured from the first initialize so a reattach can
-	// session/load the SAME session instead of starting a new one.
-	let acpSessionId: string | undefined
-	let client = new WorkerClient(creds)
-	let acpClient = new AcpSessionClient({
+	const client = new WorkerClient(creds)
+	const acpClient = new AcpSessionClient({
 		sessionName,
 		credentials: creds,
 		callbacks: wrappedCallbacks,
@@ -238,21 +651,25 @@ export async function runRemoteAgent(
 		cwd,
 	})
 
-	const meta: RemoteSessionMeta = {
-		workspaceId,
-		sessionName,
-		wsUrl: creds.wsUrl,
-		host: creds.host,
-		cwd,
-	}
-
-	/** Applies freshly authenticated credentials — the creds handle AND the
-	 *  session meta stay in sync, so onReady/remoteSession consumers never see
-	 *  a stale endpoint after a revive or reattach moved the workspace. */
-	const applyCreds = (fresh: WorkspaceCredentials): void => {
-		creds = fresh
-		meta.wsUrl = fresh.wsUrl
-		meta.host = fresh.host
+	// Mutable handles shared with the recovery engine — reauth/reattach swap
+	// these in place so the poll loop and finally block always see the latest
+	// client/creds. acpSessionId is captured from the first initialize so a
+	// reattach can session/load the SAME session instead of starting a new one.
+	const st: RemoteRecoveryState = {
+		creds,
+		client,
+		acpClient,
+		acpSessionId: undefined,
+		responseText: "",
+		recoveryNote: undefined,
+		meta: {
+			workspaceId,
+			sessionName,
+			wsUrl: creds.wsUrl,
+			host: creds.host,
+			cwd,
+		},
+		pollAuthRejected: false,
 	}
 
 	const backoffs = options.reconnectBackoffsMs ?? DEFAULT_RECONNECT_BACKOFFS_MS
@@ -262,6 +679,26 @@ export async function runRemoteAgent(
 	const pollJitterMs = options.pollIntervalMs === undefined ? POLL_JITTER_MS : 0
 	/** One status-poll delay: fixed interval + jitter (jitter dropped for the test seam). */
 	const pollDelayMs = () => pollIntervalMs + Math.random() * pollJitterMs
+
+	// Immutable config for the shared recovery engine (attachRemoteAgent is
+	// the fresh-process entry point running the same engine).
+	const config: RecoveryConfig = {
+		sessionName,
+		workspaceId,
+		apiKey,
+		workspaceName,
+		endpoint,
+		signal,
+		outputFile: options.outputFile,
+		cwd,
+		onReady: options.onReady,
+		onReconnecting: options.onReconnecting,
+		backoffs,
+		turnSettleGraceMs,
+		reviveDelayMs,
+		pollDelayMs,
+		wrappedCallbacks,
+	}
 
 	// Provision git credentials on the worker BEFORE createSession — the clone
 	// bootstrapper runs synchronously inside createSession and needs the token
@@ -293,8 +730,6 @@ export async function runRemoteAgent(
 	// recovery). The recovery loop becomes the sole poller — the always-on
 	// poller must not fire (or force-disconnect the fresh client) mid-recovery.
 	let recovering = false
-	/** Set by safeGetSession when the last status poll was rejected with an auth error. */
-	let pollAuthRejected = false
 
 	// Always-on status poll: every ~15s + jitter, concurrent with `prompt()`.
 	// Proactively detects disconnects by checking session status via HTTP
@@ -347,349 +782,17 @@ export async function runRemoteAgent(
 		}, pollDelayMs())
 	}
 
-	// ---- recovery helpers (closures over the mutable handles above) --------
-
-	/** Fetches the current session status; returns undefined on transient failure. */
-	const safeGetSession = async (): Promise<SessionStatus | undefined> => {
-		try {
-			pollAuthRejected = false
-			return await getSession(client, sessionName, signal)
-		} catch (err) {
-			if (signal?.aborted) throw makeAbortError()
-			// A definitive 404 (session deleted/reaped server-side) is not a
-			// transient failure — fail honestly instead of retrying forever.
-			// (The always-on poller treats 404 as terminal too.)
-			if (err instanceof WorkerError && err.status === 404) {
-				throw new Error("remote session no longer exists — result unknown")
-			}
-			// Auth rejected — the connect token likely expired during the
-			// outage (spec Q6). Flagged so the recovery loop refreshes creds.
-			pollAuthRejected = err instanceof WorkerError && (err.status === 401 || err.status === 403)
-			return undefined
-		}
-	}
-
-	/** Re-authenticates and waits for the sandbox to wake, up to REVIVE_MAX_ATTEMPTS times. */
-	const tryReviveWorkspace = async (): Promise<boolean> => {
-		for (let i = 0; i < REVIVE_MAX_ATTEMPTS; i++) {
-			if (signal?.aborted) throw makeAbortError()
-			try {
-				applyCreds(await authenticateWorkspace(workspaceId, apiKey, workspaceName, { endpoint }))
-				await waitForWorkspaceReady({ wsUrl: creds.wsUrl, connectToken: creds.connectToken, signal })
-				await client.close().catch(() => {})
-				client = new WorkerClient(creds)
-				const s = await getSession(client, sessionName, signal)
-				if (s.alive) return true
-			} catch (_err) {
-				if (signal?.aborted) throw makeAbortError()
-				// network error or not yet ready — retry after backoff
-			}
-			if (i < REVIVE_MAX_ATTEMPTS - 1) await timersSleep(reviveDelayMs, undefined, { signal })
-		}
-		return false
-	}
-
-	/** Attaches a fresh ACP client to the finished session and extracts the
-	 *  final assistant text from the session/load replay. Returns undefined
-	 *  when no session id is known or the replay cannot be obtained. */
-	/** Replay outcome: the recovered final text, or the reason it failed. */
-	type ReplayOutcome = { text: string } | { error: string }
-
-	const recoverTextViaReplay = async (): Promise<ReplayOutcome | undefined> => {
-		if (!acpSessionId) return undefined
-		const replayClient = new AcpSessionClient({
-			sessionName,
-			credentials: creds,
-			signal,
-			cwd,
-			sessionId: acpSessionId,
-			captureLoadReplay: true,
-		})
-		try {
-			await replayClient.initialize()
-			const text = extractFinalAssistantText(replayClient.loadReplay)
-			return text.trim()
-				? { text }
-				: {
-						error: "the replayed session contained no final assistant message (the turn may still have been running)",
-					}
-		} catch (replayErr) {
-			if (signal?.aborted) throw makeAbortError()
-			return {
-				error: `the remote session did not answer session/load (${
-					replayErr instanceof Error ? replayErr.message : String(replayErr)
-				})`,
-			}
-		} finally {
-			replayClient.close()
-		}
-	}
-
-	/** Shared recovery outcome: recover the result via session/load replay.
-	 *  Reads the current `creds` (mutated by re-auth) at call time. */
-	const recoverOutcome = async (): Promise<PromptOutcome> => {
-		// The replay (and the post-recovery deleteSession) hit the worker with
-		// current creds — which can be minutes old after a long watch (connect
-		// tokens expire). Best-effort refresh so the recovery doesn't run on a
-		// stale token.
-		try {
-			if (!signal?.aborted) {
-				applyCreds(await authenticateWorkspace(workspaceId, apiKey, workspaceName, { endpoint }))
-				await client.close().catch(() => {})
-				client = new WorkerClient(creds)
-			}
-		} catch (_refreshErr) {
-			// Cloud API unreachable — replay with the creds we have.
-		}
-		// Recover the result at the protocol level: session/load replays the
-		// finished session's history to a fresh client; the final assistant
-		// message is the answer. (The rsync'd session file is not a source — the
-		// remote kimchi writes it where the worker expects only when its --session
-		// arg is honored, which deployed remotes don't.)
-		const replay = await recoverTextViaReplay()
-		let gapNote: string
-		let recovered = true
-		if (replay && "text" in replay) {
-			responseText = replay.text
-			recoveryNote = REPLAY_RECOVERY_NOTE
-			gapNote = "disconnect window — local streaming was interrupted; the final result was recovered via session replay"
-		} else {
-			recovered = false
-			const reason = replay?.error ?? "no session id was captured to replay"
-			responseText = `(remote agent completed during disconnect; the result could not be recovered — ${reason})`
-			recoveryNote = `Recovery failed: ${reason}. The result of the remote run is unknown — before re-running or re-dispatching anything, ask the user how to proceed.`
-			gapNote = `disconnect window — the result could not be recovered (${reason})`
-		}
-		// The transcript-gap marker is best-effort — never fail the recovery over it.
-		if (options.outputFile) {
-			await appendTranscriptGapMarker(options.outputFile, gapNote).catch(() => {})
-		}
-		return { stopReason: recovered ? "recovered" : "recovery_failed", usage: undefined }
-	}
-
-	/** Inner recovery loop — throws on any failure (abort or unrecoverable). */
-	const recoverFromDisconnectInner = async (): Promise<PromptOutcome> => {
-		options.onReconnecting?.(true)
-		let reattachAttempts = 0
-		let attached = false
-		let turnQuietSince: number | undefined
-		/** Consecutive failed polls — triggers a credentials/client refresh. */
-		let consecutivePollFailures = 0
-		/** True while every poll since the last successful one has failed. */
-		let pollsFailing = false
-		/** Set by the reattached client's foreign-response signal — the remote
-		 *  turn ended while attached. */
-		let remoteTurnEnded = false
-		while (true) {
-			if (signal?.aborted) throw makeAbortError()
-
-			const status = await safeGetSession()
-
-			// Poll failure ≠ confirmed dead (spec Q3: with the local network down,
-			// every HTTP poll fails while the sandbox is fine). Keep retrying
-			// silently at poll cadence — no revive budget, no deadline, and
-			// `attached` stays as-is: the session's state is unknown, not dead.
-			if (!status) {
-				// The connect token may have expired during the outage (spec Q6:
-				// re-auth on 401/403) or the HTTP transport may be wedged —
-				// refresh credentials and rebuild the client so this loop isn't
-				// polling with dead credentials forever. (Pre-fix, the !alive
-				// revive path doubled as this refresh; poll failures no longer
-				// route through it.)
-				if (pollAuthRejected || ++consecutivePollFailures >= POLL_FAILURES_BEFORE_REFRESH) {
-					try {
-						applyCreds(await authenticateWorkspace(workspaceId, apiKey, workspaceName, { endpoint }))
-						await client.close().catch(() => {})
-						client = new WorkerClient(creds)
-						consecutivePollFailures = 0
-					} catch (_refreshErr) {
-						if (signal?.aborted) throw makeAbortError()
-						// Cloud API unreachable too — keep polling with what we have.
-					}
-				}
-				pollsFailing = true
-				await timersSleep(pollDelayMs(), undefined, { signal })
-				continue
-			}
-			consecutivePollFailures = 0
-			// Connectivity regained after failures with a live turn still running —
-			// restore the reattach budget that transient failures burned during the
-			// outage, so the session is live-resumed (onReconnecting(false)) instead
-			// of being watched in "reconnecting" until the turn ends.
-			if (pollsFailing) {
-				pollsFailing = false
-				if (!attached && status.alive && status.agentRunning && reattachAttempts > 0) {
-					reattachAttempts = 0
-				}
-			}
-
-			// Unreachable: a successful poll confirmed the sandbox pod is down or
-			// hibernated. Try to wake it.
-			if (!status.alive) {
-				// Revive replaces creds/client — any earlier attach is stale.
-				attached = false
-				if (await tryReviveWorkspace()) {
-					// The quiesce clock restarts from a clean post-revive baseline —
-					// the pre-hibernation quiet window must not count against the
-					// just-revived turn (the worker may not have resumed it yet).
-					turnQuietSince = undefined
-					continue
-				}
-				// ponytail: leave the session undeleted — result is unknown and the
-				// session may still be inspectable/recoverable later.
-				throw new Error("remote session no longer reachable — result unknown")
-			}
-
-			// Track continuous turn quiescence. agentRunning comes from the
-			// remote process's agent_start/agent_end events (a UDS independent
-			// of our WS) and honestly reports whether any pi agent turn is live.
-			// It can dip false for milliseconds between chained prompt calls, so
-			// require a sustained quiet window before trusting it.
-			if (status.agentRunning) {
-				turnQuietSince = undefined
-			} else {
-				turnQuietSince ??= Date.now()
-			}
-
-			// Finished while we were disconnected — result is on disk but not yet
-			// fetchable over the gap. Fetch the remote session.jsonl, parse the
-			// final assistant text, and backfill the local transcript gap.
-			if (!status.agentRunning && status.finishedAt) {
-				return recoverOutcome()
-			}
-
-			// The attached client received a response for a request it never sent —
-			// the ORIGINAL connection's prompt response, i.e. the turn ended while
-			// we were attached. Recover at once, while the remote child is still
-			// alive to answer the replay (the sandbox may reap it shortly after
-			// the session goes idle — the quiesce grace can lose that race).
-			if (remoteTurnEnded) {
-				acpClient.close()
-				return recoverOutcome()
-			}
-
-			// Turn quiet past the grace window → the agent's work is done.
-			// (Once the owning client is gone, the ACP turn bookkeeping can
-			// never unwind — observed 4+ minutes of "turn in progress" with the
-			// agent long finished — so quiescence, not attachability, decides.)
-			// Only while UNATTACHED: when attached, the turn's end is observed
-			// directly (the original prompt's response arrives with an unknown
-			// id — remoteTurnEnded) and agentRunning is unreliable (observed
-			// false mid-turn), so the quiet clock would fire while the turn is
-			// still running on long tasks.
-			const quietFor = turnQuietSince === undefined ? 0 : Date.now() - turnQuietSince
-			if (!attached && turnQuietSince !== undefined && quietFor >= turnSettleGraceMs) {
-				acpClient.close()
-				return recoverOutcome()
-			}
-
-			// Alive + still running → attach to the EXISTING ACP session via
-			// session/load — never session/new, and never re-prompt: the original
-			// prompt's turn is owned by the dead connection, so re-sending it
-			// would restart the task from scratch (duplicating side effects).
-			// The attempt budget only covers TRANSPORT failures — a session whose
-			// turn is still in flight is healthy, just not finished yet.
-			if (reattachAttempts >= backoffs.length) {
-				if (!status.agentRunning) {
-					// Attach kept failing with the session alive and the turn quiet
-					// (e.g. the remote process died mid-turn). The transcript may
-					// still hold a partial result — recover it instead of failing
-					// with "result unknown".
-					return recoverOutcome()
-				}
-				// The agent is still running — never recover/delete a live session
-				// (spec Q5). Fall through to watch-only polling below; the
-				// quiesce/finished branches above decide recovery (spec Q4
-				// secondary: poll-until-finished).
-			}
-
-			// Watch cadence: once attached (or out of reattach budget with the
-			// agent still running) this is a steady watch, not a retry — poll at
-			// the spec's ~15s cadence, not the reconnect backoff.
-			const watchOnly = attached || reattachAttempts >= backoffs.length
-			await timersSleep(
-				watchOnly ? pollDelayMs() : backoffs[Math.min(reattachAttempts, backoffs.length - 1)],
-				undefined,
-				{ signal },
-			)
-
-			if (watchOnly) {
-				// Already attached to the live session — poll only. Turn updates
-				// stream over the attached connection; the quiesce/finished
-				// branches above decide when to recover.
-				continue
-			}
-
-			// Re-authenticate (token may have expired during the disconnect).
-			try {
-				applyCreds(await authenticateWorkspace(workspaceId, apiKey, workspaceName, { endpoint }))
-			} catch {
-				if (signal?.aborted) throw makeAbortError()
-				reattachAttempts++
-				continue
-			}
-			await client.close().catch(() => {})
-			client = new WorkerClient(creds)
-			acpClient.close()
-			acpClient = new AcpSessionClient({
-				sessionName,
-				credentials: creds,
-				callbacks: wrappedCallbacks,
-				signal,
-				cwd,
-				sessionId: acpSessionId,
-				// The original connection's prompt response arrives with an id this
-				// client never sent once the turn ends — the turn-end signal.
-				onForeignResponse: () => {
-					remoteTurnEnded = true
-				},
-			})
-			try {
-				await acpClient.initialize()
-			} catch (err) {
-				acpClient.close()
-				if (isTurnInProgressError(err)) {
-					// Older remotes reject mid-turn loads. NEVER cancel the turn —
-					// wait for quiesce (handled above) or a settle.
-					continue
-				}
-				reattachAttempts++
-				if (err instanceof RemoteConnectionError) continue
-				throw err
-			}
-			attached = true
-			// Newer remotes allow mid-turn loads: after attaching, the live
-			// turn's updates stream to this connection. Older remotes only
-			// accept a load after the turn settled, in which case the quiesce
-			// branch recovers on the next poll. Either way: rebind, resume UI,
-			// and keep polling — do NOT recover immediately (the turn may
-			// still be running).
-			if (options.onReady) options.onReady(acpClient, meta)
-			options.onReconnecting?.(false)
-		}
-	}
-
 	/**
-	 * Recovery entry point. Wraps the inner loop so that an abort surfaced from
-	 * any await point triggers a best-effort `deleteSession` before rethrowing —
-	 * a Ctrl+X while disconnected should still try to clean up the remote session.
+	 * Mid-run disconnect recovery: the recovery loop becomes the sole poller
+	 * (the always-on poller is stopped and barred — including any tick already
+	 * in flight — from force-disconnecting the freshly attached client), then
+	 * the shared recovery engine runs.
 	 */
 	const recoverFromDisconnect = async (): Promise<PromptOutcome> => {
-		// The recovery loop becomes the sole poller: stop the always-on poll
-		// and bar it (including any tick already in flight) from
-		// force-disconnecting the fresh client mid-recovery.
 		recovering = true
 		if (pollTimer) clearTimeout(pollTimer)
 		pollTimer = undefined
-		try {
-			return await recoverFromDisconnectInner()
-		} catch (err) {
-			if (signal?.aborted) {
-				await deleteSession(client, sessionName).catch(() => {})
-				throw makeAbortError()
-			}
-			throw err
-		}
+		return runRecovery(st, config)
 	}
 
 	// 3. Create ACP session + connect via AcpSessionClient.
@@ -740,12 +843,12 @@ export async function runRemoteAgent(
 		}, pollDelayMs())
 
 		await acpClient.initialize()
-		acpSessionId ??= acpClient.sessionId ?? undefined
+		st.acpSessionId ??= acpClient.sessionId ?? undefined
 
 		// Expose the client to the caller so they can wrap it in RemoteAgentSession.
 		// Fired after initialize() (client is usable) and before prompt() (the run hasn't started).
 		if (options.onReady) {
-			options.onReady(acpClient, meta)
+			options.onReady(acpClient, st.meta)
 		}
 
 		// 5. Send prompt — recover from transient WS disconnects instead of failing.
@@ -778,23 +881,186 @@ export async function runRemoteAgent(
 		// (Deletion is deferred to here: error/abort paths above never delete.)
 		// For recovered results, the session.jsonl has already been fetched
 		// and parsed — safe to delete the remote session now.
-		await deleteSession(client, sessionName).catch((err) => {
+		await deleteSession(st.client, sessionName).catch((err) => {
 			console.error(`[remote-agent-runner] failed to delete session ${sessionName}:`, err)
 		})
 
 		return {
-			responseText,
+			responseText: st.responseText,
 			stopReason,
 			usage,
-			remoteSession: meta,
-			recoveryNote,
+			remoteSession: st.meta,
+			recoveryNote: st.recoveryNote,
 		}
 	} finally {
 		terminal = true
 		if (pollTimer) clearTimeout(pollTimer)
-		acpClient.close()
-		await client.close().catch((err) => {
+		st.acpClient?.close()
+		await st.client.close().catch((err) => {
 			console.error(`[remote-agent-runner] failed to close worker client:`, err)
 		})
+	}
+}
+
+// ---------------------------------------------------------------------------
+// attachRemoteAgent — resume a remote run that outlived a kimchi restart
+// ---------------------------------------------------------------------------
+
+/** Options for attachRemoteAgent — attach to an EXISTING remote session. */
+export interface AttachRemoteAgentOptions {
+	/** Cloud API key for workspace authentication. */
+	apiKey: string
+	/** Override the cloud API endpoint (used by tests). */
+	endpoint?: string
+	/** Abort signal — aborts the remote session (user kill). */
+	signal?: AbortSignal
+	/** The remote session to attach to (persisted at dispatch time). */
+	remoteSession: RemoteSessionMeta
+	/** The ACP session id captured when the run started — session/load
+	 *  attaches by id, never by name; without it the run cannot be resumed. */
+	acpSessionId: string
+	/** Workspace name passed to authenticateWorkspace (matching/reuse). */
+	workspaceName?: string
+	/** Local output file path for transcript backfill during recovery. */
+	outputFile?: string
+	/** Fired when the engine attaches to the live session — the caller can
+	 *  rebind its session adapter to the new client (same as onReady in
+	 *  RemoteRunOptions). */
+	onReady?: (acpClient: AcpSessionClient, meta: RemoteSessionMeta) => void
+	/** Called when the attach transitions between reconnecting/attached —
+	 *  the caller mirrors it onto the agent record status. */
+	onReconnecting?: (reconnecting: boolean) => void
+	/** Event callbacks — same shape as RemoteRunOptions callbacks. */
+	callbacks?: AcpSessionCallbacks
+	/** Test seams — same meaning as in RemoteRunOptions. */
+	reconnectBackoffsMs?: number[]
+	turnSettleGraceMs?: number
+	pollIntervalMs?: number
+}
+
+/**
+ * Attaches to a remote run that outlived a kimchi restart — the fresh-process
+ * entry point of the SHARED recovery engine (the same poll/reattach/replay
+ * state machine the mid-run disconnect recovery runs; a fresh attach enters
+ * with identical initial conditions: not attached, no live WS, known
+ * acpSessionId). The remote session kept running while kimchi was closed
+ * (shutdown spares remote runs); this never re-sends the prompt — it attaches
+ * to the EXISTING session via session/load and recovers the result from the
+ * session replay once the turn has finished.
+ *
+ * Outcomes mirror the reconnect loop: `recovered` (result replayed) or
+ * `recovery_failed` (result unknown — e.g. the replay held no final message).
+ * A reaped session (404), an unrevivable sandbox, or a user kill throws,
+ * exactly like the mid-run path (the kill also best-effort deletes the
+ * remote session).
+ */
+export async function attachRemoteAgent(options: AttachRemoteAgentOptions): Promise<RemoteRunResult> {
+	const { apiKey, endpoint, signal, remoteSession, acpSessionId } = options
+	const workspaceName = options.workspaceName ?? "kimchi"
+	const backoffs = options.reconnectBackoffsMs ?? DEFAULT_RECONNECT_BACKOFFS_MS
+	const turnSettleGraceMs = options.turnSettleGraceMs ?? DEFAULT_TURN_SETTLE_GRACE_MS
+	const reviveDelayMs = backoffs[0] ?? 2_000
+	const pollIntervalMs = options.pollIntervalMs ?? POLL_INTERVAL_MS
+	const pollJitterMs = options.pollIntervalMs === undefined ? POLL_JITTER_MS : 0
+	const pollDelayMs = () => pollIntervalMs + Math.random() * pollJitterMs
+
+	// Authenticate against the persisted workspace — creds never survive a
+	// restart (connect tokens expire), so this always starts with a fresh one.
+	const creds: WorkspaceCredentials = await authenticateWorkspace(remoteSession.workspaceId, apiKey, workspaceName, {
+		endpoint,
+	})
+
+	const st: RemoteRecoveryState = {
+		creds,
+		client: new WorkerClient(creds),
+		// Fresh-process attach: no client yet — the engine constructs one on
+		// the first reattach.
+		acpClient: undefined,
+		acpSessionId,
+		responseText: "",
+		recoveryNote: undefined,
+		// The persisted wsUrl/host may be stale — re-sync to the fresh creds.
+		meta: {
+			...remoteSession,
+			wsUrl: creds.wsUrl,
+			host: creds.host,
+		},
+		pollAuthRejected: false,
+	}
+	const wrappedCallbacks: AcpSessionCallbacks = {
+		...options.callbacks,
+		onTextDelta: (delta, fullText) => {
+			st.responseText = fullText
+			options.callbacks?.onTextDelta?.(delta, fullText)
+		},
+	}
+	const config: RecoveryConfig = {
+		sessionName: remoteSession.sessionName,
+		workspaceId: remoteSession.workspaceId,
+		apiKey,
+		workspaceName,
+		endpoint,
+		signal,
+		outputFile: options.outputFile,
+		cwd: remoteSession.cwd,
+		onReady: options.onReady,
+		onReconnecting: options.onReconnecting,
+		backoffs,
+		turnSettleGraceMs,
+		reviveDelayMs,
+		pollDelayMs,
+		wrappedCallbacks,
+	}
+
+	try {
+		const outcome = await runRecovery(st, config)
+		// The run is confirmed done (or its outcome is definitively unknown) —
+		// clean up the remote session. Same deferred-deletion contract as the
+		// main flow: only a resolved outcome deletes; throws (reaped session,
+		// unrevivable sandbox, user kill) never reach here — the kill path does
+		// its own best-effort delete inside runRecovery.
+		await deleteSession(st.client, config.sessionName).catch((err) => {
+			console.error(`[remote-agent-runner] failed to delete session ${config.sessionName}:`, err)
+		})
+		return {
+			responseText: st.responseText,
+			stopReason: outcome.stopReason,
+			usage: outcome.usage,
+			remoteSession: st.meta,
+			recoveryNote: st.recoveryNote,
+		}
+	} finally {
+		st.acpClient?.close()
+		await st.client.close().catch((err) => {
+			console.error(`[remote-agent-runner] failed to close worker client:`, err)
+		})
+	}
+}
+
+/**
+ * Best-effort ownership check for a fresh-process resume: reports whether
+ * another client currently holds a live WebSocket on the remote session.
+ * Returns true only on a POSITIVE sighting (clientConnected on a successful
+ * status poll) — any failure returns false so the caller falls through to the
+ * attach, whose recovery machinery handles the real session state.
+ */
+export async function isRemoteSessionConnected(
+	remoteSession: RemoteSessionMeta,
+	apiKey: string,
+	options?: { endpoint?: string },
+): Promise<boolean> {
+	try {
+		const creds = await authenticateWorkspace(remoteSession.workspaceId, apiKey, "kimchi", {
+			endpoint: options?.endpoint,
+		})
+		const client = new WorkerClient(creds)
+		try {
+			const status = await getSession(client, remoteSession.sessionName, undefined)
+			return status.clientConnected
+		} finally {
+			await client.close().catch(() => {})
+		}
+	} catch {
+		return false
 	}
 }

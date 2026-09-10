@@ -27,6 +27,8 @@ vi.mock("../../teleport/provisioning/paths.js", () => ({
 
 vi.mock("./remote-agent-runner.js", () => ({
 	runRemoteAgent: vi.fn(),
+	attachRemoteAgent: vi.fn(),
+	isRemoteSessionConnected: vi.fn(),
 }))
 
 vi.mock("../../teleport/ui/git-token-prompt.js", () => ({
@@ -41,15 +43,18 @@ import type { AgentSession, ExtensionAPI, ExtensionContext } from "@earendil-wor
 import { resolveClonePlan } from "../../teleport/provisioning/clone-plan.js"
 import { resolveGitToken } from "../../teleport/provisioning/git-token.js"
 import type { AgentRecord } from "../personas/types.js"
+import type { RemoteRunState } from "../remote-run-persistence.js"
 import { AgentManager, buildAgentOutcome } from "./agent-manager.js"
 import { resumeAgent, runAgent } from "./agent-runner.js"
-import { runRemoteAgent } from "./remote-agent-runner.js"
+import { attachRemoteAgent, isRemoteSessionConnected, runRemoteAgent } from "./remote-agent-runner.js"
 
 const mockRunAgent = vi.mocked(runAgent)
 const mockResumeAgent = vi.mocked(resumeAgent)
 const mockResolveClonePlan = vi.mocked(resolveClonePlan)
 const mockResolveGitToken = vi.mocked(resolveGitToken)
 const mockRunRemoteAgent = vi.mocked(runRemoteAgent)
+const mockAttachRemoteAgent = vi.mocked(attachRemoteAgent)
+const mockIsRemoteSessionConnected = vi.mocked(isRemoteSessionConnected)
 
 function fakePi(): ExtensionAPI {
 	return {} as ExtensionAPI
@@ -1368,5 +1373,134 @@ describe("AgentManager reconnecting lifecycle", () => {
 		// Reconnecting is live, recoverable work — not a failure.
 		expect(outcome.reason).not.toBe("error")
 		expect(outcome.reason).toBeUndefined()
+	})
+})
+
+describe("AgentManager resumeRemoteRecord", () => {
+	let manager: AgentManager | undefined
+
+	beforeEach(() => {
+		// Default: no other owner — the resume proceeds to the attach.
+		mockIsRemoteSessionConnected.mockResolvedValue(false)
+	})
+
+	afterEach(() => {
+		manager?.dispose()
+		manager = undefined
+		vi.clearAllMocks()
+	})
+
+	function fakeResumeCtx(): ExtensionContext {
+		return {
+			cwd: "/work/myrepo",
+			mode: "tui",
+			ui: { custom: vi.fn() },
+		} as unknown as ExtensionContext
+	}
+
+	const state: RemoteRunState = {
+		id: "resumed-1",
+		description: "cloud: test plan",
+		remoteSession: {
+			workspaceId: "ws-1",
+			sessionName: "acp-resume01",
+			wsUrl: "wss://worker.example.com",
+			host: "worker.example.com",
+			cwd: "/home/sandbox/acp-resume01",
+		},
+		acpSessionId: "remote-acp-1",
+		remoteOrigin: "plan",
+		startedAt: 1_000,
+		status: "running",
+	}
+
+	it("completes a resumed remote run through the normal completion path", async () => {
+		mockAttachRemoteAgent.mockResolvedValue({
+			responseText: "recovered result",
+			stopReason: "recovered",
+			usage: undefined,
+			remoteSession: state.remoteSession,
+			recoveryNote: "recovery note",
+		})
+		manager = new AgentManager()
+
+		await manager.resumeRemoteRecord(state, fakeResumeCtx())
+		await manager.getRecord(state.id)?.promise
+
+		const record = manager.getRecord(state.id)
+		expect(record?.status).toBe("completed")
+		// The cloud display name ("Cloud Agent") comes from the type — a resumed
+		// remote run must match a fresh one.
+		expect(record?.type).toBe("Remote-Runner")
+		expect(record?.result).toBe("recovered result")
+		expect(record?.recoveryNote).toBe("recovery note")
+		// The record is terminal — the manager is idle again.
+		expect(manager.getRunningCount()).toBe(0)
+		// The attach used the persisted handles (session/load attaches by id).
+		expect(mockAttachRemoteAgent).toHaveBeenCalledWith(expect.objectContaining({ acpSessionId: "remote-acp-1" }))
+	})
+
+	it("marks a resolved recovery_failed resume as an error — no completion on an unknown result", async () => {
+		// Regression: the engine RESOLVES recovery_failed when the replay held
+		// no final message; the resume wiring must route it to an error record
+		// (same contract as _runRemote's stopReason whitelist), not completed.
+		mockAttachRemoteAgent.mockResolvedValue({
+			responseText: "(the remote run finished while kimchi was closed; ...)",
+			stopReason: "recovery_failed",
+			usage: undefined,
+			remoteSession: state.remoteSession,
+			recoveryNote: "Recovery failed: no final assistant message.",
+		})
+		manager = new AgentManager()
+
+		await manager.resumeRemoteRecord(state, fakeResumeCtx())
+		await manager.getRecord(state.id)?.promise
+
+		const record = manager.getRecord(state.id)
+		expect(record?.status).toBe("error")
+		expect(record?.error).toContain("could not be recovered")
+		expect(record?.recoveryNote).toContain("Recovery failed")
+	})
+
+	it("marks a thrown attach failure (reaped session) as an error", async () => {
+		mockAttachRemoteAgent.mockRejectedValue(new Error("remote session no longer exists — result unknown"))
+		manager = new AgentManager()
+
+		await manager.resumeRemoteRecord(state, fakeResumeCtx())
+		await manager.getRecord(state.id)?.promise
+
+		const record = manager.getRecord(state.id)
+		expect(record?.status).toBe("error")
+		expect(record?.error).toContain("no longer exists")
+	})
+
+	it("spares remote records in abortAll({skipRemote: true}) but stops them on a plain abortAll", async () => {
+		// The attach never settles — the resumed run stays "running".
+		mockAttachRemoteAgent.mockReturnValue(new Promise(() => {}))
+		manager = new AgentManager()
+		await manager.resumeRemoteRecord(state, fakeResumeCtx())
+		const record = manager.getRecord(state.id)
+		expect(record?.status).toBe("running")
+
+		// Process shutdown: the remote run keeps going on the worker.
+		expect(manager.abortAll({ skipRemote: true })).toBe(0)
+		expect(record?.status).toBe("running")
+
+		// An explicit kill still stops it.
+		expect(manager.abortAll()).toBe(1)
+		expect(record?.status).toBe("stopped")
+	})
+
+	it("skips the attach when another kimchi session already holds the remote session", async () => {
+		mockIsRemoteSessionConnected.mockResolvedValue(true)
+		manager = new AgentManager()
+
+		const outcome = await manager.resumeRemoteRecord(state, fakeResumeCtx())
+
+		expect(outcome).toBe("already-watched")
+		// No attach, no record, no background slot consumed.
+		expect(mockAttachRemoteAgent).not.toHaveBeenCalled()
+		expect(manager.getRecord(state.id)).toBeUndefined()
+		expect(manager.getRunningCount()).toBe(0)
 	})
 })
