@@ -411,7 +411,12 @@ describe("runRemoteSessions", () => {
 		pickRemoteSessionsMock.mockResolvedValue(undefined)
 		const { ctx } = makeCtx()
 		await runRemoteSessions("", ctx)
-		expect(pickRemoteSessionsMock).toHaveBeenCalledWith(ctx, expect.anything(), quota)
+		const quotaArg = pickRemoteSessionsMock.mock.calls[0][2]
+		await expect(quotaArg).resolves.toBe(quota)
+		expect(getQuotaUsageMock).toHaveBeenCalledWith(
+			ctx.apiKey,
+			expect.objectContaining({ endpoint: ctx.endpoint, orgId: "org-1" }),
+		)
 	})
 
 	it("still opens the picker when the quota fetch fails (summary omitted)", async () => {
@@ -420,6 +425,16 @@ describe("runRemoteSessions", () => {
 		pickRemoteSessionsMock.mockResolvedValue(undefined)
 		const { ctx } = makeCtx()
 		await expect(runRemoteSessions("", ctx)).resolves.toBeUndefined()
-		expect(pickRemoteSessionsMock).toHaveBeenCalledWith(ctx, expect.anything(), undefined)
+		const quotaArg = pickRemoteSessionsMock.mock.calls[0][2]
+		await expect(quotaArg).resolves.toBeUndefined()
+	})
+
+	it("opens the picker without waiting for a slow quota fetch", async () => {
+		listWorkspacesMock.mockResolvedValue([ws("w-1", "alpha")])
+		getQuotaUsageMock.mockReturnValue(new Promise(() => {})) // never settles
+		pickRemoteSessionsMock.mockResolvedValue(undefined)
+		const { ctx } = makeCtx()
+		await runRemoteSessions("", ctx)
+		expect(pickRemoteSessionsMock).toHaveBeenCalledTimes(1)
 	})
 })

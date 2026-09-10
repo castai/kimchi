@@ -5,7 +5,7 @@ import type { QuotaUsage } from "../../../sandbox/cloud/types.js"
 import { truncateLinesToWidth } from "../../../truncate-lines.js"
 import type { TeleportContext } from "../types.js"
 import { formatK8sBytes, formatMillicores } from "./format-bytes.js"
-import { quotaLines } from "./quota-footer.js"
+import { type QuotaInput, quotaLines, settleQuota } from "./quota-footer.js"
 import type { CombinedStatus, SessionRow } from "./sessions-table.js"
 import { formatRelativeTime } from "./sessions-table.js"
 import type { WorkspaceRow } from "./workspaces-table.js"
@@ -137,14 +137,25 @@ export class RemoteSessionsPanel implements Component {
 	private readonly entries: Entry[]
 	/** Details overlay for the selected entry, toggled with `i`. */
 	private showDetails = false
+	private quota: QuotaUsage | undefined
+	private disposed = false
 
 	constructor(
 		readonly nodes: RemoteWorkspaceNode[],
 		private readonly tui: PickerTui,
 		private readonly done: (result: RemoteSessionsResult | undefined) => void,
-		/** Org/user quota usage for the footer summary; undefined omits it. */
-		private readonly quota?: QuotaUsage,
+		/** Org/user quota for the footer summary — a settled value or an
+		 *  in-flight (pre-caught) fetch that fills the footer when it settles.
+		 *  Undefined omits it. */
+		quota?: QuotaInput,
 	) {
+		settleQuota(quota, {
+			isDisposed: () => this.disposed,
+			set: (q) => {
+				this.quota = q
+			},
+			requestRender: () => this.tui.requestRender(),
+		})
 		const entries: Entry[] = []
 		for (const node of nodes) {
 			entries.push({ kind: "workspace", node })
@@ -418,14 +429,16 @@ export class RemoteSessionsPanel implements Component {
 	}
 
 	invalidate(): void {}
-	dispose(): void {}
+	dispose(): void {
+		this.disposed = true
+	}
 }
 
 export function createRemoteSessionsPanel(
 	nodes: RemoteWorkspaceNode[],
 	tui: PickerTui,
 	done: (result: RemoteSessionsResult | undefined) => void,
-	quota?: QuotaUsage,
+	quota?: QuotaInput,
 ): RemoteSessionsPanel & { dispose(): void } {
 	return new RemoteSessionsPanel(nodes, tui, done, quota)
 }
@@ -433,7 +446,7 @@ export function createRemoteSessionsPanel(
 export function pickRemoteSessions(
 	ctx: TeleportContext,
 	nodes: RemoteWorkspaceNode[],
-	quota?: QuotaUsage,
+	quota?: QuotaInput,
 ): Promise<RemoteSessionsResult | undefined> {
 	return ctx.ui.custom<RemoteSessionsResult | undefined>(
 		(tui, _theme, _kb, done) => new RemoteSessionsPanel(nodes, tui, done, quota),

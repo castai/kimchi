@@ -19,7 +19,10 @@ export async function getQuotaUsage(apiKey: string, options?: GetQuotaUsageOptio
 	const signal = options?.signal
 
 	try {
-		const orgId = await verifyApiKey(apiKey, { ...options, fetch: fetchImpl })
+		// Callers that already verified the key (e.g. /remote-sessions, which
+		// caches orgId for its refresh loop) pass it through to skip the
+		// duplicate verifyKey round-trip.
+		const orgId = options?.orgId ?? (await verifyApiKey(apiKey, { ...options, fetch: fetchImpl }))
 
 		const url = `${endpoint}/ai-optimizer/v1beta/organizations/${encodeURIComponent(orgId)}/quotas:usage`
 		const resp = await fetchWithTimeout(

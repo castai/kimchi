@@ -135,6 +135,14 @@ describe("getQuotaUsage", () => {
 		expect(usage.userUsage?.currentRamBytes).toBeUndefined()
 	})
 
+	it("skips key verification when a pre-resolved orgId is provided", async () => {
+		const mockFetch = vi.fn().mockResolvedValueOnce(quotaResponse({ userUsage: usageFixture() }))
+		const usage = await getQuotaUsage("key1", { endpoint: BASE, fetch: mockFetch, orgId: ORG_ID })
+		expect(mockFetch).toHaveBeenCalledTimes(1)
+		expect(mockFetch.mock.calls[0][0]).toBe(QUOTA_URL)
+		expect(usage.userUsage).toBeDefined()
+	})
+
 	it("throws RemoteAuthError on 401", async () => {
 		const mockFetch = vi
 			.fn()

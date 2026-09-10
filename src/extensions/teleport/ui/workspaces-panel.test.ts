@@ -1,6 +1,7 @@
 import { visibleWidth } from "@earendil-works/pi-tui"
 import { describe, expect, it, vi } from "vitest"
 import type { QuotaUsage } from "../../../sandbox/cloud/types.js"
+import type { QuotaInput } from "./quota-footer.js"
 import { createWorkspacesPanel, WorkspacesPanel } from "./workspaces-panel.js"
 import type { WorkspaceRow } from "./workspaces-table.js"
 
@@ -34,7 +35,7 @@ function makePanel(
 		allowDelete?: boolean
 		allowRename?: boolean
 		hideSessions?: boolean
-		quota?: QuotaUsage
+		quota?: QuotaInput
 	},
 ) {
 	const tui = {
@@ -406,8 +407,8 @@ describe("WorkspacesPanel", () => {
 
 		it("renders the user and org quota on two footer lines", () => {
 			const { panel } = makePanel(testRows, { quota })
-			expect(footerLine(panel, "You:")).toContain(
-				"You: 4500m/16000m CPU · 6Gi/16Gi RAM · 20Gi/120Gi PVC · 3/10 workspaces",
+			expect(footerLine(panel, "you:")).toContain(
+				"you: 4500m/16000m CPU · 6Gi/16Gi RAM · 20Gi/120Gi PVC · 3/10 workspaces",
 			)
 			expect(footerLine(panel, "org:")).toContain(
 				"org: 9000m/16000m CPU · 6Gi/16Gi RAM · 30Gi/400Gi PVC · 7/10 workspaces",
@@ -418,8 +419,33 @@ describe("WorkspacesPanel", () => {
 			const withQuota = makePanel(testRows, { quota, termRows: 20 })
 			const without = makePanel(testRows, { termRows: 20 })
 			expect(without.panel.render(120).length).toBe(withQuota.panel.render(120).length)
-			expect(footerLine(without.panel, "You:")).toBeUndefined()
+			expect(footerLine(without.panel, "you:")).toBeUndefined()
 			expect(footerLine(without.panel, "org:")).toBeUndefined()
+		})
+
+		it("fills the footer in when an in-flight quota fetch settles", async () => {
+			const quotaPromise = Promise.resolve(quota)
+			const { panel, tui } = makePanel(testRows, { quota: quotaPromise })
+			expect(footerLine(panel, "you:")).toBeUndefined()
+			await quotaPromise
+			expect(tui.requestRender).toHaveBeenCalled()
+			expect(footerLine(panel, "you:")).toContain("you: 4500m/16000m CPU")
+		})
+
+		it("keeps the footer empty when the quota promise rejects", async () => {
+			const failing = Promise.reject(new Error("boom"))
+			const { panel } = makePanel(testRows, { quota: failing })
+			await failing.catch(() => undefined)
+			expect(footerLine(panel, "you:")).toBeUndefined()
+		})
+
+		it("ignores a quota fetch that settles after the panel was disposed", async () => {
+			const quotaPromise = Promise.resolve(quota)
+			const { panel, tui } = makePanel(testRows, { quota: quotaPromise })
+			panel.dispose()
+			await quotaPromise
+			expect(tui.requestRender).not.toHaveBeenCalled()
+			expect(footerLine(panel, "you:")).toBeUndefined()
 		})
 	})
 })

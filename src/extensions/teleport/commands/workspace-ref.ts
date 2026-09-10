@@ -57,10 +57,11 @@ export async function resolveWorkspaceRef(
 	ref: string | undefined,
 	opts: ResolveOpts,
 ): Promise<ResolvedWorkspace> {
-	// Quota summary for the picker footer — best-effort, fired alongside the
-	// workspace list so the picker doesn't wait for it; a failed fetch
-	// degrades to no summary. Only the no-ref path can open the picker, so
-	// the request is skipped entirely when an explicit ref is given.
+	// Quota summary for the picker footer — fired alongside the workspace
+	// list; the picker fills its footer when the fetch settles instead of
+	// blocking on it, and a failed fetch degrades to no summary (pre-caught
+	// here). Only the no-ref path can open the picker, so the request is
+	// skipped entirely when an explicit ref is given.
 	const quotaPromise = ref
 		? undefined
 		: getQuotaUsage(ctx.apiKey, { endpoint: ctx.endpoint, signal: ctx.signal }).catch(() => undefined)
@@ -115,7 +116,7 @@ export async function resolveWorkspaceRef(
 		ramBytes: w.ramBytes,
 		pvcSizeBytes: w.pvcSizeBytes,
 	}))
-	const choice = await pickWorkspace(ctx, rows, { allowNew, hideSessions: true, quota: await quotaPromise })
+	const choice = await pickWorkspace(ctx, rows, { allowNew, hideSessions: true, quota: quotaPromise })
 	if (!choice) {
 		throw new TeleportRefusal(opts.cancelledMessage ?? "cancelled")
 	}

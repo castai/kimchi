@@ -1,6 +1,7 @@
 import { visibleWidth } from "@earendil-works/pi-tui"
 import { describe, expect, it, vi } from "vitest"
 import type { QuotaUsage } from "../../../sandbox/cloud/types.js"
+import type { QuotaInput } from "./quota-footer.js"
 import type { RemoteSessionNode, RemoteWorkspaceNode } from "./remote-sessions-panel.js"
 import { createRemoteSessionsPanel, RemoteSessionsPanel } from "./remote-sessions-panel.js"
 
@@ -55,7 +56,7 @@ const treeNodes: RemoteWorkspaceNode[] = [
 
 function makePanel(
 	nodes: RemoteWorkspaceNode[] = treeNodes,
-	opts?: { termRows?: number; termCols?: number; quota?: QuotaUsage },
+	opts?: { termRows?: number; termCols?: number; quota?: QuotaInput },
 ) {
 	const tui = {
 		requestRender: vi.fn(),
@@ -365,7 +366,7 @@ describe("RemoteSessionsPanel", () => {
 			panel
 				.render(120)
 				.map(stripAnsi)
-				.find((l) => l.includes("You:"))
+				.find((l) => l.includes("you:"))
 
 		const orgLine = (panel: RemoteSessionsPanel): string | undefined =>
 			panel
@@ -376,7 +377,7 @@ describe("RemoteSessionsPanel", () => {
 		it("renders the usage-vs-quota summary as two lines: user first, org below", () => {
 			const { panel } = makePanel(treeNodes, { quota })
 			const line = summaryLine(panel)
-			expect(line).toContain("You: 4500m/16000m CPU · 6Gi/16Gi RAM · 20Gi/120Gi PVC · 3/10 workspaces")
+			expect(line).toContain("you: 4500m/16000m CPU · 6Gi/16Gi RAM · 20Gi/120Gi PVC · 3/10 workspaces")
 			expect(line).not.toContain("org:")
 			expect(orgLine(panel)).toContain("org: 9000m/16000m CPU · 6Gi/16Gi RAM · 30Gi/400Gi PVC · 7/10 workspaces")
 		})
@@ -395,13 +396,13 @@ describe("RemoteSessionsPanel", () => {
 				},
 			})
 			const line = summaryLine(panel)
-			expect(line).toContain("You: 1700m/3000m CPU · 1.5Gi/120Gi RAM · 2/10 workspaces")
+			expect(line).toContain("you: 1700m/3000m CPU · 1.5Gi/120Gi RAM · 2/10 workspaces")
 		})
 
 		it("renders only the user scope when org usage is missing", () => {
 			const { panel } = makePanel(treeNodes, { quota: { userUsage: quota.userUsage } })
 			const line = summaryLine(panel)
-			expect(line).toContain("You: 4500m/16000m CPU")
+			expect(line).toContain("you: 4500m/16000m CPU")
 			expect(line).not.toContain("org:")
 			expect(orgLine(panel)).toBeUndefined()
 		})
@@ -411,7 +412,7 @@ describe("RemoteSessionsPanel", () => {
 				quota: { userUsage: { currentSandboxes: 1, maxSandboxes: 5 } },
 			})
 			const line = summaryLine(panel)
-			expect(line).toContain("You: 1/5 workspaces")
+			expect(line).toContain("you: 1/5 workspaces")
 			expect(line).not.toContain("CPU")
 			expect(line).not.toContain("RAM")
 			expect(line).not.toContain("PVC")
@@ -422,7 +423,7 @@ describe("RemoteSessionsPanel", () => {
 				quota: { userUsage: { currentPvcSizeBytes: 5368709120, maxPvcSizeBytes: 107374182400 } },
 			})
 			const line = summaryLine(panel)
-			expect(line).toContain("You: 5Gi/100Gi PVC")
+			expect(line).toContain("you: 5Gi/100Gi PVC")
 			expect(line).not.toContain("CPU")
 			expect(line).not.toContain("RAM")
 			expect(line).not.toContain("workspaces")
@@ -437,6 +438,31 @@ describe("RemoteSessionsPanel", () => {
 
 		it("omits the summary when the quota carries no usable fields", () => {
 			const { panel } = makePanel(treeNodes, { quota: {} })
+			expect(summaryLine(panel)).toBeUndefined()
+		})
+
+		it("fills the summary in when an in-flight quota fetch settles", async () => {
+			const quotaPromise = Promise.resolve(quota)
+			const { panel, tui } = makePanel(treeNodes, { quota: quotaPromise })
+			expect(summaryLine(panel)).toBeUndefined()
+			await quotaPromise
+			expect(tui.requestRender).toHaveBeenCalled()
+			expect(summaryLine(panel)).toContain("you: 4500m/16000m CPU")
+		})
+
+		it("keeps the summary empty when the quota promise rejects", async () => {
+			const failing = Promise.reject(new Error("boom"))
+			const { panel } = makePanel(treeNodes, { quota: failing })
+			await failing.catch(() => undefined)
+			expect(summaryLine(panel)).toBeUndefined()
+		})
+
+		it("ignores a quota fetch that settles after the panel was disposed", async () => {
+			const quotaPromise = Promise.resolve(quota)
+			const { panel, tui } = makePanel(treeNodes, { quota: quotaPromise })
+			panel.dispose()
+			await quotaPromise
+			expect(tui.requestRender).not.toHaveBeenCalled()
 			expect(summaryLine(panel)).toBeUndefined()
 		})
 	})

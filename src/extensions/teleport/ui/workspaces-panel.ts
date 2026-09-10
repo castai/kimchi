@@ -5,7 +5,7 @@ import type { QuotaUsage, WorkspaceStatus } from "../../../sandbox/cloud/types.j
 import { truncateLinesToWidth } from "../../../truncate-lines.js"
 import type { TeleportContext } from "../types.js"
 import { formatK8sBytes, formatMillicores } from "./format-bytes.js"
-import { quotaLines } from "./quota-footer.js"
+import { type QuotaInput, quotaLines, settleQuota } from "./quota-footer.js"
 import { formatRelativeTime } from "./sessions-table.js"
 import type { WorkspaceRow } from "./workspaces-table.js"
 
@@ -36,8 +36,9 @@ export interface WorkspacesPanelOptions {
 	allowRename?: boolean
 	/** Drop the SESSIONS column entirely (used when session counts aren't fetched). */
 	hideSessions?: boolean
-	/** Org/user quota usage for the two-line footer; undefined omits it. */
-	quota?: QuotaUsage
+	/** Org/user quota for the two-line footer — a settled value or an in-flight
+	 *  (pre-caught) fetch that fills the footer when it settles; undefined omits it. */
+	quota?: QuotaInput
 }
 
 interface PickerTui {
@@ -116,7 +117,8 @@ export class WorkspacesPanel implements Component {
 	private readonly allowDelete: boolean
 	private readonly allowRename: boolean
 	private readonly hideSessions: boolean
-	private readonly quota: QuotaUsage | undefined
+	private quota: QuotaUsage | undefined
+	private disposed = false
 
 	constructor(
 		private readonly rows: WorkspaceRow[],
@@ -128,7 +130,13 @@ export class WorkspacesPanel implements Component {
 		this.allowDelete = opts.allowDelete ?? false
 		this.allowRename = opts.allowRename ?? false
 		this.hideSessions = opts.hideSessions ?? false
-		this.quota = opts.quota
+		settleQuota(opts.quota, {
+			isDisposed: () => this.disposed,
+			set: (q) => {
+				this.quota = q
+			},
+			requestRender: () => this.tui.requestRender(),
+		})
 		const rowEntries: Entry[] = rows.map((row) => ({ kind: "row", row }))
 		this.entries = this.allowNew ? [...rowEntries, { kind: "new" }] : rowEntries
 	}
@@ -381,7 +389,9 @@ export class WorkspacesPanel implements Component {
 	}
 
 	invalidate(): void {}
-	dispose(): void {}
+	dispose(): void {
+		this.disposed = true
+	}
 }
 
 export function createWorkspacesPanel(

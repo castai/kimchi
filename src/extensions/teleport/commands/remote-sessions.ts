@@ -35,9 +35,13 @@ export async function runRemoteSessions(_args: string, ctx: TeleportContext): Pr
 
 	while (true) {
 		status(ctx, "Loading…")
-		// Quota summary is best-effort: fire it alongside the workspace list
-		// and let a failed fetch degrade to "no summary" instead of blocking.
-		const quotaPromise = getQuotaUsage(ctx.apiKey, { endpoint: ctx.endpoint, signal: ctx.signal }).catch(
+		// Quota footer fills in asynchronously: fire it alongside the workspace
+		// list and hand the promise to the picker — its footer rows are reserved
+		// either way and populate when the fetch settles. Failures degrade to
+		// "no summary" (pre-caught so the picker never sees a rejection), and a
+		// slow quota endpoint never delays the picker. Reuse the orgId verified
+		// above to skip a duplicate verifyKey round-trip.
+		const quotaPromise = getQuotaUsage(ctx.apiKey, { endpoint: ctx.endpoint, signal: ctx.signal, orgId }).catch(
 			() => undefined,
 		)
 		let workspaces: Workspace[]
@@ -52,10 +56,9 @@ export async function runRemoteSessions(_args: string, ctx: TeleportContext): Pr
 		await syncSshConfig(workspaces, ctx)
 
 		const nodes = await buildTree(workspaces, ctx, fallbackName)
-		const quota = await quotaPromise
 		status(ctx, undefined)
 
-		const result = await pickRemoteSessions(ctx, nodes, quota)
+		const result = await pickRemoteSessions(ctx, nodes, quotaPromise)
 		if (!result) return
 
 		if (result.action === "open-terminal") {

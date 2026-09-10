@@ -306,7 +306,7 @@ describe("resolveWorkspaceRef", () => {
 		pickWorkspaceMock.mockResolvedValue({ action: "select", row: { id: UUID_A } })
 		const { ctx } = makeCtx()
 		await resolveWorkspaceRef(ctx, undefined, { onEmpty: { kind: "mint" } })
-		expect(pickWorkspaceMock.mock.calls[0][2]).toMatchObject({ quota })
+		await expect(pickWorkspaceMock.mock.calls[0][2].quota).resolves.toBe(quota)
 	})
 
 	it("opens the picker with quota undefined when the fetch fails (best-effort)", async () => {
@@ -316,7 +316,16 @@ describe("resolveWorkspaceRef", () => {
 		const { ctx } = makeCtx()
 		const resolved = await resolveWorkspaceRef(ctx, undefined, { onEmpty: { kind: "mint" } })
 		expect(resolved.id).toBe(UUID_A)
-		expect(pickWorkspaceMock.mock.calls[0][2]).toMatchObject({ quota: undefined })
+		await expect(pickWorkspaceMock.mock.calls[0][2].quota).resolves.toBeUndefined()
+	})
+
+	it("opens the picker without waiting for a slow quota fetch", async () => {
+		listWorkspacesMock.mockResolvedValue([ws({ id: UUID_A })])
+		getQuotaUsageMock.mockReturnValueOnce(new Promise(() => {})) // never settles
+		pickWorkspaceMock.mockResolvedValue({ action: "select", row: { id: UUID_A } })
+		const { ctx } = makeCtx()
+		await resolveWorkspaceRef(ctx, undefined, { onEmpty: { kind: "mint" } })
+		expect(pickWorkspaceMock).toHaveBeenCalledOnce()
 	})
 
 	it("does not fetch quota when an explicit ref is given (picker cannot open)", async () => {

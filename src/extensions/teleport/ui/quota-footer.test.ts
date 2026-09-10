@@ -28,20 +28,20 @@ const full: QuotaUsage = {
 describe("quotaLines", () => {
 	it("formats each scope on its own line with all four dimensions", () => {
 		const [user, org] = quotaLines(full)
-		expect(user).toBe("You: 4500m/16000m CPU · 6Gi/16Gi RAM · 20Gi/120Gi PVC · 3/10 workspaces")
+		expect(user).toBe("you: 4500m/16000m CPU · 6Gi/16Gi RAM · 20Gi/120Gi PVC · 3/10 workspaces")
 		expect(org).toBe("org: 9000m/16000m CPU · 6Gi/16Gi RAM · 30Gi/400Gi PVC · 7/10 workspaces")
 	})
 
 	it("drops segments whose fields are missing", () => {
 		const [user] = quotaLines({ userUsage: { currentSandboxes: 1, maxSandboxes: 5 } })
-		expect(user).toBe("You: 1/5 workspaces")
+		expect(user).toBe("you: 1/5 workspaces")
 	})
 
 	it("yields undefined for absent scopes", () => {
 		const [user, org] = quotaLines({
 			userUsage: { currentPvcSizeBytes: 5368709120, maxPvcSizeBytes: 107374182400 },
 		})
-		expect(user).toBe("You: 5Gi/100Gi PVC")
+		expect(user).toBe("you: 5Gi/100Gi PVC")
 		expect(org).toBeUndefined()
 	})
 
