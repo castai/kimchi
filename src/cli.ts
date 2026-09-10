@@ -110,7 +110,6 @@ import promptEnrichmentExtension from "./extensions/prompt-construction/prompt-e
 import promptSummaryExtension from "./extensions/prompt-summary.js"
 import questionnaireExtension from "./extensions/questionnaire/index.js"
 import rateLimitNoticeExtension from "./extensions/rate-limit-notice.js"
-import createRejectedApiKeyExtension from "./extensions/rejected-api-key.js"
 import remoteRunExtension from "./extensions/remote-run/index.js"
 import reportBugExtension from "./extensions/report-bug.js"
 import requestTimingExtension from "./extensions/request-timing.js"
@@ -374,7 +373,6 @@ try {
 		const modelsJsonPath = resolve(agentDir, "models.json")
 
 		let currentApiKey = apiKey
-		let apiKeyRejected = false
 		const rejectedEnvironmentKeyMessage =
 			"KIMCHI_API_KEY environment variable contains an invalid API key. Update or delete the environment variable, then restart Kimchi."
 		let models: Awaited<ReturnType<typeof updateModelsConfig>>["models"]
@@ -391,7 +389,7 @@ try {
 				environmentOllamaModels = discovered.ollamaModels
 				installEnvironmentModels(envKey, discovered.providers, discovered.refreshed ? undefined : discover)
 			} else {
-				;({ models, apiKeyRejected = false } = await updateModelsConfig(modelsJsonPath, currentApiKey, {
+				;({ models } = await updateModelsConfig(modelsJsonPath, currentApiKey, {
 					endpoint: config.customLlmEndpoint,
 				}))
 				if (experimentalFeatures) {
@@ -422,7 +420,7 @@ try {
 				currentApiKey = wizardResult.apiKey ?? ""
 				writeApiKey(currentApiKey)
 				config = loadConfig()
-				;({ models, apiKeyRejected = false } = await updateModelsConfig(modelsJsonPath, currentApiKey, {
+				;({ models } = await updateModelsConfig(modelsJsonPath, currentApiKey, {
 					endpoint: config.customLlmEndpoint,
 				}))
 				if (experimentalFeatures) {
@@ -444,10 +442,9 @@ try {
 				throw err
 			}
 		}
-		// Custom providers may keep startup alive after a Kimchi 401. Never replace
-		// saved credentials with that rejected key; the runtime guard below prevents
-		// silently falling back to the stored Kimchi account instead.
-		if (!envKey && !apiKeyRejected) await syncPiAuth(resolve(agentDir, "auth.json"), modelsJsonPath, currentApiKey)
+		// Keep saved Kimchi credentials aligned with config.json, including after
+		// cached-model fallback. Environment keys remain session-only.
+		if (!envKey) await syncPiAuth(resolve(agentDir, "auth.json"), modelsJsonPath, currentApiKey)
 
 		// Must run before main() so the keybindings file is loaded with the
 		// override in place.
@@ -607,7 +604,6 @@ try {
 		}
 		const startupAuthState = createStartupAuthGateState()
 		const startupAuthGate = createStartupAuthGate({
-			rejectedApiKey: apiKeyRejected ? currentApiKey : undefined,
 			...interactiveStartupContext,
 			state: startupAuthState,
 		})
@@ -635,7 +631,6 @@ try {
 			branchCommandExtension,
 			...terminalUiExtensionFactories,
 			loginExtension,
-			createRejectedApiKeyExtension(apiKeyRejected ? currentApiKey : undefined),
 			startupAuthGate,
 			shellProfileMigrationExtension,
 			// session_start handlers are awaited in order; warn after the migration dialog closes.

@@ -675,12 +675,16 @@ describe("updateModelsConfig", () => {
 		expect(result.models.map((m) => m.slug)).toEqual(["kimi-k2.5"])
 	})
 
-	it("rejects invalid credentials even when cached models exist", async () => {
+	it("falls back to cached Kimchi models after a 401 without custom providers", async () => {
 		vi.mocked(fetch).mockResolvedValueOnce(Response.json({ models: [KIMI] }))
 		await updateModelsConfig(modelsJsonPath, "saved-key")
 		const original = readFileSync(modelsJsonPath, "utf-8")
 		vi.mocked(fetch).mockResolvedValueOnce(new Response(null, { status: 401, statusText: "Unauthorized" }))
-		await expect(updateModelsConfig(modelsJsonPath, "rejected-key")).rejects.toMatchObject({ status: 401 })
+		const warn = vi.spyOn(console, "warn").mockImplementation(() => {})
+		const result = await updateModelsConfig(modelsJsonPath, "rejected-key")
+		expect(result.models.map((model) => model.slug)).toEqual(["kimi-k2.5"])
+		expect(isCredentialStale("rejected-key", "kimchi-dev")).toBe(true)
+		expect(warn).toHaveBeenCalledWith(expect.stringContaining("401 Unauthorized"))
 		expect(readFileSync(modelsJsonPath, "utf-8")).toBe(original)
 	})
 
@@ -698,7 +702,6 @@ describe("updateModelsConfig", () => {
 
 		const result = await updateModelsConfig(modelsJsonPath, "expired-kimchi-key")
 
-		expect(result.apiKeyRejected).toBe(true)
 		expect(result.models.map((model) => model.slug)).toContain("custom-model")
 		expect(warn).toHaveBeenCalledWith(expect.stringContaining("401 Unauthorized"))
 		expect(readFileSync(modelsJsonPath, "utf-8")).toBe(original)

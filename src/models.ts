@@ -296,8 +296,6 @@ export function buildModelsConfig(models: ModelMetadata[], endpoint?: string) {
 
 export interface ModelsConfigResult {
 	models: ModelMetadata[]
-	/** A custom-provider fallback followed a Kimchi 401; do not persist this key. */
-	apiKeyRejected?: boolean
 }
 
 export interface DiscoveredModelsConfig extends ModelsConfigResult {
@@ -449,8 +447,7 @@ export function readExperimentalModels(modelsJsonPath: string): ModelMetadata[] 
  * configuration to modelsJsonPath. If no API key is configured, returns
  * cached and custom models (if available) without making a network call.
  * Failed refreshes fall back to existing models with a warning, unless
- * fallback is disabled or no models exist. A Kimchi 401 requires custom
- * models to permit fallback; cached Kimchi models alone are not enough.
+ * fallback is disabled or no models exist.
  *
  * User-added providers (anything other than "kimchi-dev") are preserved across
  * updates so custom model configurations are not lost on startup.
@@ -468,7 +465,6 @@ export async function updateModelsConfig(
 	}
 	return {
 		models: result.models,
-		...(result.apiKeyRejected !== undefined && { apiKeyRejected: result.apiKeyRejected }),
 	}
 }
 
@@ -501,16 +497,10 @@ export async function discoverModelsConfig(
 			markCredentialStale(apiKey, KIMCHI_PROVIDER_ID)
 		}
 		const cached = readCachedMetadata(modelsJsonPath) ?? []
-		const apiKeyRejected = err instanceof ModelsFetchError && err.status === 401
-		// Custom providers authenticate independently, so a rejected saved Kimchi
-		// key need not block their startup. The caller can reject an explicit env
-		// override using apiKeyRejected; strict credential validation disables fallback.
-		if (apiKeyRejected && otherModels.length === 0) throw err
 		if (options.allowCachedFallback === false || (cached.length === 0 && otherModels.length === 0)) throw err
 		console.warn(`Failed to refresh models from API, using cached list: ${message}`)
 		return {
 			models: sortModels([...cached, ...otherModels]),
-			apiKeyRejected,
 			providers: buildModelsConfig(cached, options.endpoint).providers,
 			refreshed: false,
 		}

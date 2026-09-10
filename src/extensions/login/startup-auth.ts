@@ -26,8 +26,6 @@ export interface StartupAuthGateState {
 
 export interface StartupAuthGateOptions {
 	nonInteractiveMode: boolean
-	/** Preserve stored credentials when metadata discovery already rejected this key. */
-	rejectedApiKey?: string
 	stdinIsTTY: boolean
 	stdoutIsTTY: boolean
 	state?: StartupAuthGateState
@@ -57,11 +55,11 @@ export function shouldShowStartupAuthGate(input: {
 	return true
 }
 
-export async function hasUsableAuth(ctx: ExtensionContext, rejectedApiKey?: string): Promise<boolean> {
+export async function hasUsableAuth(ctx: ExtensionContext): Promise<boolean> {
 	const configKey = loadConfig().apiKey
 	let kimchiAuthSynchronized = configKey.length === 0
 	try {
-		if (configKey && configKey !== rejectedApiKey) {
+		if (configKey) {
 			if (getApiKeySource() === "environment") {
 				await ctx.modelRegistry.refresh()
 			} else {
@@ -172,7 +170,7 @@ async function runStartupAuthGate(
 
 		if (result === "cancelled") continue
 
-		if (result === "success" && (await hasUsableAuth(ctx, options.rejectedApiKey))) {
+		if (result === "success" && (await hasUsableAuth(ctx))) {
 			state.authenticated = true
 			return
 		}
@@ -186,7 +184,7 @@ export function createStartupAuthGate(options: StartupAuthGateOptions): Extensio
 
 	return (pi: ExtensionAPI) => {
 		pi.on("session_start", async (event, ctx) => {
-			const usableAuth = await hasUsableAuth(ctx, options.rejectedApiKey)
+			const usableAuth = await hasUsableAuth(ctx)
 			if (
 				!shouldShowStartupAuthGate({
 					hasUI: ctx.hasUI,

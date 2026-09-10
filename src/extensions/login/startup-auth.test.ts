@@ -220,16 +220,17 @@ describe("startup auth gate", () => {
 		expect(piAuthMock.syncPiAuth).not.toHaveBeenCalled()
 	})
 
-	it.each([
-		"custom",
-		"kimchi-dev/openai",
-	])("does not sync a rejected key while checking %s authentication", async (provider) => {
+	it.each(["custom", "kimchi-dev/openai"])("syncs the saved key while checking %s authentication", async (provider) => {
 		configMock.loadConfig.mockReturnValue({ apiKey: "rejected-key" })
 		const registry = { ...createModelRegistry([createModel("test-model", provider)]), refresh: vi.fn() }
 		const ctx = createContext({ modelRegistry: registry })
 
-		expect(await hasUsableAuth(ctx, "rejected-key")).toBe(provider === "custom")
-		expect(piAuthMock.syncPiAuth).not.toHaveBeenCalled()
+		expect(await hasUsableAuth(ctx)).toBe(true)
+		expect(piAuthMock.syncPiAuth).toHaveBeenCalledWith(
+			"/tmp/kimchi-startup-auth-test/auth.json",
+			"/tmp/kimchi-startup-auth-test/models.json",
+			"rejected-key",
+		)
 		expect(registry.refresh).toHaveBeenCalledOnce()
 	})
 
