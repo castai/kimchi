@@ -120,6 +120,7 @@ import sessionMetadataExtension from "./extensions/session-metadata/index.js"
 import sessionNameExtension from "./extensions/session-name.js"
 import orphanToolResultRepairExtension from "./extensions/session-repair/orphan-tool-result-repair.js"
 import settingsTrustSyncExtension from "./extensions/settings-trust-sync.js"
+import shellProfileMigrationExtension from "./extensions/shell-profile-migration.js"
 import shutdownMarkerExtension from "./extensions/shutdown-marker.js"
 import startupUpdateExtension from "./extensions/startup-update.js"
 import statsExtension from "./extensions/stats/index.js"
@@ -627,6 +628,7 @@ try {
 			loginExtension,
 			createRejectedApiKeyExtension(apiKeyRejected ? currentApiKey : undefined),
 			startupAuthGate,
+			shellProfileMigrationExtension,
 			loopGuardExtension,
 			explorationGuardExtension,
 			reviewWriteGuardExtension,

@@ -132,6 +132,8 @@ export interface CreateKimchiFixtureOptions {
 
 export type RunKimchiSessionOptions = CreateKimchiFixtureOptions & {
 	artifactName: string
+	/** Marker printed after exit for scenarios that relaunch Kimchi in the same terminal. */
+	exitMarker?: string
 	/** Expected startup text; override for scenarios that exit before showing the editor. */
 	startupText?: string
 	/**
@@ -344,7 +346,7 @@ export async function runKimchiSession(
 	options: RunKimchiSessionOptions,
 	body: (fixture: KimchiFixture, trace: TuiScenarioTrace) => Promise<void>,
 ): Promise<void> {
-	const { artifactName, beforeReady, startupText = PROMPT_READY, ...fixtureOptions } = options
+	const { artifactName, beforeReady, exitMarker, startupText = PROMPT_READY, ...fixtureOptions } = options
 	const fixture = await createKimchiFixture(fixtureOptions)
 	let artifactWritten = false
 	const steps: TuiStepSnapshot[] = []
@@ -355,7 +357,13 @@ export async function runKimchiSession(
 	}
 
 	try {
-		launchKimchi(terminal, fixture, fixtureOptions.extraArgs ?? [], { ...fixtureOptions.env, ...fixture.seedEnv })
+		launchKimchi(
+			terminal,
+			fixture,
+			fixtureOptions.extraArgs ?? [],
+			{ ...fixtureOptions.env, ...fixture.seedEnv },
+			{ exitMarker },
+		)
 		if (beforeReady) await beforeReady(terminal)
 		await waitForText(terminal, startupText, { timeoutMs: STARTUP_TIMEOUT_MS })
 		trace.step(startupText === PROMPT_READY ? "ready prompt visible" : "expected startup text visible")
