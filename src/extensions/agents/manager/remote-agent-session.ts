@@ -65,6 +65,11 @@ export class RemoteAgentSession {
 	private _textOffset = 0
 	/** Set to true when the runner enters the reconnecting state. */
 	private _reconnecting = false
+	/** Last context-window usage reported by the remote agent (usage_update).
+	 *  Null until the first notification arrives — getSessionStats reports a
+	 *  null percent so the widget omits the annotation instead of guessing. */
+	private _contextUsed: number | null = null
+	private _contextSize: number | null = null
 
 	/** Called by _runRemote() via runRemoteAgent's onReady callback. */
 	bindClient(acpClient: AcpSessionClient, meta: RemoteSessionMeta): void {
@@ -126,7 +131,12 @@ export class RemoteAgentSession {
 	getSessionStats(): SessionStatsLike {
 		return {
 			tokens: { ...this._usage },
-			contextUsage: { percent: null },
+			contextUsage: {
+				percent:
+					this._contextUsed != null && this._contextSize != null && this._contextSize > 0
+						? (this._contextUsed / this._contextSize) * 100
+						: null,
+			},
 		}
 	}
 
@@ -155,6 +165,14 @@ export class RemoteAgentSession {
 		this._usage.output += delta.output
 		this._usage.cacheRead += delta.cacheRead
 		this._usage.cacheWrite += delta.cacheWrite
+	}
+
+	/** Track the remote context-window usage (ACP usage_update used/size).
+	 *  Surfaced via getSessionStats() so the agent widget can show a live
+	 *  context percent for cloud agents, matching local agents. */
+	setContextUsage(used: number, size: number): void {
+		this._contextUsed = used
+		this._contextSize = size
 	}
 
 	/** Track streaming state. */

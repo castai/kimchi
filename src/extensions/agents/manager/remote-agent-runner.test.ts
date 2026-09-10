@@ -426,12 +426,13 @@ describe("runRemoteAgent", () => {
 		expect(capturedOptions?.signal).toBe(controller.signal)
 	})
 
-	it("forwards onToolActivity, onTurnEnd, onAssistantUsage, onRawNotification callbacks", async () => {
+	it("forwards onToolActivity, onTurnEnd, onAssistantUsage, onRawNotification, onContextUsage callbacks", async () => {
 		const callbacks = {
 			onToolActivity: vi.fn(),
 			onTurnEnd: vi.fn(),
 			onAssistantUsage: vi.fn(),
 			onRawNotification: vi.fn(),
+			onContextUsage: vi.fn(),
 		}
 		await runRemoteAgent(WORKSPACE_ID, PROMPT, makeOptions({ callbacks }))
 
@@ -442,6 +443,7 @@ describe("runRemoteAgent", () => {
 		expect(typeof captured.onTurnEnd).toBe("function")
 		expect(typeof captured.onAssistantUsage).toBe("function")
 		expect(typeof captured.onRawNotification).toBe("function")
+		expect(typeof captured.onContextUsage).toBe("function")
 
 		// Verify forwarding
 		captured.onToolActivity({ status: "completed", toolName: "Read" })
@@ -457,6 +459,9 @@ describe("runRemoteAgent", () => {
 		const rawNotif = { update: { sessionUpdate: "tool_call" } }
 		captured.onRawNotification(rawNotif)
 		expect(callbacks.onRawNotification).toHaveBeenCalledWith(rawNotif)
+
+		captured.onContextUsage(5000, 128000)
+		expect(callbacks.onContextUsage).toHaveBeenCalledWith(5000, 128000)
 	})
 
 	it("forwards gitDetails to createSession with targetDirectory cleared so clone goes into session cwd", async () => {

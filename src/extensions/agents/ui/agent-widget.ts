@@ -216,6 +216,7 @@ export class AgentWidget {
 			error?: string
 			abortReason?: AgentAbortReason
 			modelId?: string
+			lifetimeUsage?: LifetimeUsage
 		},
 		theme: Theme,
 	): string {
@@ -248,6 +249,10 @@ export class AgentWidget {
 		const activity = this.agentActivity.get(a.id)
 		if (activity) parts.push(formatTurns(activity.turnCount, activity.maxTurns))
 		if (a.toolUses > 0) parts.push(`${a.toolUses} tool use${a.toolUses === 1 ? "" : "s"}`)
+		// Same order as the running line: turns · tool uses · tokens · duration.
+		// Reads the manager record (activity entries are dropped on completion).
+		const tokens = getLifetimeTotal(a.lifetimeUsage)
+		if (tokens > 0) parts.push(formatTokens(tokens))
 		parts.push(duration)
 
 		const modelTag = a.modelId ? ` ${theme.fg("dim", `[${a.modelId}]`)}` : ""

@@ -194,6 +194,7 @@ function makeCallbacks(): { callbacks: AcpSessionCallbacks; calls: ReturnType<ty
 		onTextDelta: vi.fn(),
 		onToolActivity: vi.fn(),
 		onTurnEnd: vi.fn(),
+		onContextUsage: vi.fn(),
 		onAssistantUsage: vi.fn(),
 	}
 	return { callbacks, calls }
@@ -681,6 +682,90 @@ describe("AcpSessionClient", () => {
 				output: 200,
 				cacheRead: 50,
 				cacheWrite: 10,
+			})
+
+			client.close()
+		})
+
+		it("reports lifetime usage deltas from usage_update _meta and only the remainder from PromptResponse", async () => {
+			const { callbacks } = makeCallbacks()
+			const client = new AcpSessionClient({
+				sessionName: "sess-1",
+				credentials: makeCredentials(),
+				callbacks,
+				WebSocketImpl: MockWebSocket,
+			})
+			const { socket } = await initClient(client)
+
+			const p = client.prompt("hello")
+			await vi.waitFor(() => {
+				expect(getSentMessages(socket).some((m) => m.method === "session/prompt")).toBe(true)
+			})
+			const promptReq = findRequest(getSentMessages(socket), "session/prompt")
+
+			// Mid-run usage_update with cumulative lifetime totals — first
+			// snapshot reports everything seen so far as one delta.
+			serverSendMessage(
+				socket,
+				rpcNotification("session/update", {
+					sessionId: "session-abc",
+					_meta: { "kimchi/lifetimeUsage": { input: 100, output: 50, cacheRead: 10, cacheWrite: 5 } },
+					update: { sessionUpdate: "usage_update", used: 5000, size: 128000 },
+				}),
+			)
+			// Second snapshot — only the growth since the last one is reported.
+			serverSendMessage(
+				socket,
+				rpcNotification("session/update", {
+					sessionId: "session-abc",
+					_meta: { "kimchi/lifetimeUsage": { input: 150, output: 80, cacheRead: 10, cacheWrite: 5 } },
+					update: { sessionUpdate: "usage_update", used: 6000, size: 128000 },
+				}),
+			)
+			await new Promise((resolve) => setImmediate(resolve))
+
+			expect(callbacks.onContextUsage).toHaveBeenCalledTimes(2)
+			expect(callbacks.onContextUsage).toHaveBeenNthCalledWith(1, 5000, 128000)
+			expect(callbacks.onContextUsage).toHaveBeenNthCalledWith(2, 6000, 128000)
+			expect(callbacks.onAssistantUsage).toHaveBeenCalledTimes(2)
+			expect(callbacks.onAssistantUsage).toHaveBeenNthCalledWith(1, {
+				input: 100,
+				output: 50,
+				cacheRead: 10,
+				cacheWrite: 5,
+			})
+			expect(callbacks.onAssistantUsage).toHaveBeenNthCalledWith(2, {
+				input: 50,
+				output: 30,
+				cacheRead: 0,
+				cacheWrite: 0,
+			})
+
+			// Prompt resolves with the final totals — only the remainder (output
+			// grew 80 → 90) is emitted, so consumers never double-count the turn.
+			serverSendMessage(
+				socket,
+				rpcResponse(promptReq.id, {
+					stopReason: "end_turn",
+					usage: {
+						inputTokens: 150,
+						outputTokens: 90,
+						cachedReadTokens: 10,
+						cachedWriteTokens: 5,
+						totalTokens: 335,
+					},
+				}),
+			)
+			const result = await p
+
+			// The returned usage is still the full turn's totals.
+			expect(result.usage).toEqual({ input: 150, output: 90, cacheRead: 10, cacheWrite: 5 })
+			expect(callbacks.onAssistantUsage).toHaveBeenCalledTimes(3)
+			expect(callbacks.onAssistantUsage).toHaveBeenNthCalledWith(3, {
+				input: 0,
+				output: 10,
+				cacheRead: 0,
+				cacheWrite: 0,
 			})
 
 			client.close()
@@ -1343,7 +1428,7 @@ describe("AcpSessionClient", () => {
 			client.close()
 		})
 
-		it("ignores agent_thought_chunk, usage_update, plan, and other updates", async () => {
+		it("ignores agent_thought_chunk and plan updates; usage_update only reports context usage", async () => {
 			const { callbacks } = makeCallbacks()
 			const client = new AcpSessionClient({
 				sessionName: "sess-1",
@@ -1395,9 +1480,14 @@ describe("AcpSessionClient", () => {
 			// Yield so the async stream pipeline can process the notifications
 			await new Promise((resolve) => setImmediate(resolve))
 
-			// None of these should trigger any callback
+			// Thought/plan chunks trigger no callback at all.
 			expect(callbacks.onTextDelta).not.toHaveBeenCalled()
 			expect(callbacks.onToolActivity).not.toHaveBeenCalled()
+			// usage_update without _meta lifetime totals (old server) surfaces
+			// only the context-window state — no usage deltas.
+			expect(callbacks.onContextUsage).toHaveBeenCalledTimes(1)
+			expect(callbacks.onContextUsage).toHaveBeenCalledWith(5000, 128000)
+			expect(callbacks.onAssistantUsage).not.toHaveBeenCalled()
 
 			serverSendMessage(socket, rpcResponse(promptReq.id, { stopReason: "end_turn" }))
 			await p
