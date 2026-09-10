@@ -55,6 +55,8 @@ describe("isRemoteRunEnabled", () => {
 		expect(isRemoteRunEnabled()).toBe(true)
 		process.env.KIMCHI_REMOTE_RUN = "true"
 		expect(isRemoteRunEnabled()).toBe(true)
+		process.env.KIMCHI_REMOTE_RUN = " true "
+		expect(isRemoteRunEnabled()).toBe(true)
 	})
 
 	it("treats empty string as unset", () => {
@@ -70,6 +72,8 @@ describe("isRemoteRunEnabled", () => {
 		process.env.KIMCHI_REMOTE_RUN = "FALSE"
 		expect(isRemoteRunEnabled()).toBe(false)
 		process.env.KIMCHI_REMOTE_RUN = "False"
+		expect(isRemoteRunEnabled()).toBe(false)
+		process.env.KIMCHI_REMOTE_RUN = " false "
 		expect(isRemoteRunEnabled()).toBe(false)
 	})
 })
