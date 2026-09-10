@@ -82,6 +82,7 @@ import { ACP_REATTACH_MID_TURN_META_KEY } from "../../sandbox/worker/acp-protoco
 import { AVAILABLE_EXT_METHODS, CAPABILITIES_KEY } from "./capabilities.js"
 import { getAcpPrompter } from "./permission-prompter-registry.js"
 import {
+	ACP_SUCCESS_MESSAGE,
 	type AcpSessionFactory,
 	type AcpSessionLister,
 	type AcpSessionLoader,
@@ -666,6 +667,10 @@ describe("KimchiAcpAgent turn lifecycle", () => {
 
 			expect(result).toEqual({})
 			expect(authenticateViaBrowser).toHaveBeenCalledOnce()
+			// The callback page copy is per-context: ACP-initiated logins (Studio's
+			// in-app flow) must not show the terminal `kimchi login` CLI wording.
+			expect(authenticateViaBrowser).toHaveBeenCalledWith({ successMessage: ACP_SUCCESS_MESSAGE })
+			expect(ACP_SUCCESS_MESSAGE).not.toContain("CLI")
 			expect(writeApiKey).toHaveBeenCalledWith("castai_v1_test-token")
 			expect(updateModelsConfig).toHaveBeenCalledWith(join(tempAgentDir, "models.json"), "castai_v1_test-token")
 		})

@@ -123,6 +123,11 @@ import { asString, extractImages, truncate } from "./utils.js"
  * initialize() declaration and authenticate() validation to avoid typo drift. */
 const KIMCHI_AGENT_AUTH_METHOD_ID = "kimchi-agent"
 
+/** Copy shown on the OAuth callback success page when the flow was launched by
+ * an ACP client (e.g. Studio's in-app login) rather than `kimchi login`. It
+ * must not assume the terminal CLI. */
+export const ACP_SUCCESS_MESSAGE = "You are now connected to Kimchi. You can close this window and start using it."
+
 /** Resolve --plan/--auto/--yolo CLI flags into a PermissionMode. */
 function resolveCliPermissionMode(): PermissionMode | undefined {
 	const { options } = getParsedCliArgs()
@@ -495,9 +500,11 @@ export class KimchiAcpAgent implements Agent {
 
 		// Run the browser OAuth flow: starts a local callback server, opens the
 		// user's browser to the Kimchi web app, and awaits the resulting token.
+		// The success page copy names no client: this flow may be launched by any
+		// ACP client, so it stays neutral instead of the terminal CLI wording.
 		let token: string
 		try {
-			;({ token } = await authenticateViaBrowser())
+			;({ token } = await authenticateViaBrowser({ successMessage: ACP_SUCCESS_MESSAGE }))
 		} catch (error) {
 			const detail = error instanceof Error ? error.message : String(error)
 			throw RequestError.internalError(undefined, `Browser authentication failed: ${detail}`)
